@@ -1,16 +1,19 @@
-# Configuración Global del Bot Épico
+# Guaritradbot — Configuración global
+# Documentado en SPRINT 0 (Sprint 1 meterá mandate gate aquí).
 
-execution_mode: "human_in_the_loop"  # Opciones: "auto" | "human_in_the_loop"
-optimize_on_start: false             # Ejecuta Hyperopt Grid Search al iniciar
+execution_mode: "auto"      # "auto" | "human_in_the_loop"
+optimize_on_start: false
 
 exchange:
   name: "binance"
   use_testnet: true
-  max_capital_per_trade_pct: 10 # 10% del balance de la cuenta
-  
+  max_capital_per_trade_pct: 10  # CAP de exposición por trade, NO el riesgo real
+
 trading:
+  risk_per_trade_pct: 1.0          # 1% del balance arriesgado por trade (regla #1 del playbook)
+  atr_stop_multiplier: 2.0         # Stop = entry ± k * ATR (k=2 es estándar)
   max_open_trades: 5
-  risk_per_trade_pct: 2.0
+  min_order_usd: 10.0              # Binance spot mínimo
 
 schedule:
   run_interval_hours: 1
@@ -19,3 +22,12 @@ schedule:
 notifications:
   enabled: true
   provider: "telegram"
+
+# === Sprint 0 (preview sin enforcement real; Sprint 1 lo enchufa) ===
+mandate:
+  enabled: false                    # toggle del Mandate Gate
+  allowed_symbols: ["BTC-USD", "BTCUSDT", "ETH-USD", "GLD", "USO", "SPY", "QQQ"]
+  max_position_usd: 20              # tope absoluto por trade
+  max_daily_loss_usd: 5             # kill switch cuando esta banda se pierde en 24h
+  kill_switch_file: "/tmp/GUARITRADBOT_KILL"
+  audit_log_dir: "audit"

@@ -10,8 +10,9 @@ class BrokerClient:
     def __init__(self, exchange_name="binance", use_testnet=True):
         load_dotenv()
         
-        api_key = os.getenv("EXCHANGE_API_KEY")
-        secret = os.getenv("EXCHANGE_SECRET_KEY")
+        # Sprint 0 fix: align with .env.example (which already declares BINANCE_*)
+        api_key = os.getenv("BINANCE_API_KEY")
+        secret = os.getenv("BINANCE_API_SECRET")
         
         # Instanciar el exchange dinámicamente desde ccxt
         exchange_class = getattr(ccxt, exchange_name)

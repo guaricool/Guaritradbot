@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Runtime state (regenerated on every bot run)
+latest_state.json
+audit/
+data_store/
+
+# Env
+.env
+.env.local
+
+# Venv
+venv/
+.venv/
+
+# Logs
+*.log
