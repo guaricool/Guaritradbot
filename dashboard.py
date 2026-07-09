@@ -403,6 +403,35 @@ CUSTOM_CSS = """
     border: 1px solid #353f6a !important;
     font-weight: 500 !important;
   }
+  /* Brighten the placeholder text in sidebar inputs (was Streamlit's default dim gray) */
+  section[data-testid="stSidebar"] input::placeholder,
+  section[data-testid="stSidebar"] textarea::placeholder,
+  section[data-testid="stSidebar"] [data-baseweb="input"] input::placeholder {
+    color: #b8c1d6 !important;
+    opacity: 1 !important;
+    font-weight: 600 !important;
+  }
+  /* Focus ring on inputs (cyan glow) */
+  section[data-testid="stSidebar"] input:focus,
+  section[data-testid="stSidebar"] [data-baseweb="input"] input:focus {
+    border-color: #4cc9f0 !important;
+    box-shadow: 0 0 0 3px rgba(76, 201, 240, 0.25) !important;
+    outline: none !important;
+  }
+
+  /* ---------- MAIN AREA inputs + text inputs (search bar, etc.) ---------- */
+  [data-baseweb="input"] input,
+  [data-baseweb="textarea"] textarea {
+    background: #161b2e !important;
+    color: #e8edf7 !important;
+    border: 1px solid #353f6a !important;
+  }
+  [data-baseweb="input"] input::placeholder,
+  [data-baseweb="textarea"] textarea::placeholder {
+    color: #b8c1d6 !important;
+    opacity: 1 !important;
+    font-weight: 500 !important;
+  }
 
   /* ---------- MAIN AREA widget labels ---------- */
   .stSlider [data-testid="stWidgetLabel"] p,
@@ -1003,8 +1032,92 @@ with st.sidebar:
     )
 
     st.markdown("---")
+    st.markdown("### 🎚️ Quick Risk")
+    st.caption("Adjust risk parameters without scrolling. "
+               "Click **Save** to persist; bot restarts to apply.")
+    sidebar_risk_pct = st.slider(
+        "Risk per trade (%)",
+        0.1, 5.0,
+        float(risk.get("risk_per_trade_pct", 1.0)), 0.1,
+        key="sidebar_risk_pct",
+    )
+    sidebar_cap_pct = st.slider(
+        "Cap per trade (%)",
+        1, 50,
+        int(exch.get("max_capital_per_trade_pct", 10)), 1,
+        key="sidebar_cap_pct",
+    )
+    sidebar_max_open = st.slider(
+        "Max open trades",
+        1, 10,
+        int(risk.get("max_open_trades", 5)), 1,
+        key="sidebar_max_open",
+    )
+    sidebar_mandate = st.checkbox(
+        "🟢 Mandate gate (LIVE trading)",
+        value=bool(mand.get("enabled", False)),
+        key="sidebar_mandate",
+        help="When ON, the bot submits real orders to binance.us. "
+             "⚠️ Real money at risk.",
+    )
+
+    if st.button("💾 Save Quick Risk", use_container_width=True, key="sidebar_save"):
+        overrides = {
+            "trading": {
+                "risk_per_trade_pct": sidebar_risk_pct,
+                "max_open_trades": sidebar_max_open,
+            },
+            "exchange": {
+                "max_capital_per_trade_pct": sidebar_cap_pct,
+            },
+            "mandate": {
+                "enabled": sidebar_mandate,
+            },
+            "saved_at": datetime.now().isoformat(),
+        }
+        os.makedirs("audit", exist_ok=True)
+        with open("audit/risk_overrides.json", "w", encoding="utf-8") as f:
+            json.dump(overrides, f, indent=2)
+        st.success("✓ Saved → audit/risk_overrides.json")
+        st.info("ℹ️ Restart the bot to apply. Click *Restart bot* below.")
+
+    st.markdown("---")
     st.markdown("### 🔭 Search")
-    search_q = st.text_input("Filter signals / positions", placeholder="SPY, BTC, EMA, …").strip().upper()
+    search_q = st.text_input(
+        "Filter signals / positions",
+        placeholder="SPY, BTC, EMA, …",
+    ).strip().upper()
+
+    with st.expander("🔌 Connect Binance.us (live trading)", expanded=False):
+        st.markdown(
+            """
+**To trade real money, the bot needs your binance.us API key.**
+
+1. Go to **binance.us → Account → API Management**
+2. Create a new API key
+   - ✅ Enable **Spot & Margin Trading**
+   - ❌ Don't enable Withdrawals
+   - Add your VPS IP `13.140.181.29` to the whitelist
+3. Copy the **API Key** and **Secret** into the VPS env:
+   ```bash
+   ssh root@13.140.181.29
+   # Edit the Coolify app env vars:
+   #   BINANCE_API_KEY=...
+   #   BINANCE_API_SECRET=...
+   ```
+   Or in the Coolify UI: *Resources → guaritradbot → Environment*
+4. Toggle **🟢 Mandate gate (LIVE trading)** above → **Save**
+5. **Restart the bot** (Coolify → *Restart* on the resource)
+6. Verify in the audit log:
+   ```bash
+   tail -f /data/coolify/applications/wyn2ah6rflg6ufwzpvzk436f/audit/audit.jsonl
+   ```
+   You should see `BROKER_CONNECTED` events with your balance.
+
+> ⚠️ Start with **max $20** on the account (see `max_position_usd`
+> in config.yaml). The mandate gate blocks anything bigger.
+"""
+        )
 
     st.markdown("---")
     st.caption(f"🕒 {datetime.now().strftime('%H:%M:%S')} CT")
@@ -1317,37 +1430,61 @@ with col_eq:
 with col_gauge:
     st.markdown('<div class="panel-title">🎯 Risk Exposure</div>',
                 unsafe_allow_html=True)
+    threshold_val = float(risk.get("risk_per_trade_pct", 1.0)) * max_open
     fig_gauge = go.Figure(go.Indicator(
         mode="gauge+number+delta",
         value=exposure_pct,
-        delta={"reference": float(risk.get("risk_per_trade_pct", 1.0)) * max_open,
-               "increasing": {"color": "#f72585"},
-               "decreasing": {"color": "#06d6a0"}},
+        delta={
+            "reference": threshold_val,
+            "increasing": {"color": "#f72585", "symbol": "▲"},
+            "decreasing": {"color": "#06d6a0", "symbol": "▼"},
+            "font": {"color": "#f72585", "size": 18, "family": "JetBrains Mono"},
+        },
         gauge={
-            "axis": {"range": [0, 100], "tickcolor": "#c5cce0",
-                     "tickfont": {"color": "#c5cce0"}},
+            "axis": {
+                "range": [0, 100],
+                "tickcolor": "#e8edf7",
+                "tickfont": {"color": "#e8edf7", "size": 13,
+                             "family": "JetBrains Mono"},
+                "tickwidth": 2,
+            },
             "bar": {"color": "#4cc9f0", "thickness": 0.3},
-            "bgcolor": "#1a1f3a",
+            "bgcolor": "#161b2e",
             "borderwidth": 0,
             "steps": [
-                {"range": [0, 30], "color": "rgba(6, 214, 160, 0.25)"},
-                {"range": [30, 70], "color": "rgba(255, 209, 102, 0.25)"},
-                {"range": [70, 100], "color": "rgba(247, 37, 133, 0.25)"},
+                {"range": [0, 30], "color": "rgba(6, 214, 160, 0.30)"},
+                {"range": [30, 70], "color": "rgba(255, 209, 102, 0.30)"},
+                {"range": [70, 100], "color": "rgba(247, 37, 133, 0.30)"},
             ],
             "threshold": {
-                "line": {"color": "#f72585", "width": 4},
-                "thickness": 0.8,
-                "value": float(risk.get("risk_per_trade_pct", 1.0)) * max_open,
+                "line": {"color": "#f72585", "width": 5},
+                "thickness": 0.85,
+                "value": threshold_val,
+                "valuefont": {"color": "#f72585", "size": 13,
+                              "family": "JetBrains Mono"},
             },
         },
-        number={"suffix": "%", "font": {"color": "#ccd6f6", "size": 30,
-                                        "family": "JetBrains Mono"}},
+        number={
+            "suffix": "%",
+            "font": {"color": "#e8edf7", "size": 38,
+                     "family": "JetBrains Mono"},
+        },
         domain={"x": [0, 1], "y": [0, 1]},
     ))
+    # Threshold label rendered below the gauge for clarity
+    fig_gauge.add_annotation(
+        x=0.5, y=-0.02, xref="paper", yref="paper",
+        text=f"<b>Max allowed: {threshold_val:.1f}%</b> "
+             f"(risk/trade × max open)",
+        showarrow=False,
+        font=dict(color="#c5cce0", size=11, family="JetBrains Mono"),
+        xanchor="center",
+    )
     fig_gauge.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#ccd6f6", family="JetBrains Mono"),
-        height=300, margin=dict(l=20, r=20, t=10, b=10),
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#e8edf7", family="JetBrains Mono"),
+        height=320, margin=dict(l=20, r=20, t=10, b=40),
     )
     st.plotly_chart(fig_gauge, use_container_width=True, theme=None)
 
