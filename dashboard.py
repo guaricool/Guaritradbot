@@ -2061,26 +2061,199 @@ with col_pos:
             unsafe_allow_html=True,
         )
     else:
-        rows = []
+        # Sprint 14: replace ugly dataframe with clickable cards.
+        # Each card shows full position info + a "View chart" toggle that
+        # expands a live 15m candlestick with entry/SL/TP markers below it.
+        if "open_pos_expanded" not in st.session_state:
+            st.session_state.open_pos_expanded = None
+
         for p, upnl, px in unrealized_breakdown:
             entry = p["entry_price"]
             notional = abs(entry * p["qty"])
             margin = (notional / balance * 100) if balance else 0.0
-            rows.append({
-                "Asset": p["asset"],
-                "Dir": p["direction"].upper(),
-                "Entry": f"${entry:.2f}",
-                "Now": f"${px:.2f}",
-                "Qty": f"{p['qty']:.4f}",
-                "PnL $": fmt_usd(upnl, 2),
-                "PnL %": fmt_pct((upnl / (entry * p["qty"]) * 100)
-                                 if entry * p["qty"] else 0.0, 2),
-                "SL": f"${p['stop_loss']:.2f}",
-                "TP": f"${p['take_profit']:.2f}",
-                "Strategy": p.get("strategy", "?"),
-                "Margin": f"{margin:.1f}%",
-            })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            pnl_pct = (upnl / (entry * p["qty"]) * 100) if entry * p["qty"] else 0.0
+            direction = p["direction"]
+            direction_class = "long" if direction == "long" else "short"
+            arrow = "▲" if direction == "long" else "▼"
+            pnl_class = "pos" if upnl > 0 else ("neg" if upnl < 0 else "neu")
+            pos_id = p.get("position_id", f"{p['asset']}_{entry:.2f}")
+            is_expanded = st.session_state.open_pos_expanded == pos_id
+
+            # Card visual
+            st.markdown(
+                f'<div class="signal-card {direction_class}" '
+                f'style="margin-bottom:6px;">'
+                f'<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">'
+                f'<div style="flex:1;">'
+                f'<div style="display:flex; align-items:baseline; gap:10px;">'
+                f'<span class="asset">{arrow} {p["asset"]}</span>'
+                f'<span style="color:#8892b0; font-size:0.78rem; font-family:JetBrains Mono;">'
+                f'{direction.upper()} · {p.get("strategy", "?")}'
+                f'</span>'
+                f'</div>'
+                f'<div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; '
+                f'margin-top:8px; font-family:JetBrains Mono; font-size:0.78rem;">'
+                f'<div><span style="color:#6b7390;">Entry</span><br>'
+                f'<span style="color:#d4dbe9; font-weight:700;">${entry:.2f}</span></div>'
+                f'<div><span style="color:#6b7390;">Now</span><br>'
+                f'<span style="color:#ffffff; font-weight:700;">${px:.2f}</span></div>'
+                f'<div><span style="color:#6b7390;">Qty</span><br>'
+                f'<span style="color:#d4dbe9; font-weight:700;">{p["qty"]:.4f}</span></div>'
+                f'<div><span style="color:#6b7390;">SL</span><br>'
+                f'<span style="color:#f72585; font-weight:700;">${p["stop_loss"]:.2f}</span></div>'
+                f'<div><span style="color:#6b7390;">TP</span><br>'
+                f'<span style="color:#06d6a0; font-weight:700;">${p["take_profit"]:.2f}</span></div>'
+                f'<div><span style="color:#6b7390;">Margin</span><br>'
+                f'<span style="color:#d4dbe9; font-weight:700;">{margin:.1f}%</span></div>'
+                f'</div>'
+                f'</div>'
+                f'<div style="text-align:right; min-width:120px;">'
+                f'<div class="kpi-value {pnl_class}" style="font-size:1.25rem; line-height:1.1;">'
+                f'{fmt_usd(upnl, 2)}'
+                f'</div>'
+                f'<div style="font-family:JetBrains Mono; font-size:0.78rem;" class="{pnl_class}">'
+                f'{fmt_pct(pnl_pct, 2)}'
+                f'</div>'
+                f'</div>'
+                f'</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+            # Toggle button — small, right-aligned
+            btn_label = "▲ Hide live chart" if is_expanded else "📈 View live chart"
+            if st.button(
+                btn_label,
+                key=f"toggle_chart_{pos_id}",
+                use_container_width=True,
+            ):
+                if is_expanded:
+                    st.session_state.open_pos_expanded = None
+                else:
+                    st.session_state.open_pos_expanded = pos_id
+                st.rerun()
+
+            # If expanded, render the live chart with markers
+            if is_expanded:
+                asset = p["asset"]
+                live_df = _live_ohlcv(asset, interval="15m", period="5d")
+                if live_df.empty or len(live_df) < 5:
+                    live_df = _load_csv(asset)
+                if not live_df.empty:
+                    close_col = next((c for c in ["Close", "close", "Adj Close"] if c in live_df.columns), None)
+                    ohlc = {
+                        "Open": next((c for c in ["Open"] if c in live_df.columns), None),
+                        "High": next((c for c in ["High"] if c in live_df.columns), None),
+                        "Low":  next((c for c in ["Low"]  if c in live_df.columns), None),
+                        "Close": close_col,
+                    }
+                    date_col = next((c for c in ["Datetime", "Date", "date"] if c in live_df.columns), None)
+                    x_vals = pd.to_datetime(live_df[date_col]) if date_col else pd.RangeIndex(len(live_df))
+
+                    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                        vertical_spacing=0.03, row_heights=[0.72, 0.28])
+                    if all(ohlc.values()):
+                        fig.add_trace(go.Candlestick(
+                            x=x_vals,
+                            open=live_df[ohlc["Open"]],
+                            high=live_df[ohlc["High"]],
+                            low=live_df[ohlc["Low"]],
+                            close=live_df[ohlc["Close"]],
+                            increasing=dict(line=dict(color="#06d6a0", width=1),
+                                            fillcolor="rgba(6, 214, 160, 0.6)"),
+                            decreasing=dict(line=dict(color="#f72585", width=1),
+                                            fillcolor="rgba(247, 37, 133, 0.6)"),
+                            name=asset,
+                            showlegend=False,
+                        ), row=1, col=1)
+                    else:
+                        fig.add_trace(go.Scatter(
+                            x=x_vals, y=live_df[close_col], mode="lines",
+                            line=dict(color="#4cc9f0", width=2),
+                            name=asset, showlegend=False,
+                        ), row=1, col=1)
+
+                    # Entry/SL/TP markers — only if entry_ts is recent enough
+                    entry_ts = pd.to_datetime(p.get("entry_ts"), unit="s")
+                    entry_in_window = (
+                        entry_ts >= x_vals.iloc[0]
+                        if hasattr(x_vals, "iloc") else True
+                    )
+                    if entry_in_window:
+                        # Entry line — cyan dashed
+                        fig.add_hline(
+                            y=entry, line=dict(color="#4cc9f0", width=2, dash="dot"),
+                            annotation_text=f"Entry ${entry:.2f}",
+                            annotation_position="right",
+                            annotation_font=dict(color="#4cc9f0", size=10,
+                                                 family="JetBrains Mono"),
+                            row=1, col=1,
+                        )
+                        # SL line — pink solid
+                        fig.add_hline(
+                            y=p["stop_loss"],
+                            line=dict(color="#f72585", width=1.5, dash="dash"),
+                            annotation_text=f"SL ${p['stop_loss']:.2f}",
+                            annotation_position="right",
+                            annotation_font=dict(color="#f72585", size=10,
+                                                 family="JetBrains Mono"),
+                            row=1, col=1,
+                        )
+                        # TP line — green solid
+                        fig.add_hline(
+                            y=p["take_profit"],
+                            line=dict(color="#06d6a0", width=1.5, dash="dash"),
+                            annotation_text=f"TP ${p['take_profit']:.2f}",
+                            annotation_position="right",
+                            annotation_font=dict(color="#06d6a0", size=10,
+                                                 family="JetBrains Mono"),
+                            row=1, col=1,
+                        )
+                        # Entry marker — triangle
+                        marker_symbol = "triangle-up" if direction == "long" else "triangle-down"
+                        marker_color = "#06d6a0" if direction == "long" else "#f72585"
+                        fig.add_trace(go.Scatter(
+                            x=[entry_ts], y=[entry],
+                            mode="markers",
+                            marker=dict(symbol=marker_symbol, size=16, color=marker_color,
+                                        line=dict(color="#0b0f1a", width=2)),
+                            name="ENTRY",
+                            hovertemplate=f"ENTRY @ ${entry:.2f}<br>{entry_ts}<extra></extra>",
+                            showlegend=False,
+                        ), row=1, col=1)
+
+                    # Volume
+                    vol_col = next((c for c in ["Volume", "volume"] if c in live_df.columns), None)
+                    if vol_col:
+                        colors = ["#06d6a0" if (i == 0 or live_df[close_col].iloc[i] >= live_df[close_col].iloc[i-1])
+                                  else "#f72585"
+                                  for i in range(len(live_df))]
+                        fig.add_trace(go.Bar(
+                            x=x_vals, y=live_df[vol_col], marker_color=colors, opacity=0.5,
+                            showlegend=False, name="Volume",
+                        ), row=2, col=1)
+
+                    fig.update_layout(
+                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                        font=dict(color="#ccd6f6", family="JetBrains Mono"),
+                        height=420, margin=dict(l=40, r=80, t=30, b=30),
+                        xaxis=dict(gridcolor="#1f2640", rangeslider=dict(visible=False)),
+                        xaxis2=dict(gridcolor="#1f2640"),
+                        yaxis=dict(gridcolor="#1f2640", title="Price ($)"),
+                        yaxis2=dict(gridcolor="#1f2640", title="Vol"),
+                        title=dict(
+                            text=(f"{asset} · {direction.upper()} · "
+                                  f"PnL {fmt_usd(upnl, 2)} ({fmt_pct(pnl_pct, 2)}) · "
+                                  f"Now ${px:.2f}"),
+                            font=dict(size=11, color="#8892b0"),
+                            x=0.01, xanchor="left",
+                        ),
+                        hovermode="x unified",
+                    )
+                    st.plotly_chart(fig, use_container_width=True, theme=None,
+                                    key=f"pos_chart_{pos_id}")
+                else:
+                    st.info(f"No data available for {asset} yet.")
 
 with col_sig:
     st.markdown('<div class="panel-title">🧠 Smart Signals (current cycle)</div>',
