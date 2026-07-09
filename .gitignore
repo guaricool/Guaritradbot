@@ -6,7 +6,9 @@ __pycache__/
 # Runtime state (regenerated on every bot run)
 latest_state.json
 audit/
-data_store/
+
+# data_store/ solo el state en raíz (NO src/data_store/ que es código)
+/data_store/
 
 # Env
 .env
