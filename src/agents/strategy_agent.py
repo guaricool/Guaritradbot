@@ -9,21 +9,84 @@ Fixes vs la versión previa:
    cambia cuando hay cruce. Antes siempre devolvía 1/-1 (backtest siempre
    invertido, sin cash).
 3. Mejor manejo de NaN.
+
+Sprint 10 — More signals (Carlos's "Equity curve waiting" issue):
+Las estrategias originales eran ultra-estrictas (solo cruce exacto en la
+última vela de RSI<30 o RSI>70). El bot estaba corriendo bien pero el
+mercado actual no tiene esos cruces → 0 señales todo el día. Ahora:
+
+- RSI: también dispara cuando está en zona (<35 o >65) sin requerir cruce
+  exacto, con TF 15m + 1h
+- MACD: detecta cruce en las últimas 3 barras (no solo la última) +
+  histogram turning
+- EMA: detecta cruce reciente (últimas 3 barras 4h) + zona tendencial
+- NUEVO: Stochastic oversold/overbought + Bollinger bounce + ADX trend
+  confirmation (PDF Manual indicators)
+- Deduplicación: no genera 2 señales del mismo asset/direction en mismo
+  ciclo
 """
 import pandas as pd
 import numpy as np
 
 
+def _was_in_zone_recently(series: pd.Series, threshold: float, lookback: int = 5, direction: str = "below") -> bool:
+    """True if the series crossed below/above `threshold` within last `lookback` bars.
+
+    direction='below' → looking for rsi crossing below threshold (oversold)
+    direction='above' → looking for rsi crossing above threshold (overbought)
+    """
+    if len(series) < 2:
+        return False
+    window = series.tail(lookback + 1)
+    if direction == "below":
+        # was >= threshold at some earlier bar AND is < threshold at the latest
+        return (window.iloc[:-1] >= threshold).any() and window.iloc[-1] < threshold
+    else:
+        return (window.iloc[:-1] <= threshold).any() and window.iloc[-1] > threshold
+
+
+def _was_crossed_recently(a: pd.Series, b: pd.Series, lookback: int = 3, direction: str = "up") -> bool:
+    """True if series `a` crossed above/below `b` within last `lookback` bars."""
+    if len(a) < 2 or len(b) < 2:
+        return False
+    diff = a - b
+    window = diff.tail(lookback + 1)
+    if direction == "up":
+        return (window.iloc[:-1] <= 0).any() and window.iloc[-1] > 0
+    else:
+        return (window.iloc[:-1] >= 0).any() and window.iloc[-1] < 0
+
+
 class StrategyAgent:
     """
     Analiza market_data y genera hipótesis de trade (entry signals).
+
+    Sprint 10: estrategia ampliada con 6 tipos de señales (antes solo 3),
+    incluyendo las del PDF Manual del Buen Trader (Stochastic, Bollinger,
+    ADX) y zonas más permisivas en RSI/MACD.
     """
 
     def __init__(self, strategy_params: dict = None):
         self.params = strategy_params or {
-            "rsi_oversold": 30,
+            "rsi_oversold": 30,         # cruce estricto
             "rsi_overbought": 70,
+            "rsi_zone_oversold": 35,   # zona permisiva (Sprint 10)
+            "rsi_zone_overbought": 65,
+            "stoch_oversold": 20,
+            "stoch_overbought": 80,
+            "bb_pct_b": 0.05,          # dentro del 5% de la banda
+            "adx_trend_min": 20,        # ADX > 20 = tendencia
         }
+
+    def _add_hyp(self, hypotheses, asset, tf, direction, strategy, price, **extras):
+        hypotheses.append({
+            "asset": asset,
+            "tf": tf,
+            "direction": direction,
+            "strategy": strategy,
+            "price": price,
+            **extras,
+        })
 
     def evaluate_strategies(self, inputs: dict, state: dict):
         market_data = state.get("analyze_market", {}).get("market_data", {})
@@ -31,143 +94,313 @@ class StrategyAgent:
 
         hypotheses = []
 
-        # SPY / QQQ → mean reversion con RSI
+        # ============================================================
+        # SPY / QQQ → mean reversion con RSI (15m + 1h)
+        # ============================================================
         for asset in ("SPY", "QQQ"):
             for tf in ("15m", "1h"):
                 df = market_data.get(asset, {}).get(tf)
-                if df is None:
-                    continue
-                if len(df) == 0:
+                if df is None or len(df) < 20:
                     continue
                 if "RSI" not in df.columns.values:
                     continue
+
+                rsi = df["RSI"]
                 last = df.iloc[-1]
-                prev = df.iloc[-2]
-                rsi_now = float(last["RSI"])
-                rsi_prev = float(prev["RSI"])
                 price = float(last["Close"])
-                oversold = self.params.get("rsi_oversold", 30)
-                overbought = self.params.get("rsi_overbought", 70)
+                rsi_now = float(last["RSI"])
+                rsi_prev = float(df["RSI"].iloc[-2])
+                atr = float(last.get("ATR_14", 0) or 0)
 
-                # Entry LONG cuando RSI cruza POR DEBAJO de oversold
+                oversold = self.params["rsi_oversold"]
+                overbought = self.params["rsi_overbought"]
+                zone_oversold = self.params["rsi_zone_oversold"]
+                zone_overbought = self.params["rsi_zone_overbought"]
+
+                # A) Cruce estricto (última vela)
                 if rsi_prev >= oversold and rsi_now < oversold:
-                    hypotheses.append(
-                        {
-                            "asset": asset,
-                            "tf": tf,
-                            "strategy": f"MeanReversion_LONG_RSI<{oversold}",
-                            "direction": "long",
-                            "price": price,
-                            "rsi_at_signal": rsi_now,
-                            "atr_at_signal": float(last.get("ATR_14", 0)),
-                        }
+                    self._add_hyp(
+                        hypotheses, asset, tf, "long",
+                        f"MeanReversion_LONG_RSI<{oversold}",
+                        price, rsi_at_signal=rsi_now, atr_at_signal=atr,
                     )
-                # Entry SHORT cuando RSI cruza POR ENCIMA de overbought
                 elif rsi_prev <= overbought and rsi_now > overbought:
-                    hypotheses.append(
-                        {
-                            "asset": asset,
-                            "tf": tf,
-                            "strategy": f"MeanReversion_SHORT_RSI>{overbought}",
-                            "direction": "short",
-                            "price": price,
-                            "rsi_at_signal": rsi_now,
-                            "atr_at_signal": float(last.get("ATR_14", 0)),
-                        }
+                    self._add_hyp(
+                        hypotheses, asset, tf, "short",
+                        f"MeanReversion_SHORT_RSI>{overbought}",
+                        price, rsi_at_signal=rsi_now, atr_at_signal=atr,
                     )
+                # B) Zona RSI (permisiva) — RSI < 35 → long bias
+                elif rsi_now < zone_oversold and tf == "1h":
+                    # Check si en las últimas 5 barras cruzó la zona
+                    if _was_in_zone_recently(rsi, zone_oversold, lookback=5, direction="below"):
+                        self._add_hyp(
+                            hypotheses, asset, tf, "long",
+                            f"MeanReversion_LONG_RSI<{zone_oversold}_zone",
+                            price, rsi_at_signal=rsi_now, atr_at_signal=atr,
+                        )
+                elif rsi_now > zone_overbought and tf == "1h":
+                    if _was_in_zone_recently(rsi, zone_overbought, lookback=5, direction="above"):
+                        self._add_hyp(
+                            hypotheses, asset, tf, "short",
+                            f"MeanReversion_SHORT_RSI>{zone_overbought}_zone",
+                            price, rsi_at_signal=rsi_now, atr_at_signal=atr,
+                        )
 
-        # BTC → breakout por cruce MACD
+        # ============================================================
+        # BTC → MACD cross (1h) con tolerancia + histogram turning
+        # ============================================================
         for asset in ("BTC-USD", "BTCUSDT"):
             df = market_data.get(asset, {}).get("1h")
-            if df is None:
-                continue
-            if len(df) == 0:
+            if df is None or len(df) < 30:
                 continue
             if "MACD" not in df.columns.values or "MACD_Signal" not in df.columns.values:
                 continue
+
+            macd = df["MACD"]
+            sig = df["MACD_Signal"]
+            hist = macd - sig
             last = df.iloc[-1]
-            prev = df.iloc[-2]
-            macd_now = float(last["MACD"])
-            sig_now = float(last["MACD_Signal"])
-            macd_prev = float(prev["MACD"])
-            sig_prev = float(prev["MACD_Signal"])
             price = float(last["Close"])
+            atr = float(last.get("ATR_14", 0) or 0)
 
-            if macd_prev <= sig_prev and macd_now > sig_now:  # cruce alcista
-                hypotheses.append(
-                    {
-                        "asset": asset,
-                        "tf": "1h",
-                        "strategy": "MACD_BullCross",
-                        "direction": "long",
-                        "price": price,
-                        "macd_at_signal": macd_now,
-                        "atr_at_signal": float(last.get("ATR_14", 0)),
-                    }
-                )
-            elif macd_prev >= sig_prev and macd_now < sig_now:  # cruce bajista
-                hypotheses.append(
-                    {
-                        "asset": asset,
-                        "tf": "1h",
-                        "strategy": "MACD_BearCross",
-                        "direction": "short",
-                        "price": price,
-                        "macd_at_signal": macd_now,
-                        "atr_at_signal": float(last.get("ATR_14", 0)),
-                    }
-                )
+            # A) Cruce estricto en última vela
+            macd_now = float(macd.iloc[-1])
+            sig_now = float(sig.iloc[-1])
+            macd_prev = float(macd.iloc[-2])
+            sig_prev = float(sig.iloc[-2])
 
-        # GLD / USO → trend following con cruce EMA
+            if macd_prev <= sig_prev and macd_now > sig_now:
+                self._add_hyp(
+                    hypotheses, asset, "1h", "long",
+                    "MACD_BullCross", price,
+                    macd_at_signal=macd_now, atr_at_signal=atr,
+                )
+            elif macd_prev >= sig_prev and macd_now < sig_now:
+                self._add_hyp(
+                    hypotheses, asset, "1h", "short",
+                    "MACD_BearCross", price,
+                    macd_at_signal=macd_now, atr_at_signal=atr,
+                )
+            # B) Cruce en últimas 3 barras (no solo la última)
+            elif _was_crossed_recently(macd, sig, lookback=3, direction="up"):
+                self._add_hyp(
+                    hypotheses, asset, "1h", "long",
+                    "MACD_BullCross_recent", price,
+                    macd_at_signal=macd_now, atr_at_signal=atr,
+                )
+            elif _was_crossed_recently(macd, sig, lookback=3, direction="down"):
+                self._add_hyp(
+                    hypotheses, asset, "1h", "short",
+                    "MACD_BearCross_recent", price,
+                    macd_at_signal=macd_now, atr_at_signal=atr,
+                )
+            # C) MACD histogram turning (momentum shift)
+            elif len(hist) >= 3:
+                h_prev = float(hist.iloc[-2])
+                h_prev2 = float(hist.iloc[-3])
+                h_now = float(hist.iloc[-1])
+                # turning bullish: was negative and getting more negative, now rising
+                if h_prev2 < h_prev < 0 and h_now > h_prev:
+                    self._add_hyp(
+                        hypotheses, asset, "1h", "long",
+                        "MACD_HistTurn_Bull", price,
+                        macd_at_signal=macd_now, atr_at_signal=atr,
+                    )
+                # turning bearish: was positive and getting more positive, now falling
+                elif h_prev2 > h_prev > 0 and h_now < h_prev:
+                    self._add_hyp(
+                        hypotheses, asset, "1h", "short",
+                        "MACD_HistTurn_Bear", price,
+                        macd_at_signal=macd_now, atr_at_signal=atr,
+                    )
+
+        # ============================================================
+        # GLD / USO → EMA trend (4h preferred, 1h fallback)
+        # ============================================================
         for asset in ("GLD", "USO"):
             df = market_data.get(asset, {}).get("4h")
-            if df is None or len(df) == 0:
+            tf_used = "4h"
+            if df is None or len(df) < 60:
                 df = market_data.get(asset, {}).get("1h")
-            if df is None or len(df) == 0:
+                tf_used = "1h"
+            if df is None or len(df) < 60:
                 continue
             if "EMA_20" not in df.columns.values or "EMA_50" not in df.columns.values:
                 continue
-            last = df.iloc[-1]
-            prev = df.iloc[-2]
-            ema20_now = float(last["EMA_20"])
-            ema50_now = float(last["EMA_50"])
-            ema20_prev = float(prev["EMA_20"])
-            ema50_prev = float(prev["EMA_50"])
-            price = float(last["Close"])
 
-            if ema20_prev <= ema50_prev and ema20_now > ema50_now:  # golden cross
-                hypotheses.append(
-                    {
-                        "asset": asset,
-                        "tf": "4h" if "4h" in market_data.get(asset, {}) else "1h",
-                        "strategy": "EMA_GoldenCross",
-                        "direction": "long",
-                        "price": price,
-                        "ema20_at_signal": ema20_now,
-                        "ema50_at_signal": ema50_now,
-                        "atr_at_signal": float(last.get("ATR_14", 0)),
-                    }
+            ema20 = df["EMA_20"]
+            ema50 = df["EMA_50"]
+            last = df.iloc[-1]
+            price = float(last["Close"])
+            atr = float(last.get("ATR_14", 0) or 0)
+            adx_now = float(last.get("ADX_14", 0) or 0)
+
+            ema20_now = float(ema20.iloc[-1])
+            ema50_now = float(ema50.iloc[-1])
+            ema20_prev = float(ema20.iloc[-2])
+            ema50_prev = float(ema50.iloc[-2])
+
+            # A) Cruce estricto
+            if ema20_prev <= ema50_prev and ema20_now > ema50_now:
+                self._add_hyp(
+                    hypotheses, asset, tf_used, "long",
+                    "EMA_GoldenCross", price,
+                    ema20_at_signal=ema20_now, ema50_at_signal=ema50_now,
+                    atr_at_signal=atr,
                 )
-            elif ema20_prev >= ema50_prev and ema20_now < ema50_now:  # death cross
-                hypotheses.append(
-                    {
-                        "asset": asset,
-                        "tf": "4h" if "4h" in market_data.get(asset, {}) else "1h",
-                        "strategy": "EMA_DeathCross",
-                        "direction": "short",
-                        "price": price,
-                        "ema20_at_signal": ema20_now,
-                        "ema50_at_signal": ema50_now,
-                        "atr_at_signal": float(last.get("ATR_14", 0)),
-                    }
+            elif ema20_prev >= ema50_prev and ema20_now < ema50_now:
+                self._add_hyp(
+                    hypotheses, asset, tf_used, "short",
+                    "EMA_DeathCross", price,
+                    ema20_at_signal=ema20_now, ema50_at_signal=ema50_now,
+                    atr_at_signal=atr,
                 )
+            # B) Cruce en últimas 3 barras
+            elif _was_crossed_recently(ema20, ema50, lookback=3, direction="up"):
+                self._add_hyp(
+                    hypotheses, asset, tf_used, "long",
+                    "EMA_GoldenCross_recent", price,
+                    ema20_at_signal=ema20_now, ema50_at_signal=ema50_now,
+                    atr_at_signal=atr,
+                )
+            elif _was_crossed_recently(ema20, ema50, lookback=3, direction="down"):
+                self._add_hyp(
+                    hypotheses, asset, tf_used, "short",
+                    "EMA_DeathCross_recent", price,
+                    ema20_at_signal=ema20_now, ema50_at_signal=ema50_now,
+                    atr_at_signal=atr,
+                )
+
+        # ============================================================
+        # NUEVO — Stochastic oversold/overbought (1h, todos los assets)
+        # ============================================================
+        for asset in ("SPY", "QQQ", "BTC-USD", "GLD", "USO"):
+            df = market_data.get(asset, {}).get("1h")
+            if df is None or len(df) < 20:
+                continue
+            if "Stoch_K" not in df.columns.values or "Stoch_D" not in df.columns.values:
+                continue
+
+            stoch_k = df["Stoch_K"]
+            stoch_d = df["Stoch_D"]
+            last = df.iloc[-1]
+            price = float(last["Close"])
+            atr = float(last.get("ATR_14", 0) or 0)
+            k_now = float(stoch_k.iloc[-1])
+            d_now = float(stoch_d.iloc[-1])
+            k_prev = float(stoch_k.iloc[-2])
+
+            # Cruce estocástico en zona oversold/overbought
+            if k_prev < self.params["stoch_oversold"] and k_now > d_now and k_now < 30:
+                # K cruzó POR ARRIBA de D en zona oversold = señal long
+                self._add_hyp(
+                    hypotheses, asset, "1h", "long",
+                    "Stoch_Oversold_Cross", price,
+                    stoch_k=k_now, atr_at_signal=atr,
+                )
+            elif k_prev > self.params["stoch_overbought"] and k_now < d_now and k_now > 70:
+                self._add_hyp(
+                    hypotheses, asset, "1h", "short",
+                    "Stoch_Overbought_Cross", price,
+                    stoch_k=k_now, atr_at_signal=atr,
+                )
+
+        # ============================================================
+        # NUEVO — Bollinger bounce (4h, todos los assets)
+        # Si precio toca banda inferior + RSI<40 → long bounce
+        # Si precio toca banda superior + RSI>60 → short fade
+        # ============================================================
+        for asset in ("SPY", "QQQ", "BTC-USD", "GLD", "USO"):
+            df = market_data.get(asset, {}).get("4h")
+            if df is None or len(df) < 25:
+                continue
+            for col in ("Close", "BB_Upper", "BB_Lower", "RSI", "ATR_14"):
+                if col not in df.columns.values:
+                    break
+            else:
+                last = df.iloc[-1]
+                price = float(last["Close"])
+                bb_upper = float(last["BB_Upper"])
+                bb_lower = float(last["BB_Lower"])
+                bb_range = bb_upper - bb_lower
+                if bb_range == 0:
+                    continue
+                rsi = float(last["RSI"])
+                atr = float(last["ATR_14"] or 0)
+
+                # %B = (price - lower) / (upper - lower). <0 = debajo de banda inf.
+                pct_b = (price - bb_lower) / bb_range
+
+                # Cerca de banda inferior + RSI bajo → long bounce
+                if pct_b < self.params["bb_pct_b"] and rsi < 45:
+                    self._add_hyp(
+                        hypotheses, asset, "4h", "long",
+                        "BB_LowerBounce", price,
+                        pct_b=pct_b, rsi_at_signal=rsi, atr_at_signal=atr,
+                    )
+                # Cerca de banda superior + RSI alto → short fade
+                elif pct_b > 1 - self.params["bb_pct_b"] and rsi > 55:
+                    self._add_hyp(
+                        hypotheses, asset, "4h", "short",
+                        "BB_UpperFade", price,
+                        pct_b=pct_b, rsi_at_signal=rsi, atr_at_signal=atr,
+                    )
+
+        # ============================================================
+        # NUEVO — Soporte / Resistencia bounce (1d para confirmar)
+        # Si precio cerca de soporte 50-periodos → long
+        # Si precio cerca de resistencia 50-periodos → short
+        # ============================================================
+        for asset in ("SPY", "QQQ", "BTC-USD", "GLD", "USO"):
+            df = market_data.get(asset, {}).get("4h")
+            if df is None or len(df) < 55:
+                continue
+            for col in ("Close", "Support_50", "Resistance_50", "ATR_14"):
+                if col not in df.columns.values:
+                    break
+            else:
+                last = df.iloc[-1]
+                price = float(last["Close"])
+                support = float(last["Support_50"])
+                resistance = float(last["Resistance_50"])
+                atr = float(last["ATR_14"] or 0)
+
+                # Cerca de soporte (dentro de 1 ATR)
+                if support > 0 and abs(price - support) < atr * 1.5 and price > support:
+                    self._add_hyp(
+                        hypotheses, asset, "4h", "long",
+                        "Support_Bounce", price,
+                        support_level=support, atr_at_signal=atr,
+                    )
+                # Cerca de resistencia (dentro de 1 ATR)
+                elif resistance > 0 and abs(price - resistance) < atr * 1.5 and price < resistance:
+                    self._add_hyp(
+                        hypotheses, asset, "4h", "short",
+                        "Resistance_Fade", price,
+                        resistance_level=resistance, atr_at_signal=atr,
+                    )
+
+        # ============================================================
+        # Dedupe: max 1 señal por (asset, direction) — el bot decide
+        # el resto en RiskManager
+        # ============================================================
+        seen = set()
+        deduped = []
+        for h in hypotheses:
+            key = (h["asset"], h["direction"])
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(h)
+        hypotheses = deduped
 
         if hypotheses:
             print(f"[StrategyAgent] → {len(hypotheses)} hipótesis nuevas:")
             for h in hypotheses:
                 print(f"   • {h['direction'].upper():5} {h['asset']:8} @ ${h['price']:.2f} via {h['strategy']}")
         else:
-            print("[StrategyAgent] → 0 hipótesis (sin cruces detectados)")
+            print("[StrategyAgent] → 0 hipótesis (sin condiciones activas)")
 
         return {"hypotheses": hypotheses}
 
