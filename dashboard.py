@@ -1020,20 +1020,33 @@ for asset in ASSETS_ALL:
         movers.append((asset, px, pct, spark))
 movers.sort(key=lambda m: abs(m[2]), reverse=True)
 
-m_cols = st.columns(len(movers))
-for col, (asset, px, pct, spark) in zip(m_cols, movers):
-    cls = color_class(pct)
-    arrow = "▲" if pct >= 0 else "▼"
-    with col:
-        st.markdown(
-            f'<div class="kpi-card">'
-            f'<div class="kpi-label">{asset}</div>'
-            f'<div class="kpi-value {cls}">${px:,.2f}</div>'
-            f'<div class="kpi-delta">{arrow} {pct:+.2f}% · 4h</div>'
-            f'<div style="margin-top:6px;">{sparkline(spark, color="#06d6a0" if pct >= 0 else "#f72585", height=36, width=160)}</div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
+# Note: latest_state.json omits DataFrames from JSON serialization, so
+# market_data_raw is mostly placeholders. movers can legitimately be empty
+# on first load (or while the bot is between cycles). Show a graceful
+# fallback instead of crashing on st.columns(0).
+if not movers:
+    st.markdown(
+        '<div class="panel" style="text-align:center; padding:18px; color:#8892b0;">'
+        'Top Movers se actualizará cuando el bot termine el próximo ciclo '
+        '(cada hora). Mientras tanto, los precios live están en el <b>ticker bar</b> '
+        'de arriba y los charts por asset abajo.</div>',
+        unsafe_allow_html=True,
+    )
+else:
+    m_cols = st.columns(len(movers))
+    for col, (asset, px, pct, spark) in zip(m_cols, movers):
+        cls = color_class(pct)
+        arrow = "▲" if pct >= 0 else "▼"
+        with col:
+            st.markdown(
+                f'<div class="kpi-card">'
+                f'<div class="kpi-label">{asset}</div>'
+                f'<div class="kpi-value {cls}">${px:,.2f}</div>'
+                f'<div class="kpi-delta">{arrow} {pct:+.2f}% · 4h</div>'
+                f'<div style="margin-top:6px;">{sparkline(spark, color="#06d6a0" if pct >= 0 else "#f72585", height=36, width=160)}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
 
 # ============================================================
