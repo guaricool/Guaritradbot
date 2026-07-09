@@ -5,8 +5,11 @@ execution_mode: "auto"      # "auto" | "human_in_the_loop"
 optimize_on_start: false
 
 exchange:
-  name: "binance"
-  use_testnet: true
+  # Sprint 8 fix: Carlos vive en USA, Binance global (binance.com + testnet) está bloqueado.
+  # binance.us es la única opción. NO tiene testnet propio → siempre live (sin sandbox).
+  # mandate.enabled=false mantiene el modo paper — el broker lee data real pero NO ejecuta trades.
+  name: "binanceus"
+  use_testnet: false
   max_capital_per_trade_pct: 10  # CAP de exposición por trade, NO el riesgo real
 
 trading:
