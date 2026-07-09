@@ -469,25 +469,39 @@ CUSTOM_CSS = """
   }
   .stTabs [data-baseweb="tab-border"] { display: none !important; }
 
-  /* ---------- BUTTONS (Save risk settings, filter chips) ---------- */
+  /* ---------- BUTTONS (Save risk settings, filter chips, mode toggle) ---------- */
   .stButton > button {
     background: linear-gradient(135deg, #1d2342 0%, #2a3258 100%) !important;
-    color: #e8edf7 !important;
+    color: #ffffff !important;
     border: 1px solid #353f6a !important;
-    font-weight: 700 !important;
+    font-weight: 800 !important;
     font-family: 'JetBrains Mono', monospace !important;
     letter-spacing: 0.04em;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
     transition: all 0.15s;
+    opacity: 1 !important;
   }
   .stButton > button:hover {
     background: linear-gradient(135deg, #2a3258 0%, #353f6a 100%) !important;
     border-color: #4cc9f0 !important;
-    color: #4cc9f0 !important;
+    color: #ffffff !important;
     transform: translateY(-1px);
   }
   .stButton > button:focus {
     border-color: #4cc9f0 !important;
     box-shadow: 0 0 0 3px rgba(76, 201, 240, 0.3) !important;
+  }
+  /* Disabled buttons — dark bg + dim text (NOT faded opacity, which kills
+     contrast). Ensures "Stay PAPER" / "Stay LIVE" remain readable when
+     one of the two is disabled. */
+  .stButton > button:disabled,
+  .stButton > button[disabled] {
+    background: #0d1224 !important;
+    color: #6b7390 !important;
+    border: 1px solid #2a3050 !important;
+    opacity: 1 !important;
+    text-shadow: none !important;
+    cursor: not-allowed !important;
   }
 
   /* The "Save risk settings" primary button — make it pop more */
@@ -496,6 +510,7 @@ CUSTOM_CSS = """
     color: #0a0e1c !important;
     border: none !important;
     font-weight: 800 !important;
+    text-shadow: none !important;
   }
   .stButton > button[kind="primary"]:hover {
     background: linear-gradient(135deg, #05b386 0%, #06d6a0 100%) !important;
@@ -927,6 +942,77 @@ def _live_binance_balance() -> dict | None:
         return None
 
 
+@st.cache_data(ttl=5)
+def _live_ohlcv(asset: str, interval: str = "15m", period: str = "5d") -> pd.DataFrame:
+    """Fetch live OHLCV candles via yfinance.
+
+    Sprint 13: Used by the live tick stream + the per-asset chart to show
+    REAL-TIME price action, not the stale bot-cache CSVs (which only
+    update on each hourly cycle).
+
+    interval: 1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h
+    period:   1d, 5d, 1mo, etc. (must match interval)
+
+    Cached 5s — same as default auto-refresh. Returns empty DataFrame on
+    failure.
+    """
+    try:
+        import yfinance as yf
+        t = yf.Ticker(asset)
+        df = t.history(period=period, interval=interval)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = df.dropna(how="all")
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=3)
+def _live_tick(asset: str) -> dict | None:
+    """Fetch a single real-time tick (last price + intraday change).
+
+    Sprint 13: Used for the live tick stream panel that updates every
+    auto-refresh. Cached 3s so multiple widgets in the same refresh
+    cycle share one API call.
+    """
+    try:
+        import yfinance as yf
+        t = yf.Ticker(asset)
+        fi = getattr(t, "fast_info", None) or {}
+        price = fi.get("lastPrice") or fi.get("last_price")
+        prev = fi.get("previousClose") or fi.get("previous_close")
+        day_high = fi.get("dayHigh") or fi.get("day_high")
+        day_low = fi.get("dayLow") or fi.get("day_low")
+        year_high = fi.get("yearHigh") or fi.get("year_high")
+        year_low = fi.get("yearLow") or fi.get("year_low")
+        volume = fi.get("lastVolume") or fi.get("last_volume") or fi.get("threeMonthAverageVolume")
+        if price is None:
+            hist = t.history(period="1d", interval="1m")
+            if not hist.empty:
+                price = float(hist["Close"].iloc[-1])
+                if prev is None and len(hist) >= 2:
+                    prev = float(hist["Close"].iloc[0])
+        if price is None:
+            return None
+        return {
+            "price": float(price),
+            "prev_close": float(prev) if prev else None,
+            "change": float(price - prev) if prev else 0.0,
+            "change_pct": ((price - prev) / prev * 100) if prev else 0.0,
+            "day_high": float(day_high) if day_high else None,
+            "day_low": float(day_low) if day_low else None,
+            "year_high": float(year_high) if year_high else None,
+            "year_low": float(year_low) if year_low else None,
+            "volume": float(volume) if volume else None,
+            "fetched_at": datetime.now().isoformat(timespec="seconds"),
+        }
+    except Exception:
+        return None
+
+
 # ============================================================
 #  HELPERS
 # ============================================================
@@ -1134,10 +1220,11 @@ with st.sidebar:
     st.markdown("### ⚙️ Cockpit Controls")
 
     refresh_sec = st.selectbox(
-        "Auto-refresh",
-        options=[5, 15, 30, 60, 0],
+        "Auto-refresh (live ticks)",
+        options=[2, 5, 10, 15, 30, 60, 0],
         index=1,
         format_func=lambda x: "Off" if x == 0 else f"{x}s",
+        help="How often the dashboard refreshes. 5s default = real-time feel.",
     )
 
     show_news_panel = st.checkbox("News slide-out panel", value=False)
@@ -1689,11 +1776,82 @@ with col_cd:
 st.markdown('<div class="panel-title">📊 Live Market — buy/sell zones</div>',
             unsafe_allow_html=True)
 
+# ============================================================
+# Live Tick Stream panel (Sprint 13)
+# Sprint 13: real-time tick-by-tick view of all 5 assets. Updates every
+# auto-refresh (5s default). Each card shows: last price, $ change,
+# % change, day high/low, year high/low, volume.
+# ============================================================
+tick_cols = st.columns(len(ASSETS_ALL))
+for col, asset in zip(tick_cols, ASSETS_ALL):
+    with col:
+        tick = _live_tick(asset)
+        if tick is None:
+            st.markdown(
+                f'<div class="panel" style="text-align:center; padding:12px;">'
+                f'<div style="color:#8892b0; font-size:0.75rem;">{asset}</div>'
+                f'<div style="color:#6b7390; font-size:0.9rem;">— loading —</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            continue
+        cls = "pos" if tick["change"] > 0 else ("neg" if tick["change"] < 0 else "neu")
+        arrow = "▲" if tick["change"] > 0 else ("▼" if tick["change"] < 0 else "●")
+        # Day high/low bar
+        dh = tick.get("day_high") or tick["price"]
+        dl = tick.get("day_low") or tick["price"]
+        day_range_pct = 0.0
+        if dh and dl and dh > dl:
+            day_range_pct = ((tick["price"] - dl) / (dh - dl)) * 100
+            day_range_pct = max(0, min(100, day_range_pct))
+        # 52-week position
+        yh = tick.get("year_high") or tick["price"]
+        yl = tick.get("year_low") or tick["price"]
+        ytd_range_pct = 50.0
+        if yh and yl and yh > yl:
+            ytd_range_pct = ((tick["price"] - yl) / (yh - yl)) * 100
+            ytd_range_pct = max(0, min(100, ytd_range_pct))
+
+        st.markdown(
+            f'<div class="panel" style="padding:10px 12px;">'
+            f'<div style="display:flex; justify-content:space-between; align-items:baseline;">'
+            f'<span style="font-family:JetBrains Mono; font-weight:800; color:#c5cce0; font-size:0.85rem;">{asset}</span>'
+            f'<span style="font-family:JetBrains Mono; font-size:0.65rem; color:#6b7390;">live</span>'
+            f'</div>'
+            f'<div style="font-family:JetBrains Mono; font-weight:800; font-size:1.4rem; color:#ffffff; margin:4px 0 2px;">'
+            f'${tick["price"]:,.2f}'
+            f'</div>'
+            f'<div style="font-family:JetBrains Mono; font-size:0.8rem;" class="{cls}">'
+            f'{arrow} {tick["change"]:+.2f} ({tick["change_pct"]:+.2f}%)'
+            f'</div>'
+            f'<div style="margin-top:6px;">'
+            f'<div style="display:flex; justify-content:space-between; font-size:0.62rem; color:#8892b0; margin-bottom:1px;">'
+            f'<span>L ${dl:,.2f}</span><span>Day H ${dh:,.2f}</span>'
+            f'</div>'
+            f'<div style="background:#1a1f3a; height:3px; border-radius:2px; overflow:hidden;">'
+            f'<div style="background:linear-gradient(90deg, #f72585, #ffd166, #06d6a0); height:100%; '
+            f'width:{day_range_pct:.0f}%; border-radius:2px;"></div>'
+            f'</div>'
+            f'</div>'
+            f'<div style="margin-top:6px; font-size:0.62rem; color:#6b7390;">'
+            f'52w: ${yl:,.2f} – ${yh:,.2f} ({ytd_range_pct:.0f}%)'
+            f'</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+# Per-asset chart tabs — use LIVE OHLCV (15m, 5d) for tight time-range detail
 asset_tabs = st.tabs([f" {a} " for a in ASSETS_ALL])
 
 for tab, asset in zip(asset_tabs, ASSETS_ALL):
     with tab:
-        df = _load_csv(asset)
+        # Sprint 13: live 15m candles from yfinance (5d window) for tight
+        # detail. Falls back to bot CSV cache if yfinance fails.
+        df = _live_ohlcv(asset, interval="15m", period="5d")
+        live_source = True
+        if df.empty or len(df) < 5:
+            df = _load_csv(asset)
+            live_source = False
         if df.empty:
             st.info(f"No cached data for {asset} yet. Bot will populate on next cycle.")
             continue
@@ -1751,19 +1909,96 @@ for tab, asset in zip(asset_tabs, ASSETS_ALL):
                 x=x_vals, y=df[vol_col], marker_color=colors, opacity=0.5,
                 showlegend=False, name="Volume",
             ), row=2, col=1)
-        fig.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#ccd6f6", family="JetBrains Mono"),
-            height=380, margin=dict(l=40, r=20, t=10, b=30),
-            xaxis=dict(gridcolor="#1f2640"),
-            xaxis2=dict(gridcolor="#1f2640"),
-            yaxis=dict(gridcolor="#1f2640", title="Price ($)"),
-            yaxis2=dict(gridcolor="#1f2640", title="Vol"),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                        xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
-            hovermode="x unified",
-        )
-        st.plotly_chart(fig, use_container_width=True, theme=None)
+        # Sprint 13: render real candlesticks (not just line) so user sees
+        # the actual OHLC of each 15m bar. OHLC columns may be capitalised
+        # differently between yfinance and the bot CSVs.
+        ohlc_map = {
+            "Open": next((c for c in ["Open"] if c in df.columns), None),
+            "High": next((c for c in ["High"] if c in df.columns), None),
+            "Low":  next((c for c in ["Low"]  if c in df.columns), None),
+            "Close": close_col,
+        }
+        if all(ohlc_map.values()):
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                vertical_spacing=0.03, row_heights=[0.72, 0.28])
+            fig.add_trace(go.Candlestick(
+                x=x_vals,
+                open=df[ohlc_map["Open"]],
+                high=df[ohlc_map["High"]],
+                low=df[ohlc_map["Low"]],
+                close=df[ohlc_map["Close"]],
+                increasing=dict(line=dict(color="#06d6a0", width=1),
+                                fillcolor="rgba(6, 214, 160, 0.6)"),
+                decreasing=dict(line=dict(color="#f72585", width=1),
+                                fillcolor="rgba(247, 37, 133, 0.6)"),
+                name=f"{asset}",
+                showlegend=False,
+                hovertemplate=f"<b>%{{x}}</b><br>"
+                              f"O: %{{open:.2f}} H: %{{high:.2f}} "
+                              f"L: %{{low:.2f}} C: %{{close:.2f}}<extra></extra>",
+            ), row=1, col=1)
+            # Overlays: BUY/SELL markers
+            if buys_x:
+                fig.add_trace(go.Scatter(
+                    x=buys_x, y=buys_y, mode="markers",
+                    marker=dict(symbol="triangle-up", size=14, color="#06d6a0",
+                                line=dict(color="#0b0f1a", width=1.5)),
+                    name="BUY", hovertemplate="BUY @ $%{y:.2f}<extra></extra>",
+                ), row=1, col=1)
+            if sells_x:
+                fig.add_trace(go.Scatter(
+                    x=sells_x, y=sells_y, mode="markers",
+                    marker=dict(symbol="triangle-down", size=14, color="#f72585",
+                                line=dict(color="#0b0f1a", width=1.5)),
+                    name="SELL", hovertemplate="SELL @ $%{y:.2f}<extra></extra>",
+                ), row=1, col=1)
+            vol_col = next((c for c in ["Volume", "volume"] if c in df.columns), None)
+            if vol_col:
+                colors = ["#06d6a0" if (i == 0 or df[close_col].iloc[i] >= df[close_col].iloc[i-1])
+                          else "#f72585"
+                          for i in range(len(df))]
+                fig.add_trace(go.Bar(
+                    x=x_vals, y=df[vol_col], marker_color=colors, opacity=0.5,
+                    showlegend=False, name="Volume",
+                ), row=2, col=1)
+            # Source badge so user knows if this is live or cached
+            source_badge = "🟢 LIVE 15m" if live_source else "🟡 cached"
+            fig.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#ccd6f6", family="JetBrains Mono"),
+                height=420, margin=dict(l=40, r=20, t=30, b=30),
+                xaxis=dict(gridcolor="#1f2640", rangeslider=dict(visible=False)),
+                xaxis2=dict(gridcolor="#1f2640"),
+                yaxis=dict(gridcolor="#1f2640", title="Price ($)"),
+                yaxis2=dict(gridcolor="#1f2640", title="Vol"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                            xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
+                hovermode="x unified",
+                title=dict(
+                    text=f"{asset} · {source_badge}",
+                    font=dict(size=11, color="#8892b0"),
+                    x=0.01, xanchor="left",
+                ),
+            )
+            st.plotly_chart(fig, use_container_width=True, theme=None)
+        else:
+            # Fallback: line only (no OHLC columns available)
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                vertical_spacing=0.03, row_heights=[0.7, 0.3])
+            fig.add_trace(go.Scatter(
+                x=x_vals, y=df[close_col], mode="lines",
+                line=dict(color="#4cc9f0", width=2),
+                name=f"{asset} Close",
+                hovertemplate="<b>%{x}</b><br>$%{y:.2f}<extra></extra>",
+            ), row=1, col=1)
+            fig.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#ccd6f6", family="JetBrains Mono"),
+                height=380, margin=dict(l=40, r=20, t=10, b=30),
+                xaxis=dict(gridcolor="#1f2640"),
+                yaxis=dict(gridcolor="#1f2640", title="Price ($)"),
+            )
+            st.plotly_chart(fig, use_container_width=True, theme=None)
 
 
 # ============================================================
