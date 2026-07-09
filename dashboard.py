@@ -128,7 +128,7 @@ CUSTOM_CSS = """
     background-clip: text;
     letter-spacing: -0.02em;
   }
-  .hero .sub { color: #8892b0; font-size: 0.9rem; margin-top: 4px; }
+  .hero .sub { color: #d4dbe9; font-size: 0.95rem; font-weight: 500; margin-top: 6px; }
   .pulse-dot {
     display: inline-block;
     width: 10px; height: 10px;
@@ -154,11 +154,12 @@ CUSTOM_CSS = """
     height: 100%;
   }
   .kpi-label {
-    color: #8892b0;
-    font-size: 0.72rem;
+    color: #c5cce0;
+    font-size: 0.74rem;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
-    margin-bottom: 4px;
+    letter-spacing: 0.1em;
+    margin-bottom: 6px;
   }
   .kpi-value {
     font-family: 'JetBrains Mono', monospace;
@@ -166,7 +167,7 @@ CUSTOM_CSS = """
     font-size: 1.4rem;
     line-height: 1.1;
   }
-  .kpi-delta { font-size: 0.72rem; color: #8892b0; margin-top: 2px; }
+  .kpi-delta { font-size: 0.74rem; color: #c5cce0; font-weight: 500; margin-top: 3px; }
   .pos { color: #06d6a0; }
   .neg { color: #f72585; }
   .neu { color: #4cc9f0; }
@@ -212,7 +213,7 @@ CUSTOM_CSS = """
     font-weight: 800;
     font-size: 1.05rem;
   }
-  .signal-card .meta { color: #8892b0; font-size: 0.78rem; }
+  .signal-card .meta { color: #c5cce0; font-size: 0.8rem; font-weight: 500; }
   .signal-card .conf {
     display: inline-block;
     background: rgba(76, 201, 240, 0.15);
@@ -262,7 +263,7 @@ CUSTOM_CSS = """
     border-radius: 4px;
     margin-right: 6px;
   }
-  .news-card .meta { color: #8892b0; font-size: 0.72rem; }
+  .news-card .meta { color: #c5cce0; font-size: 0.74rem; font-weight: 500; }
 
   /* panel */
   .panel {
@@ -274,12 +275,14 @@ CUSTOM_CSS = """
   }
   .panel-title {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 0.85rem;
-    font-weight: 700;
-    color: #ccd6f6;
+    font-size: 0.95rem;
+    font-weight: 800;
+    color: #e8edf7;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin-bottom: 10px;
+    letter-spacing: 0.08em;
+    margin-bottom: 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #2a3050;
   }
 
   /* divider */
@@ -311,6 +314,408 @@ CUSTOM_CSS = """
   /* hide streamlit branding */
   #MainMenu { visibility: hidden; }
   footer { visibility: hidden; }
+
+  /* =====================================================
+     v4 DESIGN OVERHAUL — better contrast & legibility
+     ===================================================== */
+
+  /* Better base text contrast (was #e6e8ee → #e8edf7) */
+  html, body, [data-testid="stAppViewContainer"], [class*="css"] {
+    color: #e8edf7;
+  }
+  p, li, span, div, label { color: inherit; }
+
+  /* Main app container — subtle vignette so cards pop */
+  .stApp {
+    background:
+      radial-gradient(ellipse at top, rgba(76, 201, 240, 0.06) 0%, transparent 50%),
+      linear-gradient(180deg, #0a0e1c 0%, #131829 100%);
+  }
+
+  /* ---------- SIDEBAR ---------- */
+  section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #0a0e1c 0%, #0d1224 100%);
+    border-right: 1px solid #2a3050;
+  }
+  section[data-testid="stSidebar"] > div:first-child {
+    padding-top: 1rem;
+  }
+  /* Sidebar section titles (Cockpit Controls / Config / Search) */
+  section[data-testid="stSidebar"] .stMarkdown h3 {
+    color: #4cc9f0 !important;
+    font-weight: 800 !important;
+    font-size: 0.85rem !important;
+    letter-spacing: 0.12em !important;
+    text-transform: uppercase !important;
+    padding-bottom: 6px;
+    margin-top: 0.4rem !important;
+    margin-bottom: 0.6rem !important;
+    border-bottom: 1px solid rgba(76, 201, 240, 0.25);
+  }
+  /* Sidebar widget labels (Auto-refresh, checkbox text, etc.) */
+  section[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p,
+  section[data-testid="stSidebar"] label,
+  section[data-testid="stSidebar"] label p,
+  section[data-testid="stSidebar"] .stMarkdown p,
+  section[data-testid="stSidebar"] .stMarkdown li,
+  section[data-testid="stSidebar"] .stCaption,
+  section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
+    color: #d4dbe9 !important;
+    font-weight: 500 !important;
+    font-size: 0.88rem !important;
+  }
+  /* The bold "Mode / Exchange / Risk/trade / …" labels stay bright */
+  section[data-testid="stSidebar"] .stMarkdown ul li strong {
+    color: #e8edf7 !important;
+    font-weight: 700 !important;
+  }
+  /* The badge values like `auto`, `binance.us`, `1.0%`, `OFF` */
+  section[data-testid="stSidebar"] .stMarkdown code {
+    background: rgba(76, 201, 240, 0.18) !important;
+    color: #4cc9f0 !important;
+    font-weight: 700 !important;
+    font-size: 0.82rem !important;
+    padding: 2px 8px;
+    border-radius: 5px;
+    border: 1px solid rgba(76, 201, 240, 0.3);
+  }
+  /* Make sidebar bullets spacing nicer */
+  section[data-testid="stSidebar"] .stMarkdown ul {
+    padding-left: 1.1rem;
+    margin-bottom: 0.5rem;
+  }
+  section[data-testid="stSidebar"] .stMarkdown ul li {
+    padding: 3px 0;
+    line-height: 1.5;
+  }
+  /* Checkbox / radio boxes — ensure visible check */
+  section[data-testid="stSidebar"] [data-baseweb="checkbox"] span,
+  section[data-testid="stSidebar"] [data-baseweb="checkbox"] div {
+    border-color: #4cc9f0 !important;
+  }
+
+  /* Sidebar selectbox + textinput fields */
+  section[data-testid="stSidebar"] [data-baseweb="select"] > div,
+  section[data-testid="stSidebar"] [data-baseweb="input"] > div,
+  section[data-testid="stSidebar"] input {
+    background: #161b2e !important;
+    color: #e8edf7 !important;
+    border: 1px solid #353f6a !important;
+    font-weight: 500 !important;
+  }
+
+  /* ---------- MAIN AREA widget labels ---------- */
+  .stSlider [data-testid="stWidgetLabel"] p,
+  .stCheckbox [data-testid="stWidgetLabel"] p {
+    color: #d4dbe9 !important;
+    font-weight: 600 !important;
+    font-size: 0.88rem !important;
+  }
+
+  /* ---------- TABS (signal selectors) ---------- */
+  .stTabs [data-baseweb="tab-list"] {
+    background: transparent;
+    gap: 4px;
+    border-bottom: 1px solid #2a3050;
+  }
+  .stTabs [data-baseweb="tab"] {
+    color: #b8c1d6 !important;
+    font-weight: 700 !important;
+    background: transparent !important;
+    padding: 8px 16px;
+    border-radius: 6px 6px 0 0;
+    font-size: 0.92rem;
+  }
+  .stTabs [data-baseweb="tab"]:hover {
+    color: #e8edf7 !important;
+    background: rgba(76, 201, 240, 0.06) !important;
+  }
+  .stTabs [aria-selected="true"][data-baseweb="tab"] {
+    color: #4cc9f0 !important;
+    background: rgba(76, 201, 240, 0.12) !important;
+    border-bottom: 2px solid #4cc9f0 !important;
+  }
+  .stTabs [data-baseweb="tab-highlight"] {
+    background-color: #4cc9f0 !important;
+  }
+  .stTabs [data-baseweb="tab-border"] { display: none !important; }
+
+  /* ---------- BUTTONS (Save risk settings, filter chips) ---------- */
+  .stButton > button {
+    background: linear-gradient(135deg, #1d2342 0%, #2a3258 100%) !important;
+    color: #e8edf7 !important;
+    border: 1px solid #353f6a !important;
+    font-weight: 700 !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    letter-spacing: 0.04em;
+    transition: all 0.15s;
+  }
+  .stButton > button:hover {
+    background: linear-gradient(135deg, #2a3258 0%, #353f6a 100%) !important;
+    border-color: #4cc9f0 !important;
+    color: #4cc9f0 !important;
+    transform: translateY(-1px);
+  }
+  .stButton > button:focus {
+    border-color: #4cc9f0 !important;
+    box-shadow: 0 0 0 3px rgba(76, 201, 240, 0.3) !important;
+  }
+
+  /* The "Save risk settings" primary button — make it pop more */
+  .stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #06d6a0 0%, #05b386 100%) !important;
+    color: #0a0e1c !important;
+    border: none !important;
+    font-weight: 800 !important;
+  }
+  .stButton > button[kind="primary"]:hover {
+    background: linear-gradient(135deg, #05b386 0%, #06d6a0 100%) !important;
+    box-shadow: 0 4px 14px rgba(6, 214, 160, 0.35) !important;
+  }
+
+  /* ---------- DATAFRAMES (Open Positions) ---------- */
+  .stDataFrame {
+    border: 1px solid #353f6a;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  /* ---------- EXPANDER (Raw signal JSON) ---------- */
+  details summary,
+  .streamlit-expanderHeader {
+    background: #1a1f3a !important;
+    color: #d4dbe9 !important;
+    border: 1px solid #2a3050 !important;
+    border-radius: 6px !important;
+    font-weight: 600 !important;
+  }
+  .streamlit-expanderHeader:hover {
+    background: #1d2342 !important;
+    color: #4cc9f0 !important;
+  }
+
+  /* ---------- ALERTS / INFO ---------- */
+  .stAlert, [data-testid="stAlert"] {
+    background: rgba(76, 201, 240, 0.08) !important;
+    border: 1px solid rgba(76, 201, 240, 0.3) !important;
+    color: #d4dbe9 !important;
+  }
+
+  /* ---------- KPI CARD REFINEMENTS ---------- */
+  .kpi-card {
+    background: linear-gradient(180deg, #161b2e 0%, #1a1f3a 100%);
+    border: 1px solid #353f6a;
+    border-radius: 12px;
+    padding: 14px 16px;
+    height: 100%;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset,
+                0 6px 18px rgba(0, 0, 0, 0.25);
+    transition: border-color 0.15s, transform 0.15s;
+  }
+  .kpi-card:hover {
+    border-color: #4cc9f0;
+    transform: translateY(-2px);
+  }
+  .kpi-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 800;
+    font-size: 1.55rem;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+  }
+
+  /* ---------- COUNTDOWN ---------- */
+  .countdown {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 800;
+    font-size: 1.4rem;
+    color: #4cc9f0;
+    text-align: center;
+    padding: 14px;
+    background: linear-gradient(135deg, rgba(76, 201, 240, 0.12) 0%, rgba(76, 201, 240, 0.04) 100%);
+    border: 1px solid rgba(76, 201, 240, 0.35);
+    border-radius: 10px;
+    letter-spacing: 0.04em;
+  }
+  .countdown small, .countdown span {
+    color: #c5cce0 !important;
+    font-weight: 600;
+  }
+
+  /* ---------- TICKER BAR UPGRADE ---------- */
+  .ticker-bar {
+    background: linear-gradient(90deg, #0a0e1c 0%, #131829 50%, #0a0e1c 100%);
+    border-top: 1px solid #353f6a;
+    border-bottom: 1px solid #353f6a;
+    padding: 10px 14px;
+    display: flex;
+    gap: 12px;
+    overflow-x: auto;
+    white-space: nowrap;
+    margin: 0 -1rem 14px -1rem;
+  }
+  .ticker-cell {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 14px;
+    border-radius: 8px;
+    background: rgba(26, 31, 58, 0.6);
+    border: 1px solid #353f6a;
+    transition: all 0.2s;
+  }
+  .ticker-cell:hover {
+    background: #1d2342;
+    border-color: #4cc9f0;
+  }
+  .ticker-symbol {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 800;
+    color: #e8edf7;
+    font-size: 0.95rem;
+    letter-spacing: 0.03em;
+  }
+  .ticker-price {
+    font-family: 'JetBrains Mono', monospace;
+    color: #e8edf7;
+    font-size: 0.88rem;
+    font-weight: 700;
+  }
+  .ticker-delta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82rem;
+    font-weight: 800;
+  }
+
+  /* ---------- SIGNAL CARDS REFINEMENT ---------- */
+  .signal-card {
+    background: #1a1f3a;
+    border: 1px solid #353f6a;
+    border-left: 4px solid #4cc9f0;
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    transition: transform 0.2s, border-color 0.2s;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  }
+  .signal-card:hover {
+    transform: translateX(4px);
+    border-color: #4cc9f0;
+  }
+  .signal-card.long  { border-left-color: #06d6a0; }
+  .signal-card.short { border-left-color: #f72585; }
+  .signal-card .asset {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 800;
+    font-size: 1.08rem;
+    color: #e8edf7;
+  }
+  .signal-card .conf {
+    display: inline-block;
+    background: rgba(76, 201, 240, 0.18);
+    color: #4cc9f0;
+    border: 1px solid rgba(76, 201, 240, 0.4);
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 0.74rem;
+    font-weight: 800;
+  }
+  .signal-card .conf.high { background: rgba(6, 214, 160, 0.2); color: #06d6a0; border-color: rgba(6, 214, 160, 0.5); }
+  .signal-card .conf.low  { background: rgba(247, 37, 133, 0.2); color: #f72585; border-color: rgba(247, 37, 133, 0.5); }
+
+  .catalyst {
+    font-size: 0.86rem;
+    color: #d4dbe9;
+    line-height: 1.55;
+    margin-top: 8px;
+  }
+  .catalyst .bullet { color: #06d6a0; margin-right: 6px; font-weight: 800; }
+
+  /* ---------- NEWS CARD ---------- */
+  .news-card {
+    background: #161b2e;
+    border: 1px solid #353f6a;
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    transition: transform 0.15s, border-color 0.15s;
+  }
+  .news-card:hover {
+    transform: translateX(2px);
+    border-color: #4cc9f0;
+  }
+  .news-card .headline {
+    color: #e8edf7;
+    font-weight: 700;
+    font-size: 0.92rem;
+    line-height: 1.35;
+    margin-bottom: 6px;
+  }
+  .news-card .badge {
+    display: inline-block;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 800;
+    font-size: 0.7rem;
+    color: #4cc9f0;
+    background: rgba(76, 201, 240, 0.18);
+    border: 1px solid rgba(76, 201, 240, 0.4);
+    padding: 2px 7px;
+    border-radius: 4px;
+    margin-right: 6px;
+    letter-spacing: 0.05em;
+  }
+
+  /* ---------- PANEL REFINEMENT ---------- */
+  .panel {
+    background: #131829;
+    border: 1px solid #353f6a;
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 12px;
+    color: #d4dbe9;
+  }
+
+  /* ---------- HERO REFINEMENT ---------- */
+  .hero {
+    background: linear-gradient(135deg, #1a1f3a 0%, #2d1b4e 50%, #1a1f3a 100%);
+    border: 1px solid #353f6a;
+    border-radius: 14px;
+    padding: 22px 26px;
+    margin-bottom: 16px;
+    position: relative;
+    overflow: hidden;
+  }
+  .hero::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: radial-gradient(circle at 20% 50%, rgba(76, 201, 240, 0.18), transparent 60%),
+                radial-gradient(circle at 80% 50%, rgba(247, 37, 133, 0.14), transparent 60%);
+    pointer-events: none;
+  }
+  .hero h1 {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 800;
+    font-size: 1.95rem;
+    margin: 0;
+    background: linear-gradient(90deg, #06d6a0, #4cc9f0, #f72585);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    letter-spacing: -0.02em;
+  }
+
+  /* ---------- SCROLLBAR ---------- */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: #0a0e1c; }
+  ::-webkit-scrollbar-thumb { background: #353f6a; border-radius: 5px; }
+  ::-webkit-scrollbar-thumb:hover { background: #4cc9f0; }
+
+  /* ---------- DIVIDER (--- in markdown) ---------- */
+  hr {
+    border-color: #2a3050 !important;
+    margin: 14px 0 !important;
+  }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -403,6 +808,44 @@ def _load_news(asset: str, max_items: int = 3) -> list:
         return news[:max_items]
     except Exception:
         return []
+
+
+@st.cache_data(ttl=30)
+def _live_prices(assets: tuple) -> dict:
+    """Fetch live last prices + prev-close via yfinance fast_info.
+
+    Cached 30s so we don't hammer the API on every refresh. Falls back to a
+    1h history download if fast_info is missing the field. Used by the
+    ticker bar AND the Top Movers panel so prices are always live
+    regardless of when the bot last ran a cycle.
+    """
+    out: dict = {}
+    try:
+        import yfinance as yf
+        from src.data.yf_safe import safe_yf_download  # warm up curl_cffi session
+        for asset in assets:
+            try:
+                t = yf.Ticker(asset)
+                fi = getattr(t, "fast_info", None) or {}
+                price = fi.get("lastPrice") or fi.get("last_price")
+                prev = fi.get("previousClose") or fi.get("previous_close")
+                if price is None:
+                    # fallback: 2d/1h history
+                    hist = t.history(period="2d", interval="1h")
+                    if not hist.empty:
+                        price = float(hist["Close"].iloc[-1])
+                        if prev is None and len(hist) >= 2:
+                            prev = float(hist["Close"].iloc[-2])
+                if price is not None:
+                    out[asset] = {
+                        "price": float(price),
+                        "prev": float(prev) if prev else None,
+                    }
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
 
 
 # ============================================================
@@ -622,6 +1065,29 @@ ASSETS_COMMOD = ["GLD", "USO"]
 ASSETS_CRYPTO = ["BTC-USD"]
 ASSETS_ALL = ASSETS_EQUITY + ASSETS_COMMOD + ASSETS_CRYPTO
 
+# Live prices from yfinance (refreshes every 30s).
+# Used as a fallback so the ticker bar + Top Movers always show prices,
+# even when the bot hasn't run its latest cycle yet.
+live_prices = _live_prices(tuple(ASSETS_ALL))
+
+
+def _get_price(asset: str) -> float | None:
+    """Prefer bot's market_data (close of last bar); fall back to live yfinance."""
+    px = asset_last_price(asset, market_data_raw)
+    if px is not None:
+        return px
+    lp = live_prices.get(asset)
+    return lp["price"] if lp else None
+
+
+def _get_prev_close(asset: str) -> float | None:
+    """Prefer 4h-back from bot data; fall back to yfinance previousClose."""
+    prev = asset_prev_price(asset, market_data_raw, lookback=4)
+    if prev is not None:
+        return prev
+    lp = live_prices.get(asset)
+    return lp["prev"] if lp else None
+
 
 # ============================================================
 #  STICKY TICKER BAR (signal8-inspired)
@@ -629,8 +1095,8 @@ ASSETS_ALL = ASSETS_EQUITY + ASSETS_COMMOD + ASSETS_CRYPTO
 
 ticker_cells = []
 for asset in ASSETS_ALL:
-    px = asset_last_price(asset, market_data_raw)
-    prev = asset_prev_price(asset, market_data_raw, lookback=4)  # ~4h ago
+    px = _get_price(asset)
+    prev = _get_prev_close(asset)
     delta = None
     delta_pct = None
     if px is not None and prev is not None:
@@ -638,12 +1104,18 @@ for asset in ASSETS_ALL:
         delta_pct = (delta / prev) * 100 if prev else 0.0
     cls = color_class(delta_pct)
     arrow = "▲" if (delta_pct or 0) >= 0 else "▼"
-    cell = (
-        f'<div class="ticker-cell">'
-        f'<span class="ticker-symbol">{asset}</span>'
-        f'<span class="ticker-price">${px:,.2f}</span>' if px is not None
-        else f'<div class="ticker-cell"><span class="ticker-symbol">{asset}</span><span class="ticker-price">—</span>'
-    )
+    if px is not None:
+        cell = (
+            f'<div class="ticker-cell">'
+            f'<span class="ticker-symbol">{asset}</span>'
+            f'<span class="ticker-price">${px:,.2f}</span>'
+        )
+    else:
+        cell = (
+            f'<div class="ticker-cell">'
+            f'<span class="ticker-symbol">{asset}</span>'
+            f'<span class="ticker-price" style="color:#c5cce0;">—</span>'
+        )
     if delta_pct is not None:
         cell += f'<span class="ticker-delta {cls}">{arrow} {delta_pct:+.2f}%</span>'
     else:
@@ -801,7 +1273,7 @@ with col_eq:
             annotations=[dict(
                 x=0.5, y=0.5, xref="paper", yref="paper",
                 text="No trades yet — waiting for first signal",
-                showarrow=False, font=dict(size=14, color="#8892b0"),
+                showarrow=False, font=dict(size=14, color="#c5cce0"),
             )],
         )
     else:
@@ -852,8 +1324,8 @@ with col_gauge:
                "increasing": {"color": "#f72585"},
                "decreasing": {"color": "#06d6a0"}},
         gauge={
-            "axis": {"range": [0, 100], "tickcolor": "#8892b0",
-                     "tickfont": {"color": "#8892b0"}},
+            "axis": {"range": [0, 100], "tickcolor": "#c5cce0",
+                     "tickfont": {"color": "#c5cce0"}},
             "bar": {"color": "#4cc9f0", "thickness": 0.3},
             "bgcolor": "#1a1f3a",
             "borderwidth": 0,
@@ -893,13 +1365,13 @@ with col_cd:
     secs = int(delta % 60)
     st.markdown(
         f'<div class="countdown">{mins:02d}m {secs:02d}s<br>'
-        f'<span style="font-size:0.7rem; color:#8892b0;">@ {next_run.strftime("%H:%M")} CT</span></div>',
+        f'<span style="font-size:0.7rem; color:#c5cce0;">@ {next_run.strftime("%H:%M")} CT</span></div>',
         unsafe_allow_html=True,
     )
 
     # Also: time since last cycle
     st.markdown(
-        f'<div style="text-align:center; margin-top:8px; font-size:0.78rem; color:#8892b0;">'
+        f'<div style="text-align:center; margin-top:8px; font-size:0.78rem; color:#c5cce0;">'
         f'Last cycle: <span style="color:#4cc9f0;">{last_rel}</span></div>',
         unsafe_allow_html=True,
     )
@@ -1012,8 +1484,8 @@ st.markdown('<div class="panel-title">🔥 Top Movers (4h momentum)</div>',
 
 movers = []
 for asset in ASSETS_ALL:
-    px = asset_last_price(asset, market_data_raw)
-    prev = asset_prev_price(asset, market_data_raw, lookback=4)
+    px = _get_price(asset)
+    prev = _get_prev_close(asset)
     if px is not None and prev is not None and prev:
         pct = (px - prev) / prev * 100
         spark = spark_series(asset, n=20)
@@ -1026,7 +1498,7 @@ movers.sort(key=lambda m: abs(m[2]), reverse=True)
 # fallback instead of crashing on st.columns(0).
 if not movers:
     st.markdown(
-        '<div class="panel" style="text-align:center; padding:18px; color:#8892b0;">'
+        '<div class="panel" style="text-align:center; padding:18px; color:#c5cce0;">'
         'Top Movers se actualizará cuando el bot termine el próximo ciclo '
         '(cada hora). Mientras tanto, los precios live están en el <b>ticker bar</b> '
         'de arriba y los charts por asset abajo.</div>',
@@ -1060,7 +1532,7 @@ with col_pos:
                 unsafe_allow_html=True)
     if not open_positions:
         st.markdown(
-            """<div class="panel" style="text-align:center; padding:24px; color:#8892b0;">
+            """<div class="panel" style="text-align:center; padding:24px; color:#c5cce0;">
               No open positions. Bot is scanning the market — next signal incoming.
             </div>""",
             unsafe_allow_html=True,
@@ -1132,7 +1604,7 @@ with col_sig:
     # Filter + render signals
     if not hypotheses:
         st.markdown(
-            """<div class="panel" style="text-align:center; padding:18px; color:#8892b0;">
+            """<div class="panel" style="text-align:center; padding:18px; color:#c5cce0;">
               No new signals this cycle. Bot is watching for RSI / MACD / EMA crosses.
             </div>""",
             unsafe_allow_html=True,
@@ -1178,7 +1650,7 @@ with col_sig:
 
         if not enriched:
             st.markdown(
-                f'<div class="panel" style="text-align:center; padding:18px; color:#8892b0;">'
+                f'<div class="panel" style="text-align:center; padding:18px; color:#c5cce0;">'
                 f'No signals matching filter <code style="color:#4cc9f0;">{f}</code>.</div>',
                 unsafe_allow_html=True,
             )
