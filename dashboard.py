@@ -99,6 +99,80 @@ CUSTOM_CSS = """
   @keyframes flashUp   { 0% { background: rgba(6, 214, 160, 0.35); } 100% { background: rgba(26, 31, 58, 0.5); } }
   @keyframes flashDown { 0% { background: rgba(247, 37, 133, 0.35); } 100% { background: rgba(26, 31, 58, 0.5); } }
 
+  /* ---------- Sprint 15: live position pulse + sparkline ---------- */
+  /* Pulsing dot that animates whenever the position's price ticks */
+  .pos-pulse {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  .pos-pulse.winning {
+    background: #06d6a0;
+    animation: pulseWin 1.5s infinite;
+  }
+  .pos-pulse.losing {
+    background: #f72585;
+    animation: pulseLose 1.5s infinite;
+  }
+  .pos-pulse.flat {
+    background: #6b7390;
+    animation: pulseFlat 2s infinite;
+  }
+  @keyframes pulseWin {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(6, 214, 160, 0.7); }
+    50%      { box-shadow: 0 0 0 8px rgba(6, 214, 160, 0); }
+  }
+  @keyframes pulseLose {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(247, 37, 133, 0.7); }
+    50%      { box-shadow: 0 0 0 8px rgba(247, 37, 133, 0); }
+  }
+  @keyframes pulseFlat {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(107, 115, 144, 0.5); }
+    50%      { box-shadow: 0 0 0 6px rgba(107, 115, 144, 0); }
+  }
+  /* Direction arrow that flips based on price movement */
+  .pos-arrow {
+    display: inline-block;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 800;
+    font-size: 1.1rem;
+    margin-right: 4px;
+    transition: all 0.2s ease;
+  }
+  .pos-arrow.up   { color: #06d6a0; transform: translateY(-1px); }
+  .pos-arrow.down { color: #f72585; transform: translateY(1px); }
+  .pos-arrow.flat { color: #6b7390; }
+  /* Velocity pill — "+0.12% / 1m" */
+  .pos-velocity {
+    display: inline-block;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 999px;
+    margin-left: 8px;
+  }
+  .pos-velocity.up   { background: rgba(6, 214, 160, 0.15); color: #06d6a0; border: 1px solid rgba(6, 214, 160, 0.4); }
+  .pos-velocity.down { background: rgba(247, 37, 133, 0.15); color: #f72585; border: 1px solid rgba(247, 37, 133, 0.4); }
+  .pos-velocity.flat { background: rgba(107, 115, 144, 0.1); color: #8892b0; border: 1px solid rgba(107, 115, 144, 0.3); }
+  /* Live sparkline container */
+  .pos-spark {
+    margin: 8px 0 4px 0;
+    padding: 6px 8px;
+    background: rgba(26, 31, 58, 0.4);
+    border-radius: 6px;
+    border: 1px solid rgba(76, 201, 240, 0.15);
+  }
+  .pos-spark-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.62rem;
+    color: #6b7390;
+    margin-bottom: 2px;
+    letter-spacing: 0.05em;
+  }
+
   /* ---------- hero ---------- */
   .hero {
     background: linear-gradient(135deg, #1a1f3a 0%, #2d1b4e 50%, #1a1f3a 100%);
@@ -942,6 +1016,28 @@ def _live_binance_balance() -> dict | None:
         return None
 
 
+@st.cache_data(ttl=2)
+def _live_micro_ohlcv(asset: str, n_bars: int = 60) -> list:
+    """Fetch the last `n_bars` 1-minute closes for a real-time sparkline.
+
+    Sprint 15: 1-minute candles for the last 60 minutes (default). Cached
+    2s so each refresh fetches fresh data without hitting yfinance too hard.
+    Returns a list of floats (close prices, oldest first).
+    """
+    try:
+        import yfinance as yf
+        t = yf.Ticker(asset)
+        df = t.history(period="2d", interval="1m")
+        if df is None or df.empty:
+            return []
+        close_col = next((c for c in ["Close", "close"] if c in df.columns), None)
+        if close_col is None:
+            return []
+        return df[close_col].tail(n_bars).astype(float).tolist()
+    except Exception:
+        return []
+
+
 @st.cache_data(ttl=5)
 def _live_ohlcv(asset: str, interval: str = "15m", period: str = "5d") -> pd.DataFrame:
     """Fetch live OHLCV candles via yfinance.
@@ -1343,8 +1439,9 @@ with st.sidebar:
 
 # Auto-refresh — non-blocking. Triggers a soft rerun every N seconds WITHOUT
 # delaying the first render with time.sleep. The interval is in milliseconds.
-if refresh_sec and refresh_sec > 0:
-    st_autorefresh(interval=refresh_sec * 1000, key="guaritradbot_autorefresh")
+# Sprint 15: now placed AFTER data load so we can adapt the interval based on
+# open positions (faster refresh when there are live positions to monitor).
+# (deferred — see bottom of file)
 
 
 # ============================================================
@@ -1388,6 +1485,15 @@ audit_events = _load_audit_cached(n=50)
 open_positions = [p for p in positions if p.get("closed_ts") is None]
 closed_positions = [p for p in positions if p.get("closed_ts") is not None]
 realized_pnl = sum((p.get("realized_pnl") or 0.0) for p in positions)
+
+# Sprint 15: adaptive refresh — if positions are open, force a faster
+# tick (2s) for live streaming regardless of the user's selected refresh.
+# This is non-disruptive: the user's setting is honored once positions
+# close. Overrides the refresh_sec UI when at least one position is open.
+if open_positions and refresh_sec > 2:
+    effective_refresh_sec = 2
+else:
+    effective_refresh_sec = refresh_sec
 
 unrealized_pnl = 0.0
 unrealized_breakdown = []
@@ -2079,16 +2185,79 @@ with col_pos:
             pos_id = p.get("position_id", f"{p['asset']}_{entry:.2f}")
             is_expanded = st.session_state.open_pos_expanded == pos_id
 
-            # Card visual
+            # Sprint 15: live streaming — fetch latest tick + 1m sparkline
+            tick = _live_tick(p["asset"])
+            if tick is not None:
+                # Use LIVE tick price for the "Now" column (most fresh)
+                now_price = tick["price"]
+                # Recompute PnL with live price
+                sign = 1.0 if direction == "long" else -1.0
+                live_upnl = sign * (now_price - entry) * p["qty"]
+                live_pnl_pct = (live_upnl / (entry * p["qty"]) * 100) if entry * p["qty"] else 0.0
+                live_pnl_class = "pos" if live_upnl > 0 else ("neg" if live_upnl < 0 else "neu")
+            else:
+                now_price = px
+                live_upnl = upnl
+                live_pnl_pct = pnl_pct
+                live_pnl_class = pnl_class
+
+            # 1m sparkline (last 60 minutes)
+            micro = _live_micro_ohlcv(p["asset"], n_bars=60)
+            if len(micro) >= 2:
+                # Compute velocity (price change over last 5 minutes)
+                if len(micro) >= 5:
+                    price_5m_ago = micro[-5]
+                    velocity_pct = ((now_price - price_5m_ago) / price_5m_ago * 100)
+                else:
+                    velocity_pct = 0.0
+                # Direction of recent movement
+                if velocity_pct > 0.02:
+                    dir_class = "up"
+                    dir_arrow = "↗"
+                    pulse_class = "winning"
+                elif velocity_pct < -0.02:
+                    dir_class = "down"
+                    dir_arrow = "↘"
+                    pulse_class = "losing"
+                else:
+                    dir_class = "flat"
+                    dir_arrow = "→"
+                    pulse_class = "flat"
+                # Sign velocity according to position direction (winning if going
+                # in our favor)
+                effective_velocity = velocity_pct if direction == "long" else -velocity_pct
+                if effective_velocity > 0.02:
+                    vel_class = "up"
+                elif effective_velocity < -0.02:
+                    vel_class = "down"
+                else:
+                    vel_class = "flat"
+                # Sparkline SVG: green if winning (effective_velocity > 0), red if losing
+                spark_color = "#06d6a0" if effective_velocity >= 0 else "#f72585"
+                spark_svg = sparkline(micro, color=spark_color, height=24, width=240)
+            else:
+                velocity_pct = 0.0
+                dir_class = "flat"
+                dir_arrow = "→"
+                pulse_class = "flat"
+                vel_class = "flat"
+                spark_svg = ""
+
+            # Card visual with pulse dot + direction arrow + velocity pill + sparkline
             st.markdown(
                 f'<div class="signal-card {direction_class}" '
                 f'style="margin-bottom:6px;">'
                 f'<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">'
                 f'<div style="flex:1;">'
-                f'<div style="display:flex; align-items:baseline; gap:10px;">'
+                f'<div style="display:flex; align-items:center; gap:8px;">'
+                f'<span class="pos-pulse {pulse_class}"></span>'
+                f'<span class="pos-arrow {dir_class}">{dir_arrow}</span>'
                 f'<span class="asset">{arrow} {p["asset"]}</span>'
                 f'<span style="color:#8892b0; font-size:0.78rem; font-family:JetBrains Mono;">'
                 f'{direction.upper()} · {p.get("strategy", "?")}'
+                f'</span>'
+                f'<span class="pos-velocity {vel_class}">'
+                f'{velocity_pct:+.2f}% / 5m'
                 f'</span>'
                 f'</div>'
                 f'<div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; '
@@ -2096,7 +2265,7 @@ with col_pos:
                 f'<div><span style="color:#6b7390;">Entry</span><br>'
                 f'<span style="color:#d4dbe9; font-weight:700;">${entry:.2f}</span></div>'
                 f'<div><span style="color:#6b7390;">Now</span><br>'
-                f'<span style="color:#ffffff; font-weight:700;">${px:.2f}</span></div>'
+                f'<span style="color:#ffffff; font-weight:700;">${now_price:,.2f}</span></div>'
                 f'<div><span style="color:#6b7390;">Qty</span><br>'
                 f'<span style="color:#d4dbe9; font-weight:700;">{p["qty"]:.4f}</span></div>'
                 f'<div><span style="color:#6b7390;">SL</span><br>'
@@ -2106,13 +2275,14 @@ with col_pos:
                 f'<div><span style="color:#6b7390;">Margin</span><br>'
                 f'<span style="color:#d4dbe9; font-weight:700;">{margin:.1f}%</span></div>'
                 f'</div>'
+                f'{spark_svg}'
                 f'</div>'
                 f'<div style="text-align:right; min-width:120px;">'
-                f'<div class="kpi-value {pnl_class}" style="font-size:1.25rem; line-height:1.1;">'
-                f'{fmt_usd(upnl, 2)}'
+                f'<div class="kpi-value {live_pnl_class}" style="font-size:1.25rem; line-height:1.1;">'
+                f'{fmt_usd(live_upnl, 2)}'
                 f'</div>'
-                f'<div style="font-family:JetBrains Mono; font-size:0.78rem;" class="{pnl_class}">'
-                f'{fmt_pct(pnl_pct, 2)}'
+                f'<div style="font-family:JetBrains Mono; font-size:0.78rem;" class="{live_pnl_class}">'
+                f'{fmt_pct(live_pnl_pct, 2)}'
                 f'</div>'
                 f'</div>'
                 f'</div>'
@@ -2558,3 +2728,13 @@ if show_audit:
                 f"{icon} <b>{et}</b></div>",
                 unsafe_allow_html=True,
             )
+
+
+# ============================================================
+#  AUTO-REFRESH (Sprint 15: adaptive, must be LAST call)
+# ============================================================
+# Placed at the very bottom so we can use `open_positions` (which is
+# only known after LOAD DATA). If positions are open, force a 2s
+# refresh so the live tick stream + position cards stream smoothly.
+if effective_refresh_sec and effective_refresh_sec > 0:
+    st_autorefresh(interval=effective_refresh_sec * 1000, key="guaritradbot_autorefresh")
