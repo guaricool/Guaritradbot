@@ -19,6 +19,7 @@ import pandas as pd
 import numpy as np
 from src.core.component import Component, ComponentState
 from src.core.data_validator import validate_dataframe, DataIntegrityError
+from src.data.yf_safe import safe_yf_download
 
 
 # Period mínimo (en días) para garantizar al menos 80 velas tras warmup.
@@ -172,7 +173,10 @@ class MarketAnalystAgent(Component):
             import yfinance as yf
             tf_map = {"15m": "15m", "60m": "60m", "1h": "60m", "4h": "60m", "1d": "1d"}
             yf_interval = tf_map.get(interval, "1d")
-            df = yf.download(asset, period=period, interval=yf_interval, progress=False, auto_adjust=False)
+            # Sprint 9: use safe_yf_download (retry + curl_cffi session).
+            df = safe_yf_download(asset, period=period, interval=yf_interval, max_retries=3)
+            if df is None:
+                return None
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             df = df.dropna(how="all")
@@ -236,13 +240,17 @@ class MarketAnalystAgent(Component):
                 yf_interval, resample_rule = tf_map.get(tf, ("1d", None))
                 period = _min_period_days(yf_interval)
                 try:
-                    df = yf.download(
+                    # Sprint 9: use safe_yf_download (retry + curl_cffi + backoff).
+                    df = safe_yf_download(
                         asset,
                         period=period,
                         interval=yf_interval,
-                        progress=False,
-                        auto_adjust=False,
+                        max_retries=3,
                     )
+                    if df is None:
+                        print(f"  ⚠️  {asset}@{tf}: descarga falló tras 3 reintentos")
+                        fail_count += 1
+                        continue
                     if isinstance(df.columns, pd.MultiIndex):
                         df.columns = df.columns.get_level_values(0)
                     df = df.dropna(how="all")
