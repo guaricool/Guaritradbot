@@ -75,7 +75,7 @@ class BearResearcher:
         score = 50  # baseline neutral (50 = mismo peso que bull)
 
         asset = hyp.get("asset", "")
-        direction = hyp.get("direction", "long")
+        direction = hyp.get("direction", "")
         strategy = hyp.get("strategy", "")
         rsi = float(hyp.get("rsi_at_signal", 50))
         macd = float(hyp.get("macd_at_signal", 0))
@@ -98,11 +98,21 @@ class BearResearcher:
                 score += 20
                 reasons.append(f"ATR {atr_pct:.2f}% del precio — alta volatilidad, whipsaw probable")
 
-        # RSI en zona neutra (sin edge claro)
+        # RSI en zona neutra (sin edge claro) — solo MeanReversion
+        # Sprint 11: las señales técnicas (BB bounce, Support/Res) son
+        # válidas aunque RSI esté en zona neutra — el edge viene del
+        # setup técnico, no del RSI.
         if "MeanReversion" in strategy:
             if 35 <= rsi <= 65:
                 score += 15
                 reasons.append(f"RSI {rsi:.1f} en zona neutra — sin edge claro")
+            elif rsi < 30 and direction == "long":
+                # Fuerte confirmación: RSI oversold + dirección long
+                score -= 10
+                reasons.append(f"RSI {rsi:.1f} oversold — confirma long")
+            elif rsi > 70 and direction == "short":
+                score -= 10
+                reasons.append(f"RSI {rsi:.1f} overbought — confirma short")
 
         # EMA cruz — si muerte cruzada y signal long
         if "EMA" in strategy or "GoldenCross" in strategy or "DeathCross" in strategy:
@@ -112,6 +122,13 @@ class BearResearcher:
             elif direction == "short" and "GoldenCross" in strategy:
                 score += 25
                 reasons.append("Golden cross (EMA20>EMA50) — short contra trend alcista")
+
+        # Sprint 11: señales técnicas estructurales (BB/Support/Resistance)
+        # tienen edge por sí solas. Bajamos el bear score para que el
+        # debate no las rechace automáticamente.
+        if any(s in strategy for s in ("BB_", "Support_", "Resistance_", "Stoch_")):
+            score -= 5  # ligero descuento por setup técnico válido
+            reasons.append("Setup técnico estructural (BB/S/R/Stoch) — edge independiente del RSI")
 
         return min(max(score, 0), 100), reasons
 

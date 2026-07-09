@@ -60,8 +60,20 @@ class RiskManagerAgent:
         # (retrocompatible con versiones sin Sprint 3).
         if "debate_hypotheses" in state:
             debate_result = state["debate_hypotheses"]
-            hypotheses: list = debate_result.get("approved_hypotheses", []) or \
-                              debate_result.get("hypotheses", [])
+            approved = debate_result.get("approved_hypotheses", [])
+            all_hyps = debate_result.get("hypotheses", [])
+            # Sprint 11 fix: solo usar approved si el debate realmente
+            # ejecutó (no [] que es fallback falsy). Si approved es []
+            # Y hay all_hyps, fue "ninguna aprobada" → usar [] también,
+            # no todas (antes hacía fallback a todas).
+            if approved:
+                hypotheses = approved
+            elif all_hyps and "verdicts" in debate_result and debate_result["verdicts"]:
+                # Debate corrió y rechazó todas → respeta la decisión
+                hypotheses = []
+            else:
+                # No hay debate (caso legacy) → usa todas
+                hypotheses = all_hyps
             print(f"[RiskManagerAgent] usando {len(hypotheses)} hipótesis post-debate")
         else:
             hypotheses = state.get("generate_hypotheses", {}).get("hypotheses", [])
@@ -116,13 +128,24 @@ class RiskManagerAgent:
 
             # --- Min order ---
             if notional < self.min_order_usd:
-                rejected.append(
-                    {"hypothesis": h, "reason": f"notional_${notional:.2f} < ${self.min_order_usd}"}
-                )
-                if self.audit:
-                    self.audit.append("TRADE_REJECTED", {"asset": h.get("asset"), "reason": f"min_order_${notional:.2f}"})
-                print(f"  ❌ {h['asset']:8} {direction:5} — ${notional:.2f} < min ${self.min_order_usd}")
-                continue
+                # Sprint 11: si el cap (max_notional) está por debajo del
+                # min_order, no tiene sentido rechazar — es un mismatch
+                # de config. Ajusta dinámicamente al min_order en vez de
+                # tirar la orden. Log explícito del ajuste.
+                if max_notional < self.min_order_usd:
+                    # cap real es < min_order; usar el min_order como notional
+                    quantity = self.min_order_usd / entry_price
+                    notional = quantity * entry_price
+                    print(f"  ⚠️ {h['asset']:8} {direction:5} — cap ${max_notional:.2f} < min ${self.min_order_usd}, "
+                          f"forzando notional=${notional:.2f}")
+                else:
+                    rejected.append(
+                        {"hypothesis": h, "reason": f"notional_${notional:.2f} < ${self.min_order_usd}"}
+                    )
+                    if self.audit:
+                        self.audit.append("TRADE_REJECTED", {"asset": h.get("asset"), "reason": f"min_order_${notional:.2f}"})
+                    print(f"  ❌ {h['asset']:8} {direction:5} — ${notional:.2f} < min ${self.min_order_usd}")
+                    continue
 
             trade = {
                 "asset": h["asset"],
