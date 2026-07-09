@@ -10,10 +10,10 @@ exchange:
   # mandate.enabled=false mantiene el modo paper — el broker lee data real pero NO ejecuta trades.
   name: "binanceus"
   use_testnet: false
-  # Sprint 11 fix: con balance bajo ($20), max_capital_per_trade_pct=10%
-  # generaba notional de solo $2 < min_order_usd=10 → todas las órdenes
-  # eran rechazadas. Subimos a 60% para que el cap sea ≥ min_order_usd.
-  max_capital_per_trade_pct: 60   # CAP de exposición por trade, NO el riesgo real
+  # Sprint 17: 50% of $20 = $10, which is exactly binance.us minimum.
+  # For larger balances, this caps a single trade at half your account
+  # (defensive). Tune later as the account grows.
+  max_capital_per_trade_pct: 50
 
 trading:
   risk_per_trade_pct: 1.0          # 1% del balance arriesgado por trade (regla #1 del playbook)
@@ -21,10 +21,13 @@ trading:
   atr_take_profit_multiplier: 4.0  # TP = entry ± k_tp * ATR (default 4 = 1:2 R:R)
   risk_reward_ratio: 2.0           # Alternativa explícita: si atr_tp no está, se calcula así
   max_open_trades: 5
-  # Sprint 11: bajamos min_order_usd a $5 (binance.us real min es $10 pero
-  # con cap al 60% sobre $20 = $12, llegamos. El cap manda, no el min).
-  # Si tu balance crece > $50, sube este a 10.
-  min_order_usd: 5.0               # Binance spot mínimo efectivo
+  # Sprint 17: binance.us real minimum is $10 (NOTIONAL value of the order,
+  # not the risk). Previous value of $5 was a workaround that would have
+  # caused real orders <$10 to be rejected by binance.us. With $20 balance
+  # and 50% cap, max_notional = $10 = min_order, so we're exactly at the
+  # minimum. To trade, balance must be ≥ $20. Below that, the bot will
+  # skip cycles with a clear "balance below min_order" message.
+  min_order_usd: 10.0
 
 schedule:
   run_interval_hours: 1

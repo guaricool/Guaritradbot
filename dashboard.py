@@ -1365,6 +1365,28 @@ with st.sidebar:
     st.markdown("### 🎚️ Quick Risk")
     st.caption("Adjust risk parameters without scrolling. "
                "Click **Save** to persist; bot restarts to apply.")
+
+    # Sprint 17: show the math behind the trade minimum so the user
+    # understands WHY the bot can or can't trade with the current
+    # balance. Helps answer "if I deposit $X, when can I trade?"
+    cap_pct_now = float(exch.get("max_capital_per_trade_pct", 50))
+    min_order_now = float(risk.get("min_order_usd", 10))
+    min_balance_to_trade = min_order_now / max(cap_pct_now / 100.0, 0.01)
+    cap_at_current_balance = balance * (cap_pct_now / 100.0)
+    st.markdown(
+        f'<div style="background:#0d1224; border:1px solid #2a3050; '
+        f'border-radius:8px; padding:10px 12px; margin-bottom:10px; '
+        f'font-size:0.78rem; color:#c5cce0; line-height:1.55;">'
+        f'<div style="color:#4cc9f0; font-weight:700; margin-bottom:4px; '
+        f'font-family:JetBrains Mono; letter-spacing:0.05em;">'
+        f'💡 TRADE MINIMUM MATH</div>'
+        f'Binance.us hard min: <b style="color:#ffffff;">${min_order_now:.0f}</b> per order<br>'
+        f'Your cap: <b style="color:#ffffff;">{cap_pct_now:.0f}%</b> of balance<br>'
+        f'Cap at current balance: <b style="color:#ffd166;">${cap_at_current_balance:.2f}</b><br>'
+        f'<b style="color:#06d6a0;">Min balance to trade: ${min_balance_to_trade:.0f}</b>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
     sidebar_risk_pct = st.slider(
         "Risk per trade (%)",
         0.1, 5.0,
@@ -1373,9 +1395,12 @@ with st.sidebar:
     )
     sidebar_cap_pct = st.slider(
         "Cap per trade (%)",
-        1, 50,
-        int(exch.get("max_capital_per_trade_pct", 10)), 1,
+        10, 90,
+        int(exch.get("max_capital_per_trade_pct", 50)), 5,
         key="sidebar_cap_pct",
+        help="Max % of balance allowed per trade. With binance.us $10 minimum, "
+             "this caps a single trade at X% × balance. 50% means minimum balance "
+             "to trade = $20.",
     )
     sidebar_max_open = st.slider(
         "Max open trades",
@@ -1653,10 +1678,23 @@ def spark_series(asset: str, n: int = 20) -> list:
 
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 with c1:
+    # Sprint 17: show a clear warning if balance < min_order_usd so the
+    # user knows the bot can't trade on tiny balances (binance.us requires
+    # $10 minimum order, hence the minimum balance to trade is $20 with
+    # the current 50% cap).
+    balance_below_min = balance < 10.0  # binance.us hard minimum
+    balance_delta_html = f"<span style='color:#4cc9f0;'>src: {balance_source}</span>"
+    if balance_below_min:
+        balance_delta_html = (
+            f"<span style='color:#f72585;'>⚠️ below $10 min — bot can't trade</span>"
+        )
+    elif balance < 20.0:
+        balance_delta_html += " <span style='color:#ffd166;'>· ⚠️ below $20 (only 1 trade possible)</span>"
+
     st.markdown(
         kpi_with_spark(
             "Balance", fmt_usd(balance),
-            delta=f"<span style='color:#4cc9f0;'>src: {balance_source}</span>",
+            delta=balance_delta_html,
         ),
         unsafe_allow_html=True,
     )
