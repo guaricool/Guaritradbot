@@ -4,14 +4,20 @@ from src.agents.market_analyst import MarketAnalystAgent
 from src.agents.strategy_agent import StrategyAgent
 from src.agents.risk_agent import RiskManagerAgent
 from src.agents.execution_agent import ExecutionAgent
+from src.core.event_bus import EventBus
+from src.execution.execution_node import ExecutionNode
 
 def main():
     print("=== Iniciando Bot Épico (Multi-Agente) ===")
     
-    # 1. Instantiate the Agents Registry
+    # 1. Instantiate Core Subsystems (Nautilus Architecture)
+    event_bus = EventBus()
+    execution_node = ExecutionNode(event_bus)
+    
+    # 2. Instantiate the Agents Registry
     registry = {
-        "MarketAnalystAgent": MarketAnalystAgent(),
-        "StrategyAgent": StrategyAgent(),
+        "MarketAnalystAgent": MarketAnalystAgent(event_bus=event_bus),
+        "StrategyAgent": StrategyAgent(), # StrategyAgent no lo inyectamos aún porque no hemos modificado su init, pero podríamos si lo necesitamos
         "RiskManagerAgent": RiskManagerAgent(),
         "ExecutionAgent": ExecutionAgent()
     }

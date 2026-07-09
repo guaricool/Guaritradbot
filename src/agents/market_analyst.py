@@ -3,8 +3,11 @@ import pandas as pd
 
 class MarketAnalystAgent:
     """
-    Agent responsible for fetching and preparing market data.
+    Agent responsible for fetching and preparing market data (DataNode).
     """
+    def __init__(self, event_bus=None):
+        self.event_bus = event_bus
+
     def fetch_and_analyze(self, inputs: dict, state: dict):
         assets = inputs.get("assets", [])
         timeframes = inputs.get("timeframes", ["1h"])
@@ -28,5 +31,9 @@ class MarketAnalystAgent:
                         data[asset][tf] = df
                 except Exception as e:
                     print(f"Error fetching {asset} at {tf}: {e}")
-                    
+        
+        # Publicar evento en el EventBus (Estilo Nautilus DataNode)
+        if self.event_bus:
+            self.event_bus.publish("MARKET_DATA_READY", data)
+            
         return {"market_data": data}
