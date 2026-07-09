@@ -1,0 +1,21 @@
+name: Daily Multi-Asset Trading Loop
+description: Orchestrates agents to analyze market, generate hypotheses, and manage risk.
+steps:
+  - id: analyze_market
+    agent: MarketAnalystAgent
+    action: fetch_and_analyze
+    inputs:
+      assets: ["SPY", "QQQ", "BTC-USD", "GLD", "USO"]
+      timeframes: ["15m", "1h", "4h"]
+  - id: generate_hypotheses
+    agent: StrategyAgent
+    action: evaluate_strategies
+    depends_on: ["analyze_market"]
+  - id: risk_evaluation
+    agent: RiskManagerAgent
+    action: validate_and_size
+    depends_on: ["generate_hypotheses"]
+  - id: execute_trades
+    agent: ExecutionAgent
+    action: simulate_execution
+    depends_on: ["risk_evaluation"]

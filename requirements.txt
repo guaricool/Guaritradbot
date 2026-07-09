@@ -1,0 +1,7 @@
+pandas==2.2.2
+numpy==1.26.4
+ccxt==4.3.44
+SQLAlchemy==2.0.30
+matplotlib==3.8.4
+yfinance
+ta==0.11.0
