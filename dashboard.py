@@ -21,6 +21,42 @@ import json
 import os
 import time
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
+
+# Sprint 19: Carlos lives in Hoffman Estates, IL (America/Chicago).
+# The VPS runs in Europe/Berlin, the container runs in UTC. Every
+# datetime.now() in this dashboard was returning UTC time, displayed
+# as if it were local. We centralize ALL timestamps to America/Chicago
+# (handles DST automatically via ZoneInfo).
+CT = ZoneInfo("America/Chicago")
+
+
+def _now_ct() -> datetime:
+    """Current time as a tz-aware datetime in America/Chicago."""
+    return datetime.now(CT)
+
+
+def _fmt_ct(dt_or_ts, fmt: str = "%Y-%m-%d %H:%M:%S %Z") -> str:
+    """Format a unix timestamp OR datetime in America/Chicago.
+
+    Accepts:
+      - float/int unix timestamp (seconds)
+      - naive datetime (assumed UTC — e.g. from json.loads)
+      - aware datetime (converted to CT)
+    """
+    if dt_or_ts is None:
+        return "—"
+    if isinstance(dt_or_ts, (int, float)):
+        dt = datetime.fromtimestamp(float(dt_or_ts), tz=timezone.utc).astimezone(CT)
+    elif isinstance(dt_or_ts, datetime):
+        if dt_or_ts.tzinfo is None:
+            # Naive datetime → assume UTC
+            dt = dt_or_ts.replace(tzinfo=timezone.utc).astimezone(CT)
+        else:
+            dt = dt_or_ts.astimezone(CT)
+    else:
+        return str(dt_or_ts)
+    return dt.strftime(fmt)
 from pathlib import Path
 
 import pandas as pd
@@ -1481,7 +1517,7 @@ with st.sidebar:
         )
 
     st.markdown("---")
-    st.caption(f"🕒 {datetime.now().strftime('%H:%M:%S')} CT")
+    st.caption(f"🕒 {_now_ct().strftime('%H:%M:%S %Z')} (America/Chicago)")
 
 
 # Auto-refresh — non-blocking. Triggers a soft rerun every N seconds WITHOUT
@@ -1815,15 +1851,17 @@ with col_eq:
             [p for p in positions if p.get("closed_ts")],
             key=lambda p: p["closed_ts"],
         )
-        ts = [datetime.fromtimestamp(sorted_closes[0]["entry_ts"])] if sorted_closes else [datetime.now()]
+        # Sprint 19: convert unix timestamps → tz-aware CT datetimes so
+        # the equity curve x-axis shows local time, not the VPS UTC.
+        ts = [datetime.fromtimestamp(sorted_closes[0]["entry_ts"], tz=timezone.utc).astimezone(CT)] if sorted_closes else [_now_ct()]
         eq = [balance]
         eq_running = balance
         for p in sorted_closes:
             eq_running += p.get("realized_pnl") or 0.0
-            ts.append(datetime.fromtimestamp(p["closed_ts"]))
+            ts.append(datetime.fromtimestamp(p["closed_ts"], tz=timezone.utc).astimezone(CT))
             eq.append(eq_running)
         if unrealized_pnl != 0.0 and open_positions:
-            ts.append(datetime.now())
+            ts.append(_now_ct())
             eq.append(eq_running + unrealized_pnl)
         fig_eq = go.Figure()
         fig_eq.add_trace(go.Scatter(
@@ -1915,7 +1953,9 @@ with col_cd:
     # failed when now.hour == 23: the wrap-around to hour=0 didn't advance
     # the day, leaving next_run in the past → negative delta like -1386m.
     # Fix: use timedelta(hours=1) from the top of the current hour.
-    now = datetime.now()
+    # Sprint 19: now in CT so the @ HH:MM target time displayed is CT,
+    # not the VPS's UTC time.
+    now = _now_ct()
     top_of_hour = now.replace(minute=0, second=0, microsecond=0)
     next_run = top_of_hour + timedelta(hours=1)
     delta = (next_run - now).total_seconds()
@@ -2841,9 +2881,15 @@ if show_audit:
                 icon = "💰"
             elif "BOT_START" in et or "WORKFLOW" in et:
                 icon = "⚙️"
+            # Sprint 19: show both relative AND absolute (CT) timestamp
+            # so user can see exactly when each event happened in their
+            # local time, not the VPS UTC.
+            ts_iso = ev.get("iso") or ev.get("ts")
+            abs_ct = _fmt_ct(ts_iso, "%H:%M:%S CT")
             st.markdown(
                 f"<div class='meta' style='padding:4px 0;'>"
                 f"<code style='color:#4cc9f0;'>{t}</code> "
+                f"<span style='color:#6b7390; font-size:0.7rem;'>{abs_ct}</span> "
                 f"{icon} <b>{et}</b></div>",
                 unsafe_allow_html=True,
             )

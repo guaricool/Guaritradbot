@@ -2,9 +2,15 @@ import time
 import schedule
 import logging
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import yaml
 import os
+
+# Sprint 19: Carlos lives in America/Chicago (IL). All timestamps the bot
+# writes to disk are stored as tz-aware ISO strings in CT, so the
+# dashboard doesn't have to guess the VPS TZ.
+CT = ZoneInfo("America/Chicago")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("Scheduler")
@@ -155,7 +161,10 @@ class EpochScheduler:
                     return super().default(obj)
 
             with open("audit/latest_state.json", "w") as f:
-                json.dump({"timestamp": datetime.now().isoformat(), "state": state}, f, indent=4, cls=CustomEncoder)
+                # Sprint 19: tz-aware CT timestamp for portability
+                ct_now = datetime.now(CT)
+                json.dump({"timestamp": ct_now.isoformat(), "tz": "America/Chicago",
+                           "state": state}, f, indent=4, cls=CustomEncoder)
         except Exception as e:
             logger.error(f"Error saving state: {e}")
 
