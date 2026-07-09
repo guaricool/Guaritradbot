@@ -1366,13 +1366,19 @@ with st.sidebar:
     st.caption("Adjust risk parameters without scrolling. "
                "Click **Save** to persist; bot restarts to apply.")
 
-    # Sprint 17: show the math behind the trade minimum so the user
-    # understands WHY the bot can or can't trade with the current
-    # balance. Helps answer "if I deposit $X, when can I trade?"
+    # Sprint 17: show the trade minimum math. Note: this is computed
+    # from config ONLY (not balance, which is loaded later). The
+    # "Cap at current balance" line shows it via _live_binance_balance
+    # if available, else falls back to 0.
     cap_pct_now = float(exch.get("max_capital_per_trade_pct", 50))
     min_order_now = float(risk.get("min_order_usd", 10))
     min_balance_to_trade = min_order_now / max(cap_pct_now / 100.0, 0.01)
-    cap_at_current_balance = balance * (cap_pct_now / 100.0)
+    # Try to get a live balance for the "cap at current balance" line
+    _live_bal = _live_binance_balance()
+    cap_at_balance = _live_bal["total"] * (cap_pct_now / 100.0) if _live_bal else 0.0
+    cap_str = (f'<b style="color:#ffd166;">${cap_at_balance:.2f}</b>'
+               if cap_at_balance > 0 else
+               f'<i style="color:#6b7390;">(loading…)</i>')
     st.markdown(
         f'<div style="background:#0d1224; border:1px solid #2a3050; '
         f'border-radius:8px; padding:10px 12px; margin-bottom:10px; '
@@ -1382,7 +1388,7 @@ with st.sidebar:
         f'💡 TRADE MINIMUM MATH</div>'
         f'Binance.us hard min: <b style="color:#ffffff;">${min_order_now:.0f}</b> per order<br>'
         f'Your cap: <b style="color:#ffffff;">{cap_pct_now:.0f}%</b> of balance<br>'
-        f'Cap at current balance: <b style="color:#ffd166;">${cap_at_current_balance:.2f}</b><br>'
+        f'Cap at current balance: {cap_str}<br>'
         f'<b style="color:#06d6a0;">Min balance to trade: ${min_balance_to_trade:.0f}</b>'
         f'</div>',
         unsafe_allow_html=True,
