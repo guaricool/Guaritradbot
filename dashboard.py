@@ -1050,6 +1050,87 @@ def sparkline(values: list, color: str = "#4cc9f0", height: int = 32, width: int
 # ============================================================
 
 with st.sidebar:
+    # ==========================================================
+    # ⚡ MODE TOGGLE — PAPER / LIVE (Sprint 12)
+    # ==========================================================
+    # Load mandate status from config + last override
+    config = _load_yaml("config.yaml")
+    mand_from_config = config.get("mandate", {}).get("enabled", False)
+    mode_override = _load_json("audit/mode_override.json")
+    effective_mandate = bool(mand_from_config) or bool(mode_override.get("mandate_enabled", False))
+    is_live = effective_mandate
+    is_paper = not is_live
+
+    # Big visual badge for current mode
+    if is_live:
+        mode_color = "#06d6a0"   # green
+        mode_icon = "🟢"
+        mode_label = "LIVE TRADING"
+        mode_subtitle = "Real money on binance.us"
+    else:
+        mode_color = "#ffd166"   # yellow
+        mode_icon = "🟡"
+        mode_label = "PAPER MODE"
+        mode_subtitle = "Fake money — signals execute but no real orders"
+
+    st.markdown(
+        f'<div style="background:linear-gradient(135deg, {mode_color}33 0%, {mode_color}11 100%); '
+        f'border:2px solid {mode_color}; border-radius:10px; padding:14px 16px; '
+        f'text-align:center; margin-bottom:12px;">'
+        f'<div style="font-size:1.6rem; font-weight:800; color:{mode_color}; letter-spacing:0.05em;">'
+        f'{mode_icon} {mode_label}</div>'
+        f'<div style="font-size:0.78rem; color:#c5cce0; margin-top:4px;">{mode_subtitle}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # The toggle itself — single big button
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button(
+            "🟡 PAPER" if is_live else "✓ Stay PAPER",
+            use_container_width=True,
+            disabled=is_paper,
+            help="Switch to paper mode (no real orders)",
+            key="toggle_paper",
+        ):
+            # Write override + trigger bot restart
+            os.makedirs("audit", exist_ok=True)
+            with open("audit/mode_override.json", "w", encoding="utf-8") as f:
+                json.dump({
+                    "mandate_enabled": False,
+                    "switched_at": datetime.now().isoformat(),
+                    "switched_by": "dashboard",
+                }, f, indent=2)
+            st.success("✓ Switched to PAPER. Bot restart triggered.")
+            st.info("ℹ️ Restarting bot in 3s...")
+            time.sleep(2)
+            st.rerun()
+
+    with col_b:
+        if st.button(
+            "🟢 LIVE" if is_paper else "✓ Stay LIVE",
+            use_container_width=True,
+            disabled=is_live,
+            help="⚠️ Switch to live trading — real orders on binance.us",
+            key="toggle_live",
+        ):
+            # Write override + trigger bot restart
+            os.makedirs("audit", exist_ok=True)
+            with open("audit/mode_override.json", "w", encoding="utf-8") as f:
+                json.dump({
+                    "mandate_enabled": True,
+                    "switched_at": datetime.now().isoformat(),
+                    "switched_by": "dashboard",
+                }, f, indent=2)
+            st.warning("⚠️ Switching to LIVE — real money will be at risk.")
+            st.info("ℹ️ Restarting bot in 3s...")
+            time.sleep(2)
+            st.rerun()
+
+    st.caption("Toggle takes effect on next bot cycle (≤60s).")
+
+    st.markdown("---")
     st.markdown("### ⚙️ Cockpit Controls")
 
     refresh_sec = st.selectbox(

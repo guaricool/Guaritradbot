@@ -92,6 +92,30 @@ def main():
             print(f"[Broker] Error al inicializar: {e}. Modo paper-only.")
 
     audit = AuditLedger(_audit_path(config))
+
+    # Sprint 12: mode_override.json takes precedence over config.yaml.
+    # The dashboard writes here when the user toggles PAPER/LIVE.
+    # This lets you flip modes WITHOUT editing config.yaml or restarting manually.
+    override_path = os.path.join(audit.path_dir, "mode_override.json") if hasattr(audit, "path_dir") else "audit/mode_override.json"
+    if os.path.exists(override_path):
+        try:
+            import json
+            with open(override_path, "r", encoding="utf-8") as f:
+                mode_override = json.load(f)
+            if "mandate_enabled" in mode_override:
+                if "mandate" not in config:
+                    config["mandate"] = {}
+                config["mandate"]["enabled"] = bool(mode_override["mandate_enabled"])
+                print(f"[Init] Mode override applied: mandate.enabled = {mode_override['mandate_enabled']} "
+                      f"(set at {mode_override.get('switched_at', '?')})")
+                audit.append("MODE_OVERRIDE_APPLIED", {
+                    "mandate_enabled": mode_override["mandate_enabled"],
+                    "switched_at": mode_override.get("switched_at"),
+                    "switched_by": mode_override.get("switched_by", "?"),
+                })
+        except Exception as e:
+            print(f"[Init] mode_override.json parse error (ignored): {e}")
+
     kill_switch = KillSwitch(config.get("mandate", {}).get("kill_switch_file", "/tmp/GUARITRADBOT_KILL"))
     mandate_gate, mandate_cfg = _build_mandate(config, audit)
     position_repo = PositionRepository("data_store/positions.json")

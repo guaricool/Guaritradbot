@@ -119,33 +119,78 @@ class RiskManagerAgent:
             # --- Cap por max_capital_per_trade_pct ---
             notional = quantity * entry_price
             max_notional = account_balance * (self.max_capital_per_trade_pct / 100.0)
-            if notional > max_notional:
+
+            # --- Auto-adjustment for min_order_usd consistency (Sprint 12) ---
+            # If the configured max_capital_per_trade_pct results in a notional
+            # BELOW the exchange's min_order, the system is internally
+            # inconsistent: it says "you can trade up to X% of balance" but
+            # X% of balance is less than what the exchange requires.
+            #
+            # Rather than rejecting the trade (defeats the purpose of being
+            # autonomous) or silently ignoring the cap (defeats the purpose
+            # of having one), bump the effective cap up to the min_order
+            # amount and log it clearly. This way:
+            #   - The trade happens (no missed opportunities)
+            #   - The user sees the conflict in the audit log
+            #   - The cap is honored on EVERY OTHER trade (only bumped here)
+            if max_notional < self.min_order_usd:
+                # Cap from config is too small. Bump up to min_order.
+                adjusted_cap = self.min_order_usd
+                adjusted_cap_pct = (adjusted_cap / account_balance) * 100.0 if account_balance > 0 else 0
+                quantity = adjusted_cap / entry_price
+                notional = quantity * entry_price
+                if self.audit:
+                    self.audit.append("CAP_AUTO_ADJUSTED", {
+                        "asset": h.get("asset"),
+                        "reason": "max_cap_below_min_order",
+                        "config_pct": self.max_capital_per_trade_pct,
+                        "config_notional": max_notional,
+                        "min_order_usd": self.min_order_usd,
+                        "adjusted_to_pct": round(adjusted_cap_pct, 2),
+                        "adjusted_to_notional": round(notional, 2),
+                    })
+                print(f"  ⚠️ {h['asset']:8} {direction:5} — "
+                      f"config cap=${max_notional:.2f} ({self.max_capital_per_trade_pct}% of ${account_balance:.2f}) "
+                      f"< min ${self.min_order_usd:.2f}. "
+                      f"Bumping to ${notional:.2f} ({adjusted_cap_pct:.1f}% effective). "
+                      f"⚠️ FIX your config.yaml: increase max_capital_per_trade_pct or lower min_order_usd.")
+            elif notional > max_notional:
+                # Normal cap hit
                 quantity = max_notional / entry_price
                 notional = quantity * entry_price
                 risk_amount_usd_eff = quantity * stop_distance
             else:
                 risk_amount_usd_eff = risk_amount_usd
 
-            # --- Min order ---
+            # --- Min order check (post-adjustment) ---
             if notional < self.min_order_usd:
-                # Sprint 11: si el cap (max_notional) está por debajo del
-                # min_order, no tiene sentido rechazar — es un mismatch
-                # de config. Ajusta dinámicamente al min_order en vez de
-                # tirar la orden. Log explícito del ajuste.
-                if max_notional < self.min_order_usd:
-                    # cap real es < min_order; usar el min_order como notional
-                    quantity = self.min_order_usd / entry_price
-                    notional = quantity * entry_price
-                    print(f"  ⚠️ {h['asset']:8} {direction:5} — cap ${max_notional:.2f} < min ${self.min_order_usd}, "
-                          f"forzando notional=${notional:.2f}")
-                else:
-                    rejected.append(
-                        {"hypothesis": h, "reason": f"notional_${notional:.2f} < ${self.min_order_usd}"}
-                    )
-                    if self.audit:
-                        self.audit.append("TRADE_REJECTED", {"asset": h.get("asset"), "reason": f"min_order_${notional:.2f}"})
-                    print(f"  ❌ {h['asset']:8} {direction:5} — ${notional:.2f} < min ${self.min_order_usd}")
-                    continue
+                # Shouldn't happen after the auto-adjust above, but defensive
+                rejected.append(
+                    {"hypothesis": h, "reason": f"notional_${notional:.2f} < ${self.min_order_usd}"}
+                )
+                if self.audit:
+                    self.audit.append("TRADE_REJECTED", {"asset": h.get("asset"), "reason": f"min_order_${notional:.2f}"})
+                print(f"  ❌ {h['asset']:8} {direction:5} — ${notional:.2f} < min ${self.min_order_usd}")
+                continue
+
+            # --- Balance check ---
+            # If the account balance is so small that even min_order doesn't
+            # fit, skip this trade cleanly. Log a clear reason.
+            if account_balance < self.min_order_usd:
+                rejected.append({
+                    "hypothesis": h,
+                    "reason": f"balance_${account_balance:.2f} < min_${self.min_order_usd}",
+                })
+                if self.audit:
+                    self.audit.append("TRADE_REJECTED", {
+                        "asset": h.get("asset"),
+                        "reason": "balance_below_min_order",
+                        "balance": account_balance,
+                        "min_order_usd": self.min_order_usd,
+                    })
+                print(f"  ❌ {h['asset']:8} {direction:5} — balance ${account_balance:.2f} < min ${self.min_order_usd} "
+                      f"(deposit more funds or lower min_order_usd in config)")
+                continue
 
             trade = {
                 "asset": h["asset"],
