@@ -1460,8 +1460,6 @@ with col_gauge:
                 "line": {"color": "#f72585", "width": 5},
                 "thickness": 0.85,
                 "value": threshold_val,
-                "valuefont": {"color": "#f72585", "size": 13,
-                              "family": "JetBrains Mono"},
             },
         },
         number={
