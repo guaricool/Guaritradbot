@@ -34,6 +34,7 @@ from src.safety.kill_switch import KillSwitch
 from src.safety.mandate_gate import MandateGate, MandateConfig
 from src.data_store.positions import PositionRepository
 from src.data_store.position_monitor import PositionMonitor
+from src.agents.researchers import DebateAgent
 
 
 def _audit_path(config: dict) -> str:
@@ -165,6 +166,7 @@ def main():
             audit=audit,
             position_repo=position_repo,
         ),
+        "DebateAgent": DebateAgent(position_repo=position_repo, audit=audit),
         "ExecutionAgent": ExecutionAgent(event_bus=event_bus),
         "NotificationAgent": NotificationAgent(event_bus=event_bus, config=config),
     }

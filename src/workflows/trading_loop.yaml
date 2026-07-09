@@ -1,5 +1,5 @@
 name: Daily Multi-Asset Trading Loop
-description: Orchestrates agents to analyze market, generate hypotheses, and manage risk.
+description: Orchestrates agents to analyze market, generate hypotheses, debate, manage risk, and execute.
 steps:
   - id: analyze_market
     agent: MarketAnalystAgent
@@ -11,10 +11,17 @@ steps:
     agent: StrategyAgent
     action: evaluate_strategies
     depends_on: ["analyze_market"]
+  # Sprint 3: debate multi-agente (Bull vs Bear vs Risk → Portfolio Manager)
+  - id: debate_hypotheses
+    agent: DebateAgent
+    action: run_debate
+    depends_on: ["generate_hypotheses"]
   - id: risk_evaluation
     agent: RiskManagerAgent
+    # Sprint 3: ahora consume `approved_hypotheses` (filtradas por el debate)
+    # en lugar de `hypotheses`. Fallback retrocompatible si el debate falta.
     action: validate_and_size
-    depends_on: ["generate_hypotheses"]
+    depends_on: ["debate_hypotheses"]
   - id: execute_trades
     agent: ExecutionAgent
     action: simulate_execution
