@@ -183,7 +183,19 @@ def main():
     # Si el monitor cierra una posición, queda registrada antes de la
     # nueva ronda de señales.
 
-    scheduler = EpochScheduler(engine, workflow_data, config_path)
+    # Sprint 5: epoch re-optimization real (antes era placeholder).
+    # Construimos HyperoptManager y se lo pasamos al scheduler.
+    hyperopt = HyperoptManager()
+    scheduler = EpochScheduler(
+        engine,
+        workflow_data,
+        config_path,
+        market_analyst=registry["MarketAnalystAgent"],
+        strategy_agent=registry["StrategyAgent"],
+        hyperopt=hyperopt,
+        audit=audit,
+        assets=("BTC-USD", "SPY", "GLD", "QQQ", "USO"),
+    )
 
     # Monkey-patch el scheduler.job para correr el monitor antes
     original_job = scheduler.job
