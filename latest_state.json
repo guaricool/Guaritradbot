@@ -1,0 +1,112 @@
+{
+    "timestamp": "2026-07-08T23:13:41.713496",
+    "state": {
+        "analyze_market": {
+            "market_data": {
+                "SPY": {
+                    "15m": "Pandas DataFrame/Series (Omitted for JSON)",
+                    "1h": "Pandas DataFrame/Series (Omitted for JSON)",
+                    "4h": "Pandas DataFrame/Series (Omitted for JSON)"
+                },
+                "QQQ": {
+                    "15m": "Pandas DataFrame/Series (Omitted for JSON)",
+                    "1h": "Pandas DataFrame/Series (Omitted for JSON)",
+                    "4h": "Pandas DataFrame/Series (Omitted for JSON)"
+                },
+                "BTC-USD": {
+                    "15m": "Pandas DataFrame/Series (Omitted for JSON)",
+                    "1h": "Pandas DataFrame/Series (Omitted for JSON)",
+                    "4h": "Pandas DataFrame/Series (Omitted for JSON)"
+                },
+                "GLD": {
+                    "15m": "Pandas DataFrame/Series (Omitted for JSON)",
+                    "1h": "Pandas DataFrame/Series (Omitted for JSON)",
+                    "4h": "Pandas DataFrame/Series (Omitted for JSON)"
+                },
+                "USO": {
+                    "15m": "Pandas DataFrame/Series (Omitted for JSON)",
+                    "1h": "Pandas DataFrame/Series (Omitted for JSON)",
+                    "4h": "Pandas DataFrame/Series (Omitted for JSON)"
+                }
+            }
+        },
+        "generate_hypotheses": {
+            "hypotheses": [
+                {
+                    "asset": "BTC-USD",
+                    "strategy": "Breakout (MACD Bullish Cross)",
+                    "direction": "long",
+                    "price": 61995.80859375
+                },
+                {
+                    "asset": "GLD",
+                    "strategy": "TrendFollowing (EMA20 < EMA50)",
+                    "direction": "short",
+                    "price": 374.4700012207031
+                },
+                {
+                    "asset": "USO",
+                    "strategy": "TrendFollowing (EMA20 > EMA50)",
+                    "direction": "long",
+                    "price": 112.20999908447266
+                }
+            ]
+        },
+        "risk_evaluation": {
+            "approved_trades": [
+                {
+                    "asset": "BTC-USD",
+                    "strategy": "Breakout (MACD Bullish Cross)",
+                    "direction": "long",
+                    "entry_price": 61995.80859375,
+                    "stop_loss": 61990.80859375,
+                    "position_size": 0.00016130122708018252
+                },
+                {
+                    "asset": "GLD",
+                    "strategy": "TrendFollowing (EMA20 < EMA50)",
+                    "direction": "short",
+                    "entry_price": 374.4700012207031,
+                    "stop_loss": 379.4700012207031,
+                    "position_size": 0.0267044088108576
+                },
+                {
+                    "asset": "USO",
+                    "strategy": "TrendFollowing (EMA20 > EMA50)",
+                    "direction": "long",
+                    "entry_price": 112.20999908447266,
+                    "stop_loss": 107.20999908447266,
+                    "position_size": 0.08911861760618957
+                }
+            ]
+        },
+        "execute_trades": {
+            "executed_trades": [
+                {
+                    "asset": "BTC-USD",
+                    "strategy": "Breakout (MACD Bullish Cross)",
+                    "direction": "long",
+                    "entry_price": 61995.80859375,
+                    "stop_loss": 61990.80859375,
+                    "position_size": 0.00016130122708018252
+                },
+                {
+                    "asset": "GLD",
+                    "strategy": "TrendFollowing (EMA20 < EMA50)",
+                    "direction": "short",
+                    "entry_price": 374.4700012207031,
+                    "stop_loss": 379.4700012207031,
+                    "position_size": 0.0267044088108576
+                },
+                {
+                    "asset": "USO",
+                    "strategy": "TrendFollowing (EMA20 > EMA50)",
+                    "direction": "long",
+                    "entry_price": 112.20999908447266,
+                    "stop_loss": 107.20999908447266,
+                    "position_size": 0.08911861760618957
+                }
+            ]
+        }
+    }
+}

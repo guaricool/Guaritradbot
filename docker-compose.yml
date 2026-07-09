@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  # Servicio 1: El cerebro del bot (orquestador)
+  guaritradbot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: guaritradbot_engine
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - bot_data:/app
+
+  # Servicio 2: El Dashboard interactivo
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: guaritradbot_dashboard
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    volumes:
+      - bot_data:/app
+    depends_on:
+      - guaritradbot
+
+volumes:
+  bot_data:
