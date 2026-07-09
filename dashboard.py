@@ -1933,9 +1933,6 @@ for tab, asset in zip(asset_tabs, ASSETS_ALL):
                                 fillcolor="rgba(247, 37, 133, 0.6)"),
                 name=f"{asset}",
                 showlegend=False,
-                hovertemplate=f"<b>%{{x}}</b><br>"
-                              f"O: %{{open:.2f}} H: %{{high:.2f}} "
-                              f"L: %{{low:.2f}} C: %{{close:.2f}}<extra></extra>",
             ), row=1, col=1)
             # Overlays: BUY/SELL markers
             if buys_x:
