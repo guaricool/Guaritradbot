@@ -191,7 +191,15 @@ class PortfolioManager:
 
         final = 0.4 * bull_score + 0.4 * (100 - bear_score) - 0.2 * risk_penalty
 
-        decision = "APPROVED" if final >= 50 else "REJECTED"
+        # Sprint 11: threshold dinámico según tipo de setup.
+        # Setups técnicos estructurales (BB/S/R/Stoch) tienen edge
+        # independiente — más permisivos (threshold 40).
+        # Cruces puros (RSI/MACD/EMA cross) son más ruidosos — threshold 50.
+        strategy = hypothesis.get("strategy", "")
+        is_technical = any(s in strategy for s in ("BB_", "Support_", "Resistance_", "Stoch_"))
+        threshold = 40 if is_technical else 50
+
+        decision = "APPROVED" if final >= threshold else "REJECTED"
         if risk_penalty >= 80:
             decision = "REJECTED"
             reason = risk_reasons[0] if risk_reasons else "risk_too_high"
