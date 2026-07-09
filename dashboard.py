@@ -59,6 +59,22 @@ CUSTOM_CSS = """
   }
   section.main > div { padding-top: 0.5rem; }
 
+  /* Sprint 16: hide the white Streamlit toolbar that floats over the top
+     of the iframe ("RUNNING... Stop"). It covers the top KPI cards and
+     is pure noise for an embedded dashboard. */
+  [data-testid="stToolbar"] { display: none !important; }
+  [data-testid="stDecoration"] { display: none !important; }
+  [data-testid="stHeader"] { background: transparent !important; }
+  header[data-testid="stHeader"] {
+    background: transparent !important;
+    border-bottom: none !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+  }
+  /* Also hide the thin "running" status bar at top */
+  .stApp > header { display: none !important; }
+
   /* ---------- ticker bar ---------- */
   .ticker-bar {
     background: linear-gradient(90deg, #0d1325 0%, #131829 50%, #0d1325 100%);
@@ -1669,12 +1685,24 @@ with c2:
         unsafe_allow_html=True,
     )
 with c3:
+    # Sprint 16: show Open PnL + total invested for clarity on small
+    # balances. With $10 starting, seeing "+$0.15" is meaningless
+    # without knowing that the position is $5 → 3% return.
+    open_invested = sum(
+        abs((p.get("entry_price") or 0) * (p.get("qty") or 0))
+        for p in open_positions
+    )
+    open_pnl_delta = (
+        f"<span style='color:#06d6a0;'>on ${open_invested:.2f} invested</span>"
+        if unrealized_pnl >= 0
+        else f"<span style='color:#f72585;'>on ${open_invested:.2f} invested</span>"
+    )
     st.markdown(
         kpi_with_spark(
             "Open PnL", fmt_usd(unrealized_pnl),
             spark_values=[(p.get('entry_price') or 0) for p in open_positions],
             spark_color="#06d6a0" if unrealized_pnl >= 0 else "#f72585",
-            delta="unrealized",
+            delta=open_pnl_delta,
             klass=color_class(unrealized_pnl),
         ),
         unsafe_allow_html=True,
@@ -2243,6 +2271,23 @@ with col_pos:
                 vel_class = "flat"
                 spark_svg = ""
 
+            # Sprint 16: position value + distance to SL/TP — makes the
+            # "if I started with $10, how much am I making" question
+            # concrete. With balance $20 and a $5 position, you can see:
+            # - Position Value = qty × current_price
+            # - Distance to SL = how many $ you're risking
+            # - Distance to TP = how many $ you're targeting
+            position_value = abs(p["qty"] * now_price)
+            invested = abs(entry * p["qty"])
+            if direction == "long":
+                dist_to_sl = (now_price - p["stop_loss"]) * p["qty"]
+                dist_to_tp = (p["take_profit"] - now_price) * p["qty"]
+            else:
+                dist_to_sl = (p["stop_loss"] - now_price) * p["qty"]
+                dist_to_tp = (now_price - p["take_profit"]) * p["qty"]
+            dist_to_sl_color = "#f72585" if dist_to_sl > 0 else "#06d6a0"
+            dist_to_tp_color = "#06d6a0" if dist_to_tp > 0 else "#8892b0"
+
             # Card visual with pulse dot + direction arrow + velocity pill + sparkline
             st.markdown(
                 f'<div class="signal-card {direction_class}" '
@@ -2260,6 +2305,7 @@ with col_pos:
                 f'{velocity_pct:+.2f}% / 5m'
                 f'</span>'
                 f'</div>'
+                # Row 1: prices
                 f'<div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; '
                 f'margin-top:8px; font-family:JetBrains Mono; font-size:0.78rem;">'
                 f'<div><span style="color:#6b7390;">Entry</span><br>'
@@ -2275,14 +2321,36 @@ with col_pos:
                 f'<div><span style="color:#6b7390;">Margin</span><br>'
                 f'<span style="color:#d4dbe9; font-weight:700;">{margin:.1f}%</span></div>'
                 f'</div>'
+                # Row 2: dollars context — this is what makes the small-balance
+                # story concrete. "$5 position, +$0.06 = +1.2%".
+                f'<div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; '
+                f'margin-top:6px; padding-top:6px; border-top:1px dashed rgba(76,201,240,0.2); '
+                f'font-family:JetBrains Mono; font-size:0.78rem;">'
+                f'<div><span style="color:#6b7390;">Invested</span><br>'
+                f'<span style="color:#ffffff; font-weight:700;">${invested:.2f}</span></div>'
+                f'<div><span style="color:#6b7390;">Value</span><br>'
+                f'<span style="color:#ffffff; font-weight:700;">${position_value:.2f}</span></div>'
+                f'<div><span style="color:#6b7390;">P&amp;L</span><br>'
+                f'<span style="color:{live_pnl_class == "pos" and "#06d6a0" or (live_pnl_class == "neg" and "#f72585" or "#8892b0")}; '
+                f'font-weight:800;">{fmt_usd(live_upnl, 3)}</span></div>'
+                f'<div><span style="color:#6b7390;">→ SL</span><br>'
+                f'<span style="color:{dist_to_sl_color}; font-weight:700;">{fmt_usd(dist_to_sl, 2)}</span></div>'
+                f'<div><span style="color:#6b7390;">→ TP</span><br>'
+                f'<span style="color:{dist_to_tp_color}; font-weight:700;">{fmt_usd(dist_to_tp, 2)}</span></div>'
+                f'<div><span style="color:#6b7390;">Margin</span><br>'
+                f'<span style="color:#d4dbe9; font-weight:700;">${margin * balance / 100:.2f}</span></div>'
+                f'</div>'
                 f'{spark_svg}'
                 f'</div>'
                 f'<div style="text-align:right; min-width:120px;">'
-                f'<div class="kpi-value {live_pnl_class}" style="font-size:1.25rem; line-height:1.1;">'
+                f'<div class="kpi-value {live_pnl_class}" style="font-size:1.4rem; line-height:1.1;">'
                 f'{fmt_usd(live_upnl, 2)}'
                 f'</div>'
-                f'<div style="font-family:JetBrains Mono; font-size:0.78rem;" class="{live_pnl_class}">'
+                f'<div style="font-family:JetBrains Mono; font-size:0.85rem; font-weight:700;" class="{live_pnl_class}">'
                 f'{fmt_pct(live_pnl_pct, 2)}'
+                f'</div>'
+                f'<div style="font-family:JetBrains Mono; font-size:0.65rem; color:#6b7390; margin-top:2px;">'
+                f'unrealized'
                 f'</div>'
                 f'</div>'
                 f'</div>'
