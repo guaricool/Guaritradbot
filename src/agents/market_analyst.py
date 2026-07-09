@@ -1,15 +1,24 @@
 """
-Sprint 0 fix (Guaritradbot) — MarketAnalystAgent reescrito.
+Sprint 0+6 — MarketAnalystAgent.
 
-Fixes vs la versión previa:
-1. RSI ahora usa suavizado de WILDER (EMA con alpha=1/period), no SMA — estándar institucional.
-2. ATR(14) calculado y publicado en el state para que risk_agent pueda usar stop-loss basado en volatilidad real.
-3. Timeframe "4h" resampleado desde 60m (descargamos 60m y agregamos a 4h) en vez de mentir con 60m.
-4. Period de descarga aumenta según timeframe para garantizar mínimo de velas para EMA_50 / RSI.
+Sprint 0 fixes:
+1. RSI Wilder smoothing (estándar institucional).
+2. ATR(14) calculado y publicado en el state para risk_agent.
+3. Timeframe "4h" resampleado desde 60m.
+4. Period de descarga proporcional al timeframe.
+
+Sprint 6 añade:
+5. Fail-fast data integrity: cada vela se valida contra NaN/Inf/
+   negativos antes de procesarse. Si yfinance devuelve basura,
+   marcamos el estado del componente como DEGRADED o FAULTED.
+6. Component State Machine: PRE_INIT → READY → RUNNING con
+   transiciones auditadas.
 """
 import yfinance as yf
 import pandas as pd
 import numpy as np
+from src.core.component import Component, ComponentState
+from src.core.data_validator import validate_dataframe, DataIntegrityError
 
 
 # Period mínimo (en días) para garantizar al menos 80 velas tras warmup.
@@ -74,14 +83,17 @@ def _resample_ohlcv(df_60m: pd.DataFrame, rule: str) -> pd.DataFrame:
     )
 
 
-class MarketAnalystAgent:
+class MarketAnalystAgent(Component):
     """
     Agente responsable de descargar datos y calcular indicadores.
     Estilo NautilusTrader DataNode: pub/sub via event_bus.
+    Sprint 6: hereda de Component con State Machine integrada.
     """
 
-    def __init__(self, event_bus=None):
+    def __init__(self, event_bus=None, audit=None):
+        super().__init__(name="MarketAnalystAgent", audit=audit)
         self.event_bus = event_bus
+        self.ready()
 
     def fetch_one(self, asset: str, interval: str = "1d", period: str = "1y") -> "pd.DataFrame | None":
         """Helper público (Sprint 2): trae datos OHLCV de un solo asset. Usado por PositionMonitor."""
@@ -97,20 +109,30 @@ class MarketAnalystAgent:
         except Exception:
             return None
 
+    def _validate_or_fault(self, df, asset_tf: str) -> bool:
+        """Sprint 6: fail-fast. Devuelve False si los datos son corruptos."""
+        try:
+            validate_dataframe(df)
+            return True
+        except DataIntegrityError as e:
+            print(f"  ⚠️  {asset_tf}: data integrity fail — {e}")
+            self.degrade(f"data integrity: {e}")
+            return False
+
     def fetch_and_analyze(self, inputs: dict, state: dict):
         assets = inputs.get("assets", [])
         timeframes = inputs.get("timeframes", ["1h"])
 
-        # Mapeo conceptual timeframes → intervalo yfinance real.
-        # 4h se obtiene resampleando desde 60m (lo manejamos abajo).
         tf_map = {
-            "15m": ("15m", None),     # yfinance nativo
-            "1h":  ("60m", None),     # yfinance nativo
-            "4h":  ("60m", "4h"),     # descargar 60m y resamplear a 4h
+            "15m": ("15m", None),
+            "1h":  ("60m", None),
+            "4h":  ("60m", "4h"),
         }
 
+        self.start() if self.state == ComponentState.READY else None
         print(f"[MarketAnalystAgent] Fetching {len(assets)} assets × {len(timeframes)} timeframes...")
         data = {}
+        fail_count = 0
         for asset in assets:
             data[asset] = {}
             for tf in timeframes:
@@ -129,32 +151,31 @@ class MarketAnalystAgent:
                     df = df.dropna(how="all")
                     if df.empty:
                         print(f"  ⚠️  {asset}@{tf}: sin datos")
+                        fail_count += 1
                         continue
 
                     if resample_rule:
                         df = _resample_ohlcv(df, resample_rule)
 
-                    close = df["Close"]
+                    # Sprint 6 fail-fast: validar ANTES de calcular indicadores
+                    if not self._validate_or_fault(df, f"{asset}@{tf}"):
+                        fail_count += 1
+                        continue
 
-                    # EMAs (tendencia)
+                    close = df["Close"]
                     df["EMA_20"] = close.ewm(span=20, adjust=False).mean()
                     df["EMA_50"] = close.ewm(span=50, adjust=False).mean()
-
-                    # RSI Wilder (estándar)
                     df["RSI"] = _wilder_rsi(close, 14)
-
-                    # MACD (señal + línea)
                     ema12 = close.ewm(span=12, adjust=False).mean()
                     ema26 = close.ewm(span=26, adjust=False).mean()
                     df["MACD"] = ema12 - ema26
                     df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
-
-                    # ATR(14) — Sprint 0 nuevo, lo usará risk_agent
                     df["ATR_14"] = _atr(df, 14)
 
                     df = df.dropna(subset=["Close", "EMA_50", "RSI", "MACD", "ATR_14"])
                     if df.empty:
                         print(f"  ⚠️  {asset}@{tf}: sin velas tras warmup")
+                        fail_count += 1
                         continue
 
                     data[asset][tf] = df
@@ -166,8 +187,16 @@ class MarketAnalystAgent:
                     )
                 except Exception as e:
                     print(f"  ❌ {asset}@{tf}: {e}")
+                    fail_count += 1
 
-        # Publicar en event bus (estilo Nautilus DataNode)
+        # Si fallaron demasiados assets, marcar como DEGRADED pero seguir
+        if fail_count > 0 and fail_count < len(assets) * len(timeframes):
+            self.degrade(f"{fail_count} feeds failed but workflow continues")
+        elif fail_count >= len(assets) * len(timeframes):
+            self.fault(f"all {fail_count} feeds failed")
+        else:
+            self.recover()
+
         if self.event_bus:
             self.event_bus.publish("MARKET_DATA_READY", data)
 

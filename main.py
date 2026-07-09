@@ -150,7 +150,7 @@ def main():
             print(f"[Optimizador] Error durante la optimización: {e}")
 
     registry = {
-        "MarketAnalystAgent": MarketAnalystAgent(event_bus=event_bus),
+        "MarketAnalystAgent": MarketAnalystAgent(event_bus=event_bus, audit=audit),
         "StrategyAgent": StrategyAgent(strategy_params=strategy_params),
         "RiskManagerAgent": RiskManagerAgent(
             broker_client=broker_client,

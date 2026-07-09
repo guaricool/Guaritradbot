@@ -81,4 +81,10 @@ def validate_dataframe(df, required_cols=("Open", "High", "Low", "Close")):
         if (df[col] < 0).any():
             n_neg = int((df[col] < 0).sum())
             raise DataIntegrityError(f"column {col}: {n_neg} negative values")
+    # OHLC integrity: high >= low en cada fila
+    if "High" in df.columns and "Low" in df.columns:
+        bad = df[df["High"] < df["Low"]]
+        if len(bad) > 0:
+            n = len(bad)
+            raise DataIntegrityError(f"high<low en {n} vela(s)")
     return df
