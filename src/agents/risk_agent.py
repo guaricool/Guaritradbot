@@ -139,6 +139,7 @@ class RiskManagerAgent:
                 adjusted_cap_pct = (adjusted_cap / account_balance) * 100.0 if account_balance > 0 else 0
                 quantity = adjusted_cap / entry_price
                 notional = quantity * entry_price
+                risk_amount_usd_eff = quantity * stop_distance
                 if self.audit:
                     self.audit.append("CAP_AUTO_ADJUSTED", {
                         "asset": h.get("asset"),
