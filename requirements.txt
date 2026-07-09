@@ -13,3 +13,6 @@ yfinance>=1.0,<2.0
 curl_cffi>=0.7,<1.0
 ta==0.11.0
 plotly==5.22.0
+# streamlit-autorefresh: non-blocking page reload — avoids the 15s sleep that
+# `time.sleep + st.rerun()` causes on the FIRST render of the dashboard.
+streamlit-autorefresh==1.0.1

@@ -31,6 +31,10 @@ import yaml
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+# Non-blocking auto-refresh (replaces time.sleep + st.rerun that delayed
+# the first render by N seconds).
+from streamlit_autorefresh import st_autorefresh
+
 # ============================================================
 #  PAGE CONFIG  &  GLOBAL STYLE
 # ============================================================
@@ -563,10 +567,10 @@ with st.sidebar:
     st.caption(f"🕒 {datetime.now().strftime('%H:%M:%S')} CT")
 
 
-# Auto-refresh
+# Auto-refresh — non-blocking. Triggers a soft rerun every N seconds WITHOUT
+# delaying the first render with time.sleep. The interval is in milliseconds.
 if refresh_sec and refresh_sec > 0:
-    time.sleep(refresh_sec)
-    st.rerun()
+    st_autorefresh(interval=refresh_sec * 1000, key="guaritradbot_autorefresh")
 
 
 # ============================================================
