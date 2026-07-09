@@ -97,6 +97,18 @@ class PositionRepository:
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
         tmp.replace(self.path)
+        # Sprint 11: también escribir al volumen compartido (audit/) para
+        # que el dashboard container pueda ver las posiciones. El bot
+        # container NO comparte data_store/ con el dashboard, pero sí
+        # comparte audit/.
+        try:
+            mirror = Path("audit/positions.json")
+            mirror.parent.mkdir(parents=True, exist_ok=True)
+            mirror.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+        except Exception as e:
+            # No fatal — el bot sigue funcionando, solo el dashboard no
+            # podrá ver las posiciones en este ciclo.
+            print(f"[PositionRepo] mirror to audit/ failed: {e}")
 
     # --- queries ---
     def all(self) -> List[Position]:

@@ -805,8 +805,16 @@ def _load_state_cached():
 
 @st.cache_data(ttl=10)
 def _load_positions_cached():
-    data = _load_json("data_store/positions.json")
-    return data.get("positions", [])
+    """Load open/closed positions.
+
+    Sprint 11 fix: try audit/positions.json first (shared via bot_audit
+    volume), then fall back to legacy data_store/positions.json which
+    lives only in the bot container.
+    """
+    data = _load_json("audit/positions.json")
+    if data:
+        return data.get("positions", [])
+    return _load_json("data_store/positions.json").get("positions", [])
 
 
 @st.cache_data(ttl=10)
