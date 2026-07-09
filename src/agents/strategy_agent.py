@@ -16,33 +16,67 @@ class StrategyAgent:
             if asset in ["SPY", "QQQ"] and "15m" in tf_data:
                 # Mean Reversion on 15m
                 df = tf_data["15m"]
-                if not df.empty:
-                    # Mock strategy output for architecture demonstration
-                    hypotheses.append({
-                        "asset": asset,
-                        "strategy": "MeanReversion",
-                        "direction": "long",
-                        "price": df['Close'].iloc[-1].item() if not pd.isna(df['Close'].iloc[-1].item()) else 0
-                    })
+                if not df.empty and 'RSI' in df.columns:
+                    last_rsi = df['RSI'].iloc[-1].item() if not pd.isna(df['RSI'].iloc[-1].item()) else 50
+                    current_price = df['Close'].iloc[-1].item() if not pd.isna(df['Close'].iloc[-1].item()) else 0
+                    
+                    if last_rsi < 30:
+                        hypotheses.append({
+                            "asset": asset,
+                            "strategy": "MeanReversion (RSI < 30)",
+                            "direction": "long",
+                            "price": current_price
+                        })
+                    elif last_rsi > 70:
+                        hypotheses.append({
+                            "asset": asset,
+                            "strategy": "MeanReversion (RSI > 70)",
+                            "direction": "short",
+                            "price": current_price
+                        })
             elif asset == "BTC-USD" and "1h" in tf_data:
                 # Breakout on 1h
                 df = tf_data["1h"]
-                if not df.empty:
-                    hypotheses.append({
-                        "asset": asset,
-                        "strategy": "Breakout",
-                        "direction": "long",
-                        "price": df['Close'].iloc[-1].item() if not pd.isna(df['Close'].iloc[-1].item()) else 0
-                    })
+                if not df.empty and 'MACD' in df.columns and 'MACD_Signal' in df.columns:
+                    last_macd = df['MACD'].iloc[-1].item() if not pd.isna(df['MACD'].iloc[-1].item()) else 0
+                    last_signal = df['MACD_Signal'].iloc[-1].item() if not pd.isna(df['MACD_Signal'].iloc[-1].item()) else 0
+                    current_price = df['Close'].iloc[-1].item() if not pd.isna(df['Close'].iloc[-1].item()) else 0
+                    
+                    if last_macd > last_signal:
+                        hypotheses.append({
+                            "asset": asset,
+                            "strategy": "Breakout (MACD Bullish Cross)",
+                            "direction": "long",
+                            "price": current_price
+                        })
+                    elif last_macd < last_signal:
+                        hypotheses.append({
+                            "asset": asset,
+                            "strategy": "Breakout (MACD Bearish Cross)",
+                            "direction": "short",
+                            "price": current_price
+                        })
             elif asset in ["GLD", "USO"] and "4h" in tf_data:
                 # Trend Following on 4h
                 df = tf_data["4h"]
-                if not df.empty:
-                    hypotheses.append({
-                        "asset": asset,
-                        "strategy": "TrendFollowing",
-                        "direction": "long",
-                        "price": df['Close'].iloc[-1].item() if not pd.isna(df['Close'].iloc[-1].item()) else 0
-                    })
+                if not df.empty and 'EMA_20' in df.columns and 'EMA_50' in df.columns:
+                    last_ema20 = df['EMA_20'].iloc[-1].item() if not pd.isna(df['EMA_20'].iloc[-1].item()) else 0
+                    last_ema50 = df['EMA_50'].iloc[-1].item() if not pd.isna(df['EMA_50'].iloc[-1].item()) else 0
+                    current_price = df['Close'].iloc[-1].item() if not pd.isna(df['Close'].iloc[-1].item()) else 0
+                    
+                    if last_ema20 > last_ema50:
+                        hypotheses.append({
+                            "asset": asset,
+                            "strategy": "TrendFollowing (EMA20 > EMA50)",
+                            "direction": "long",
+                            "price": current_price
+                        })
+                    elif last_ema20 < last_ema50:
+                        hypotheses.append({
+                            "asset": asset,
+                            "strategy": "TrendFollowing (EMA20 < EMA50)",
+                            "direction": "short",
+                            "price": current_price
+                        })
                     
         return {"hypotheses": hypotheses}

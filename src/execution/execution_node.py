@@ -3,8 +3,9 @@ class ExecutionNode:
     Nodo de ejecución abstracto inspirado en NautilusTrader.
     Maneja el enrutamiento de órdenes aislando a los agentes de los detalles del broker (Simulado o en Vivo).
     """
-    def __init__(self, event_bus):
+    def __init__(self, event_bus, execution_mode="auto"):
         self.event_bus = event_bus
+        self.execution_mode = execution_mode
         # Suscribirse a órdenes aprobadas
         self.event_bus.subscribe("ORDER_APPROVED", self.on_order_approved)
 
@@ -12,6 +13,14 @@ class ExecutionNode:
         """
         Callback cuando el RiskManager aprueba una orden.
         """
+        if self.execution_mode == "human_in_the_loop":
+            print(f"\n[ExecutionNode] 🛑 ATENCIÓN: ORDEN PENDIENTE DE APROBACIÓN HUMANA")
+            print(f"Propuesta: {data}")
+            decision = input("¿Deseas ejecutar esta orden en el mercado real? (Y/N): ")
+            if decision.strip().upper() != 'Y':
+                print("[ExecutionNode] ❌ Orden rechazada por el humano.")
+                return
+            
         self.execute_order(data)
 
     def execute_order(self, order_data: dict):

@@ -1,0 +1,7 @@
+# Configuración Global del Bot Épico
+
+execution_mode: "human_in_the_loop"  # Opciones: "auto" | "human_in_the_loop"
+
+trading:
+  max_open_trades: 5
+  risk_per_trade_pct: 2.0

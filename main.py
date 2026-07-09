@@ -6,13 +6,22 @@ from src.agents.risk_agent import RiskManagerAgent
 from src.agents.execution_agent import ExecutionAgent
 from src.core.event_bus import EventBus
 from src.execution.execution_node import ExecutionNode
+import yaml
 
 def main():
     print("=== Iniciando Bot Épico (Multi-Agente) ===")
     
+    # 0. Load global configuration
+    config_path = "config.yaml"
+    execution_mode = "auto"
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            config = yaml.safe_load(f)
+            execution_mode = config.get("execution_mode", "auto")
+
     # 1. Instantiate Core Subsystems (Nautilus Architecture)
     event_bus = EventBus()
-    execution_node = ExecutionNode(event_bus)
+    execution_node = ExecutionNode(event_bus, execution_mode=execution_mode)
     
     # 2. Instantiate the Agents Registry
     registry = {
