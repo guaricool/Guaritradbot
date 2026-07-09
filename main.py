@@ -1,19 +1,21 @@
 """
-Sprint 0+1 — main entrypoint.
+Sprint 0+1+2 — main entrypoint.
 
 Sprint 0 fix: lee `trading.*` y propaga los parámetros correctos a
 RiskManager (risk_per_trade_pct, atr_stop_multiplier, min_order_usd).
 
 Sprint 1 añade: audit ledger JSONL persistido en `audit/audit.jsonl`,
 mandate gate opcional activado desde config.yaml, kill switch
-filesystem. Cada evento relevante del bot queda registrado para
-forensics post-mortem.
+filesystem. Cada evento relevante del bot queda registrado.
+
+Sprint 2 añade: PositionRepository persistido en disco (sobrevive
+crashes), PositionMonitor que chequea stops/TPs cada tick ANTES de
+generar nuevas señales, take profit ATR-based, max_open_trades
+respetado por RiskAgent.
 """
 import os
 import argparse
-import time
 
-import pandas as pd
 import yaml
 
 from src.workflows.engine import WorkflowEngine
@@ -30,6 +32,8 @@ from src.optimization.hyperopt import HyperoptManager
 from src.safety.audit_ledger import AuditLedger
 from src.safety.kill_switch import KillSwitch
 from src.safety.mandate_gate import MandateGate, MandateConfig
+from src.data_store.positions import PositionRepository
+from src.data_store.position_monitor import PositionMonitor
 
 
 def _audit_path(config: dict) -> str:
@@ -58,7 +62,6 @@ def main():
 
     print("=== Iniciando Bot Épico (Multi-Agente) ===")
 
-    # 0. Cargar configuración
     config_path = "config.yaml"
     config = {}
     if os.path.exists(config_path):
@@ -70,8 +73,11 @@ def main():
     trading_cfg = config.get("trading", {})
     risk_per_trade_pct = trading_cfg.get("risk_per_trade_pct", 1.0)
     atr_stop_multiplier = trading_cfg.get("atr_stop_multiplier", 2.0)
+    atr_take_profit_multiplier = trading_cfg.get("atr_take_profit_multiplier", 4.0)
+    risk_reward_ratio = trading_cfg.get("risk_reward_ratio", 2.0)
     max_capital_per_trade_pct = trading_cfg.get("max_capital_per_trade_pct", 10.0)
     min_order_usd = trading_cfg.get("min_order_usd", 10.0)
+    max_open_trades = trading_cfg.get("max_open_trades", 5)
 
     broker_client = None
     exchange_cfg = config.get("exchange", {})
@@ -84,23 +90,31 @@ def main():
         except Exception as e:
             print(f"[Broker] Error al inicializar: {e}. Modo paper-only.")
 
-    # 1. Sprint 1: audit ledger, kill switch, mandate gate
     audit = AuditLedger(_audit_path(config))
     kill_switch = KillSwitch(config.get("mandate", {}).get("kill_switch_file", "/tmp/GUARITRADBOT_KILL"))
     mandate_gate, mandate_cfg = _build_mandate(config, audit)
+    position_repo = PositionRepository("data_store/positions.json")
+
     if kill_switch.is_triggered():
         audit.append("BOT_START_BLOCKED_KILLSWITCH", {"reason": "kill_file_present"})
         print("⛔ Kill switch armado al startup — bot no arranca.")
         return
 
-    audit.append("BOT_START", {
-        "execution_mode": execution_mode,
-        "risk_per_trade_pct": risk_per_trade_pct,
-        "mandate_enabled": mandate_cfg is not None,
-        "max_position_usd": mandate_cfg.max_position_usd if mandate_cfg else 0,
-    })
+    audit.append(
+        "BOT_START",
+        {
+            "execution_mode": execution_mode,
+            "risk_per_trade_pct": risk_per_trade_pct,
+            "mandate_enabled": mandate_cfg is not None,
+            "open_positions_at_start": position_repo.count_open(),
+        },
+    )
 
-    # 2. Core subsystems
+    print(
+        f"[Init] {position_repo.count_open()} posiciones abiertas cargadas "
+        f"(realized PnL total ${position_repo.total_realized_pnl_usd():.4f})"
+    )
+
     event_bus = EventBus()
     execution_node = ExecutionNode(
         event_bus,
@@ -109,8 +123,13 @@ def main():
         kill_switch=kill_switch,
         audit=audit,
     )
+    position_monitor = PositionMonitor(
+        repo=position_repo,
+        audit=audit,
+        event_bus=event_bus,
+        broker=broker_client,
+    )
 
-    # 3. Optimizer opcional
     strategy_params = None
     if optimize_on_start:
         print("[Optimizador] Iniciando Grid Search de parámetros...")
@@ -129,7 +148,6 @@ def main():
         except Exception as e:
             print(f"[Optimizador] Error durante la optimización: {e}")
 
-    # 4. Agents registry
     registry = {
         "MarketAnalystAgent": MarketAnalystAgent(event_bus=event_bus),
         "StrategyAgent": StrategyAgent(strategy_params=strategy_params),
@@ -138,10 +156,14 @@ def main():
             risk_per_trade_pct=risk_per_trade_pct,
             max_capital_per_trade_pct=max_capital_per_trade_pct,
             atr_stop_multiplier=atr_stop_multiplier,
+            atr_take_profit_multiplier=atr_take_profit_multiplier,
+            risk_reward_ratio=risk_reward_ratio,
+            max_open_trades=max_open_trades,
             min_order_usd=min_order_usd,
             event_bus=event_bus,
             mandate_gate=mandate_gate,
             audit=audit,
+            position_repo=position_repo,
         ),
         "ExecutionAgent": ExecutionAgent(event_bus=event_bus),
         "NotificationAgent": NotificationAgent(event_bus=event_bus, config=config),
@@ -154,7 +176,42 @@ def main():
         return
     workflow_data = engine.load_workflow(workflow_path)
 
+    # Workflow customizado: insertamos un paso de PositionMonitor antes de
+    # que se ejecute la estrategia, para que stops/TPs se cierren primero.
+    # Si el monitor cierra una posición, queda registrada antes de la
+    # nueva ronda de señales.
+
     scheduler = EpochScheduler(engine, workflow_data, config_path)
+
+    # Monkey-patch el scheduler.job para correr el monitor antes
+    original_job = scheduler.job
+
+    def job_with_monitor():
+        # 1. Monitor: cierra stops/TPs antes que la nueva ronda
+        try:
+            opens = position_repo.open()
+            if opens:
+                from src.agents.market_analyst import MarketAnalystAgent as _MA
+                ma = _MA()
+                prices = {}
+                for pos in opens:
+                    try:
+                        df = ma.fetch_one(pos.asset, interval="1d", period="1mo")
+                        if df is not None and len(df) > 0:
+                            prices[pos.asset] = float(df["Close"].iloc[-1])
+                    except Exception:
+                        continue
+                if prices:
+                    closed = position_monitor.check(prices)
+                    if closed:
+                        print(f"[PositionMonitor] {len(closed)} posiciones cerradas por stops/TPs")
+        except Exception as e:
+            print(f"[PositionMonitor] check falló: {e}")
+
+        # 2. Workflow normal
+        original_job()
+
+    scheduler.job = job_with_monitor
 
     try:
         if args.once:
@@ -164,8 +221,10 @@ def main():
             audit.append("WORKFLOW_END", {"mode": "once"})
             print("\n=== Ciclo Único Completado ===")
             summary = audit.summary()
-            print(f"📒 Audit summary: {summary['total_events']} events, {len(summary['by_type'])} types")
+            print(f"📒 Audit: {summary['total_events']} events, {len(summary['by_type'])} types")
             print(f"   Audit file: {audit.path}")
+            print(f"📊 Posiciones: {position_repo.count_open()} abiertas, "
+                  f"${position_repo.total_realized_pnl_usd():.4f} realized PnL total")
         else:
             print("[System] Iniciando Demonio (Modo Épocas)...")
             audit.append("WORKFLOW_START", {"mode": "daemon"})
@@ -176,11 +235,6 @@ def main():
     except Exception as e:
         audit.append("BOT_STOP_EXCEPTION", {"error": str(e)})
         raise
-    finally:
-        # Botón de armado/desarmado: el usuario puede tocar el kill switch
-        # desde otra terminal y la siguiente iteración del scheduler lo verá.
-        # No disarmamos aquí a propósito: el estado armado persiste.
-        pass
 
 
 if __name__ == "__main__":

@@ -1,22 +1,15 @@
 """
-Sprint 0+1 — RiskManagerAgent.
+Sprint 0+1+2 — RiskManagerAgent.
 
-Sprint 0 fixes:
-1. Stop loss ahora basado en ATR (2x ATR, configurable) en vez de $5
-   hardcoded.
-2. Position sizing correcto: qty = risk_amount / (entry - stop) con
-   `risk_per_trade_pct` del config.
-3. Account balance fallback inteligente.
-
-Sprint 1 añade:
-4. Integración con MandateGate (si está habilitado) — el gate valida
-   universo, position size, daily loss rolling 24h, y exposure total
-   ANTES de aprobar. Trades que fallen el gate se mueven a `rejected`.
-5. Audit ledger: cada aprobación y cada rechazo se registra para
-   forensics post-mortem.
+Sprint 0 fixes: ATR-based stops, qty = risk/distance, min order check.
+Sprint 1: Mandate Gate + audit ledger integration.
+Sprint 2: Take profit ATR-based, max_open_trades respetado, persiste
+posición abierta en el PositionRepository.
 """
 import os
-from typing import Dict, Any, Optional
+from typing import Dict, Any
+
+from src.data_store.positions import Position
 
 
 class RiskManagerAgent:
@@ -26,19 +19,27 @@ class RiskManagerAgent:
         risk_per_trade_pct: float = 1.0,
         max_capital_per_trade_pct: float = 10.0,
         atr_stop_multiplier: float = 2.0,
+        atr_take_profit_multiplier: float = 4.0,
+        risk_reward_ratio: float = 2.0,
+        max_open_trades: int = 5,
         min_order_usd: float = 10.0,
         event_bus=None,
         mandate_gate=None,
         audit=None,
+        position_repo=None,
     ):
         self.broker = broker_client
         self.risk_per_trade_pct = risk_per_trade_pct
         self.max_capital_per_trade_pct = max_capital_per_trade_pct
         self.atr_stop_multiplier = atr_stop_multiplier
+        self.atr_take_profit_multiplier = atr_take_profit_multiplier
+        self.risk_reward_ratio = risk_reward_ratio
+        self.max_open_trades = max_open_trades
         self.min_order_usd = min_order_usd
         self.event_bus = event_bus
         self.mandate = mandate_gate
         self.audit = audit
+        self.position_repo = position_repo
 
     def get_account_balance(self) -> tuple:
         if self.broker is None:
@@ -57,11 +58,14 @@ class RiskManagerAgent:
         hypotheses: list = state.get("generate_hypotheses", {}).get("hypotheses", [])
         account_balance, balance_source = self.get_account_balance()
 
+        # Sprint 2: cuántas posiciones abiertas ya tenemos
+        open_count = self.position_repo.count_open() if self.position_repo else 0
+        slots_left = max(0, self.max_open_trades - open_count)
         print(
             f"[RiskManagerAgent] {len(hypotheses)} hipótesis | "
             f"Balance ${account_balance:.2f} ({balance_source}) | "
-            f"Riesgo/trade: {self.risk_per_trade_pct}% | "
-            f"Stop: {self.atr_stop_multiplier}x ATR"
+            f"Posiciones abiertas {open_count}/{self.max_open_trades} | "
+            f"Riesgo {self.risk_per_trade_pct}% | R:R {self.risk_reward_ratio}:1"
         )
 
         approved = []
@@ -77,18 +81,21 @@ class RiskManagerAgent:
                     self.audit.append("TRADE_REJECTED", {"asset": h.get("asset"), "reason": "invalid_entry_price"})
                 continue
 
-            # ATR-based stop
+            # --- Stop y Take Profit (ATR-based, Sprint 0+2) ---
             stop_distance = max(atr * self.atr_stop_multiplier, entry_price * 0.005)
+            tp_distance = atr * self.atr_take_profit_multiplier
             if direction == "long":
                 stop_loss = entry_price - stop_distance
+                take_profit = entry_price + tp_distance
             else:
                 stop_loss = entry_price + stop_distance
+                take_profit = entry_price - tp_distance
 
-            # Position sizing
+            # --- Position sizing: qty = risk / distance ---
             risk_amount_usd = account_balance * (self.risk_per_trade_pct / 100.0)
             quantity = risk_amount_usd / stop_distance
 
-            # Cap por max_capital_per_trade_pct
+            # --- Cap por max_capital_per_trade_pct ---
             notional = quantity * entry_price
             max_notional = account_balance * (self.max_capital_per_trade_pct / 100.0)
             if notional > max_notional:
@@ -98,6 +105,7 @@ class RiskManagerAgent:
             else:
                 risk_amount_usd_eff = risk_amount_usd
 
+            # --- Min order ---
             if notional < self.min_order_usd:
                 rejected.append(
                     {"hypothesis": h, "reason": f"notional_${notional:.2f} < ${self.min_order_usd}"}
@@ -113,7 +121,7 @@ class RiskManagerAgent:
                 "direction": direction,
                 "entry_price": entry_price,
                 "stop_loss": stop_loss,
-                "take_profit": entry_price + (stop_distance * 2.0) * (1 if direction == "long" else -1),
+                "take_profit": take_profit,
                 "position_size": round(float(quantity), 8),
                 "notional_usd": round(float(notional), 2),
                 "risk_usd": round(float(risk_amount_usd_eff), 2),
@@ -121,25 +129,29 @@ class RiskManagerAgent:
                 "balance_source": balance_source,
             }
 
-            # Sprint 1: Mandate gate
+            # --- Sprint 1: Mandate gate ---
             if self.mandate is not None:
                 verdict = self.mandate.validate(trade)
                 if not verdict.ok:
                     rejected.append({"trade": trade, "reason": verdict.reason})
                     if self.audit:
-                        self.audit.append(
-                            "MANDATE_BLOCKED",
-                            {"asset": trade["asset"], "reason": verdict.reason, "notional": trade["notional_usd"]},
-                        )
+                        self.audit.append("MANDATE_BLOCKED", {"asset": trade["asset"], "reason": verdict.reason})
                     print(f"  🛡️  {trade['asset']:8} {direction:5} — blocked by mandate: {verdict.reason}")
                     continue
                 if self.audit:
-                    self.audit.append(
-                        "MANDATE_OK",
-                        {"asset": trade["asset"], "notional": trade["notional_usd"], "risk": trade["risk_usd"]},
-                    )
+                    self.audit.append("MANDATE_OK", {"asset": trade["asset"], "notional": trade["notional_usd"], "risk": trade["risk_usd"]})
+
+            # --- Sprint 2: max_open_trades ---
+            if slots_left <= 0:
+                rejected.append({"trade": trade, "reason": f"max_open_trades:{self.max_open_trades}"})
+                if self.audit:
+                    self.audit.append("TRADE_REJECTED", {"asset": trade["asset"], "reason": "max_open_trades_reached"})
+                print(f"  🚫 {trade['asset']:8} {direction:5} — slots llenos ({open_count}/{self.max_open_trades})")
+                continue
 
             approved.append(trade)
+            slots_left -= 1
+
             if self.audit:
                 self.audit.append(
                     "TRADE_APPROVED",
@@ -148,17 +160,39 @@ class RiskManagerAgent:
                         "direction": direction,
                         "entry_price": entry_price,
                         "stop_loss": stop_loss,
+                        "take_profit": take_profit,
                         "qty": trade["position_size"],
                         "notional_usd": trade["notional_usd"],
                         "risk_usd": trade["risk_usd"],
                     },
                 )
+
+            # --- Sprint 2: registrar posición abierta ---
+            if self.position_repo is not None:
+                import time
+                pos = Position(
+                    asset=trade["asset"],
+                    direction=direction,
+                    entry_price=entry_price,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    qty=float(quantity),
+                    risk_usd=risk_amount_usd_eff,
+                    entry_ts=time.time(),
+                    strategy=h.get("strategy", ""),
+                )
+                self.position_repo.add_open(pos)
+                if self.audit:
+                    self.audit.append(
+                        "POSITION_OPENED",
+                        {"position_id": pos.position_id, "asset": pos.asset, "qty": pos.qty, "notional_usd": pos.notional_usd},
+                    )
+
             print(
                 f"  ✅ {trade['asset']:8} {direction:5} @ ${entry_price:>9.2f} | "
                 f"qty={quantity:>10.6f} | "
-                f"stop=${stop_loss:>9.2f} | "
-                f"risk=${risk_amount_usd_eff:.2f} | "
-                f"notional=${notional:.2f}"
+                f"SL=${stop_loss:>9.2f} | TP=${take_profit:>9.2f} | "
+                f"risk=${risk_amount_usd_eff:.2f} | notional=${notional:.2f}"
             )
 
         return {
@@ -166,4 +200,5 @@ class RiskManagerAgent:
             "rejected_trades": rejected,
             "account_balance": account_balance,
             "balance_source": balance_source,
+            "open_positions_after": self.position_repo.count_open() if self.position_repo else 0,
         }

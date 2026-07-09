@@ -12,6 +12,8 @@ exchange:
 trading:
   risk_per_trade_pct: 1.0          # 1% del balance arriesgado por trade (regla #1 del playbook)
   atr_stop_multiplier: 2.0         # Stop = entry ± k * ATR (k=2 es estándar)
+  atr_take_profit_multiplier: 4.0  # TP = entry ± k_tp * ATR (default 4 = 1:2 R:R)
+  risk_reward_ratio: 2.0           # Alternativa explícita: si atr_tp no está, se calcula así
   max_open_trades: 5
   min_order_usd: 10.0              # Binance spot mínimo
 

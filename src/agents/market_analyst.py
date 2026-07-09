@@ -83,6 +83,20 @@ class MarketAnalystAgent:
     def __init__(self, event_bus=None):
         self.event_bus = event_bus
 
+    def fetch_one(self, asset: str, interval: str = "1d", period: str = "1y") -> "pd.DataFrame | None":
+        """Helper público (Sprint 2): trae datos OHLCV de un solo asset. Usado por PositionMonitor."""
+        try:
+            import yfinance as yf
+            tf_map = {"15m": "15m", "60m": "60m", "1h": "60m", "4h": "60m", "1d": "1d"}
+            yf_interval = tf_map.get(interval, "1d")
+            df = yf.download(asset, period=period, interval=yf_interval, progress=False, auto_adjust=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df = df.dropna(how="all")
+            return df if not df.empty else None
+        except Exception:
+            return None
+
     def fetch_and_analyze(self, inputs: dict, state: dict):
         assets = inputs.get("assets", [])
         timeframes = inputs.get("timeframes", ["1h"])
