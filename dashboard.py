@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -1910,13 +1910,20 @@ with col_gauge:
 with col_cd:
     st.markdown('<div class="panel-title">⏱ Next Bot Run</div>',
                 unsafe_allow_html=True)
-    # Countdown to the next hour boundary
+    # Sprint 18: countdown to the next hour boundary.
+    # Previous version used `now.replace(hour=(now.hour + 1) % 24)` which
+    # failed when now.hour == 23: the wrap-around to hour=0 didn't advance
+    # the day, leaving next_run in the past → negative delta like -1386m.
+    # Fix: use timedelta(hours=1) from the top of the current hour.
     now = datetime.now()
-    next_run = now.replace(minute=0, second=0, microsecond=0)
-    # If we're past the top of the hour, add 1h
-    if now.minute > 0 or now.second > 0:
-        next_run = next_run.replace(hour=(now.hour + 1) % 24)
+    top_of_hour = now.replace(minute=0, second=0, microsecond=0)
+    next_run = top_of_hour + timedelta(hours=1)
     delta = (next_run - now).total_seconds()
+    if delta <= 0:
+        # Edge case: bot triggered exactly at the top of the hour.
+        # Skip to the next one.
+        next_run = next_run + timedelta(hours=1)
+        delta = (next_run - now).total_seconds()
     mins = int(delta // 60)
     secs = int(delta % 60)
     st.markdown(
