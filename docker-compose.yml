@@ -11,7 +11,10 @@ services:
     env_file:
       - .env
     volumes:
-      - bot_data:/app
+      # Sprint 8 fix: NO montar /app entero (eso congela source code + config.yaml
+      # en el volume y bloquea updates del repo). Solo persistir audit/ (runtime state).
+      # data_store/*.csv vienen de la imagen (tracked in git), runtime state se regenera.
+      - bot_audit:/app/audit
 
   # Servicio 2: El Dashboard interactivo
   dashboard:
@@ -23,9 +26,9 @@ services:
     ports:
       - "8501:8501"
     volumes:
-      - bot_data:/app
+      - bot_audit:/app/audit
     depends_on:
       - guaritradbot
 
 volumes:
-  bot_data:
+  bot_audit:
