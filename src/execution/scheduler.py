@@ -154,7 +154,7 @@ class EpochScheduler:
                         return "Pandas DataFrame/Series (Omitted for JSON)"
                     return super().default(obj)
 
-            with open("latest_state.json", "w") as f:
+            with open("audit/latest_state.json", "w") as f:
                 json.dump({"timestamp": datetime.now().isoformat(), "state": state}, f, indent=4, cls=CustomEncoder)
         except Exception as e:
             logger.error(f"Error saving state: {e}")

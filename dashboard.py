@@ -793,7 +793,14 @@ def _load_audit(path: str = "audit/audit.jsonl", n: int = 30) -> list:
 
 @st.cache_data(ttl=5)
 def _load_state_cached():
-    return _load_json("latest_state.json")
+    """Load latest bot state.
+
+    Sprint 9 fix: bot writes to `audit/latest_state.json` so the dashboard
+    container (which only shares the `bot_audit` volume, not `/app/`) can
+    see the live state. Falls back to top-level `latest_state.json` for
+    backwards compatibility.
+    """
+    return _load_json("audit/latest_state.json") or _load_json("latest_state.json")
 
 
 @st.cache_data(ttl=10)
@@ -875,6 +882,41 @@ def _live_prices(assets: tuple) -> dict:
     except Exception:
         pass
     return out
+
+
+@st.cache_data(ttl=15)
+def _live_binance_balance() -> dict | None:
+    """Fetch LIVE USD/USDT balance from binance.us via ccxt.
+
+    Used as a fallback when the bot hasn't written a fresh risk_evaluation
+    yet (or its value is 0 / missing). Cached 15s so we don't spam the API.
+    Returns dict {free, total, source} or None on failure.
+    """
+    api_key = os.getenv("BINANCE_API_KEY")
+    secret = os.getenv("BINANCE_API_SECRET")
+    if not api_key or not secret:
+        return None
+    try:
+        import ccxt
+        exch = ccxt.binanceus({
+            "apiKey": api_key,
+            "secret": secret,
+            "enableRateLimit": True,
+        })
+        bal = exch.fetch_balance()
+        out = {"free": 0.0, "total": 0.0, "source": "binance.us (live)"}
+        for sym in ("USD", "USDT", "BUSD", "USDC"):
+            info = bal.get(sym)
+            if isinstance(info, dict):
+                free = float(info.get("free") or 0)
+                total = float(info.get("total") or 0)
+                if total > 0:
+                    out["free"] = free
+                    out["total"] = total
+                    break
+        return out
+    except Exception:
+        return None
 
 
 # ============================================================
@@ -1144,7 +1186,26 @@ approved_hyp = debate.get("approved_hypotheses", [])
 risk_eval = last_state.get("risk_evaluation", {})
 executed = last_state.get("execute_trades", {}).get("executed_trades", [])
 
-balance = float(risk_eval.get("account_balance", 100.0))
+# Account balance: prefer the bot's last risk_evaluation. If that's
+# missing/zero (e.g. bot hasn't run yet, or was restarted), fall back to
+# a live fetch from binance.us so the dashboard always shows the real
+# number. Avoid the misleading hardcoded $100 default.
+_bot_balance = float(risk_eval.get("account_balance") or 0.0)
+_bot_balance_source = risk_eval.get("balance_source", "")
+if _bot_balance > 0:
+    balance = _bot_balance
+    balance_source = _bot_balance_source or "bot"
+else:
+    live = _live_binance_balance()
+    if live and live["total"] > 0:
+        balance = live["total"]
+        balance_source = live["source"]
+    elif live and live["free"] > 0:
+        balance = live["free"]
+        balance_source = live["source"]
+    else:
+        balance = 0.0
+        balance_source = "unavailable"
 positions = _load_positions_cached()
 audit_events = _load_audit_cached(n=50)
 
@@ -1294,7 +1355,13 @@ def spark_series(asset: str, n: int = 20) -> list:
 
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 with c1:
-    st.markdown(kpi_with_spark("Balance", fmt_usd(balance)), unsafe_allow_html=True)
+    st.markdown(
+        kpi_with_spark(
+            "Balance", fmt_usd(balance),
+            delta=f"<span style='color:#4cc9f0;'>src: {balance_source}</span>",
+        ),
+        unsafe_allow_html=True,
+    )
 with c2:
     eq_spark = []
     # synthesize equity curve over recent closed trades + unrealized (simplified)

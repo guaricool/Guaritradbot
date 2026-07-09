@@ -31,12 +31,30 @@ class BrokerClient:
             
     def get_usdt_balance(self) -> float:
         """
-        Obtiene el balance disponible en USDT. Si falla o estamos en modo offline, retorna 100 por defecto.
+        Obtiene el balance disponible. binance global usa USDT,
+        binance.us usa USD. Aceptamos ambos.
+
+        Si falla o estamos en modo offline, retorna 100 por defecto.
         """
         try:
             balance = self.exchange.fetch_balance()
-            if 'USDT' in balance:
-                return float(balance['USDT']['free'])
+            for sym in ("USD", "USDT", "BUSD", "USDC"):
+                if sym in balance:
+                    info = balance[sym]
+                    free = info.get("free") if isinstance(info, dict) else None
+                    if free is not None and float(free) > 0:
+                        return float(free)
+                    total = info.get("total") if isinstance(info, dict) else None
+                    if total is not None and float(total) > 0:
+                        return float(total)
+            # Try raw structure (some exchanges nest balances differently)
+            raw = balance.get("info", {}).get("balances", []) if isinstance(balance.get("info"), dict) else []
+            for entry in raw:
+                asset = entry.get("asset", "").upper()
+                if asset in ("USD", "USDT", "BUSD", "USDC"):
+                    free = float(entry.get("free", 0) or 0)
+                    if free > 0:
+                        return free
             return 0.0
         except Exception as e:
             print(f"[BrokerClient] -> Error obteniendo balance: {e}. Usando balance simulado de 100.00")
