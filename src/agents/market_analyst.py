@@ -65,6 +65,77 @@ def _atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return tr.ewm(alpha=1.0 / period, adjust=False).mean()
 
 
+def _dm(df: pd.DataFrame, period: int = 14) -> tuple:
+    """
+    Directional Movement (Wilder). Devuelve (+DI, -DI, ADX).
+    Inspirado en el Manual del Buen Trader Algorítmico — DM/ADX
+    mide la fuerza de la tendencia (no la dirección).
+    """
+    high = df["High"]
+    low = df["Low"]
+    prev_high = high.shift(1)
+    prev_low = low.shift(1)
+
+    up_move = high - prev_high
+    down_move = prev_low - low
+    plus_dm = ((up_move > down_move) & (up_move > 0)) * up_move
+    minus_dm = ((down_move > up_move) & (down_move > 0)) * down_move
+
+    tr = pd.concat(
+        [
+            (high - low),
+            (high - prev_high).abs(),
+            (low - prev_low).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    atr_dm = tr.ewm(alpha=1.0 / period, adjust=False).mean()
+    plus_di = 100 * (plus_dm.ewm(alpha=1.0 / period, adjust=False).mean() / atr_dm.replace(0, np.nan))
+    minus_di = 100 * (minus_dm.ewm(alpha=1.0 / period, adjust=False).mean() / atr_dm.replace(0, np.nan))
+    dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan))
+    adx = dx.ewm(alpha=1.0 / period, adjust=False).mean()
+    return (plus_di.fillna(0), minus_di.fillna(0), adx.fillna(0))
+
+
+def _stochastic(df: pd.DataFrame, k_period: int = 14, d_period: int = 3) -> tuple:
+    """
+    Stochastic Oscillator (%K, %D). Inspirado en el Manual.
+    %K = (close - lowest_low) / (highest_high - lowest_low) * 100
+    %D = SMA(%K, 3)
+    """
+    close = df["Close"]
+    low_k = df["Low"].rolling(k_period).min()
+    high_k = df["High"].rolling(k_period).max()
+    k = ((close - low_k) / (high_k - low_k).replace(0, np.nan)) * 100
+    d = k.rolling(d_period).mean()
+    return (k.fillna(50), d.fillna(50))
+
+
+def _bollinger(df: pd.DataFrame, period: int = 20, std_dev: float = 2.0) -> tuple:
+    """
+    Bollinger Bands (BB_upper, BB_middle, BB_lower). Inspirado en el Manual.
+    Si close rompe la banda superior → señal fuerte en esa dirección;
+    si high fuera / low dentro → reversión.
+    """
+    close = df["Close"]
+    middle = close.rolling(period).mean()
+    std = close.rolling(period).std()
+    upper = middle + std_dev * std
+    lower = middle - std_dev * std
+    return (upper.bfill(), middle.bfill(), lower.bfill())
+
+
+def _support_resistance(df: pd.DataFrame, window: int = 50) -> tuple:
+    """
+    Soporte y resistencia dinámicos (rolling max/min). Inspirado en el Manual.
+    Útil para identificar niveles clave donde el precio puede revertir.
+    """
+    resistance = df["High"].rolling(window).max()
+    support = df["Low"].rolling(window).min()
+    return (support.bfill(), resistance.bfill())
+
+
 def _resample_ohlcv(df_60m: pd.DataFrame, rule: str) -> pd.DataFrame:
     """Resample OHLCV 60m → 4h (o lo que sea)."""
     if df_60m.empty:
@@ -105,7 +176,33 @@ class MarketAnalystAgent(Component):
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             df = df.dropna(how="all")
-            return df if not df.empty else None
+            if df.empty:
+                return None
+            # Calcular todos los indicadores (incluyendo los nuevos del PDF2)
+            close = df["Close"]
+            df["EMA_20"] = close.ewm(span=20, adjust=False).mean()
+            df["EMA_50"] = close.ewm(span=50, adjust=False).mean()
+            df["RSI"] = _wilder_rsi(close, 14)
+            ema12 = close.ewm(span=12, adjust=False).mean()
+            ema26 = close.ewm(span=26, adjust=False).mean()
+            df["MACD"] = ema12 - ema26
+            df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
+            df["ATR_14"] = _atr(df, 14)
+            plus_di, minus_di, adx = _dm(df, 14)
+            df["DI_Plus_14"] = plus_di
+            df["DI_Minus_14"] = minus_di
+            df["ADX_14"] = adx
+            stoch_k, stoch_d = _stochastic(df, 14)
+            df["Stoch_K"] = stoch_k
+            df["Stoch_D"] = stoch_d
+            bb_u, bb_m, bb_l = _bollinger(df, 20, 2.0)
+            df["BB_Upper"] = bb_u
+            df["BB_Middle"] = bb_m
+            df["BB_Lower"] = bb_l
+            sup, res = _support_resistance(df, 50)
+            df["Support_50"] = sup
+            df["Resistance_50"] = res
+            return df
         except Exception:
             return None
 
@@ -172,7 +269,27 @@ class MarketAnalystAgent(Component):
                     df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
                     df["ATR_14"] = _atr(df, 14)
 
-                    df = df.dropna(subset=["Close", "EMA_50", "RSI", "MACD", "ATR_14"])
+                    # PDF Manual: añadir indicadores faltantes (DM, Estocástico, Bollinger, S/R)
+                    plus_di, minus_di, adx = _dm(df, 14)
+                    df["DI_Plus_14"] = plus_di
+                    df["DI_Minus_14"] = minus_di
+                    df["ADX_14"] = adx
+                    stoch_k, stoch_d = _stochastic(df, 14)
+                    df["Stoch_K"] = stoch_k
+                    df["Stoch_D"] = stoch_d
+                    bb_upper, bb_middle, bb_lower = _bollinger(df, 20, 2.0)
+                    df["BB_Upper"] = bb_upper
+                    df["BB_Middle"] = bb_middle
+                    df["BB_Lower"] = bb_lower
+                    support, resistance = _support_resistance(df, 50)
+                    df["Support_50"] = support
+                    df["Resistance_50"] = resistance
+
+                    df = df.dropna(subset=["Close", "EMA_50", "RSI", "MACD", "ATR_14",
+                                            "DI_Plus_14", "DI_Minus_14", "ADX_14",
+                                            "Stoch_K", "Stoch_D",
+                                            "BB_Upper", "BB_Middle", "BB_Lower",
+                                            "Support_50", "Resistance_50"])
                     if df.empty:
                         print(f"  ⚠️  {asset}@{tf}: sin velas tras warmup")
                         fail_count += 1
@@ -183,6 +300,8 @@ class MarketAnalystAgent(Component):
                         f"  ✅ {asset}@{tf}: {len(df)} velas | "
                         f"close=${close.iloc[-1]:.2f} | "
                         f"RSI={df['RSI'].iloc[-1]:.1f} | "
+                        f"ADX={df['ADX_14'].iloc[-1]:.1f} | "
+                        f"StochK={df['Stoch_K'].iloc[-1]:.1f} | "
                         f"ATR={df['ATR_14'].iloc[-1]:.4f}"
                     )
                 except Exception as e:
