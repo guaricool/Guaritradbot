@@ -30,12 +30,15 @@
 
 ## Stats
 
-- 🔴 Críticos: **12** (B001, B002, B003, B006, B013, B017, B018, B019, B020, B021, B022; el B015 era operacional pero mataba la portabilidad)
+- 🔴 Críticos: **13** (B001, B002, B003, B006, B013, B017, B018, B019, B020, B021, B022; el B015 era operacional pero mataba la portabilidad)
 - 🟠 Medios (estrategia/métricas incorrectas): **8**
-- 🟡 Menores: **3** (B016, B023, y B016 ya estaba)
+- 🟡 Menores: **2** (B016 uuid colisión, B023 dashboard flash)
+
+**Total: 23 bugs cerrados en 11 sprints.**
 
 Sprint 18 cerró:
 - **3 bugs del audit team** (B017/B018/B019) — encontrados por análisis externo
 - **3 bugs del code review post-sprint** (B020/B021/B022) — encontrados en revisión interna
+- **1 bug UX** (B023) — reportado por Carlos al usar el dashboard
 
-Los 6 son 🔴 críticos. Los 3 del code review son particularmente insidiosos porque los tests unitarios pasaban (cada módulo se veía correcto en aislamiento), pero el sistema end-to-end no funcionaba.
+Los 6 bugs rojos del Sprint 18 son particularmente insidiosos porque los tests unitarios pasaban (cada módulo se veía correcto en aislamiento), pero el sistema end-to-end no funcionaba. Lección: siempre hacer tests de integración, no solo unitarios.

@@ -13,8 +13,9 @@
 | [[Sprints/Sprint_6_State_Machine_Data_Integrity]] | Component FSM + NaN/Inf fail-fast | NautilusTrader | `b3904ad` |
 | [[Sprints/Sprint_7_PDF_Indicators]] | DM/ADX + Estocástico + Bollinger + S/R | Manual del Buen Trader | `51a3db4` |
 | [[Sprints/Sprint_18_Audit_Fixes_Portfolio_Management]] | Bug A/B/C del audit + position replacement + smart profit-take | Audit Team + pregunta Carlos | `5dbe030` |
-| [[Sprints/Sprint_19_ML_Pipeline]] | FeatureExtractor + ModelTrainer (LogisticRegression) + Predictor + integration StrategyAgent | intelligent-trading-bot + scikit-learn | (pending push) |
-| [[Sprints/Sprint_21_Alpha_Zoo]] | 48+ alpha features via `ta` library (RSI/MACD/BB/ATR/ADX/Ichimoku/etc.) | TA-Lib (pure-Python fork) | (pending push) |
+| [[Sprints/Sprint_19_ML_Pipeline]] | FeatureExtractor + ModelTrainer (LogisticRegression) + Predictor + integration StrategyAgent | intelligent-trading-bot + scikit-learn | `2847dff` |
+| [[Sprints/Sprint_21_Alpha_Zoo]] | 48+ alpha features via `ta` library (RSI/MACD/BB/ATR/ADX/Ichimoku/etc.) | TA-Lib (pure-Python fork) | `2847dff` |
+| [[Sprints/Sprint_22_Paper_Live_Transition]] | Pre-flight checklist: broker check + paper positions handling + dry-run validation | Carlos preguntó "¿qué pasa al ir a live?" | (pending push) |
 
 ## Tests por sprint
 
@@ -29,4 +30,5 @@
 | 18 | `python -m unittest discover tests -v` | **26/26 passing** |
 | 19 | `python -m unittest tests.test_ml_pipeline -v` | **11/11 passing** |
 | 21 | `python -m unittest tests.test_alpha_zoo -v` | **8/8 passing** |
-| **TOTAL** | `python -m unittest discover tests` | **45/45 passing** |
+| 22 | `python -m unittest tests.test_paper_to_live -v` | **10/10 passing** |
+| **TOTAL** | `python -m unittest discover tests` | **55/55 passing** |

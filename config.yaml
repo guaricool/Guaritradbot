@@ -50,3 +50,13 @@ mandate:
   max_total_exposure_usd: 100       # tope de exposición total abierta simultánea
   kill_switch_file: "/tmp/GUARITRADBOT_KILL"
   audit_log_dir: "audit"
+
+# === Sprint 22 — Paper→Live Transition Safety ===
+# What should the pre-flight checklist do with paper positions when
+# switching to live? Only applies when interactive=False (e.g., daemon mode).
+# - close:  mark them closed in repo, P&L=0, proceed to live
+# - ignore: keep them in repo but warn that they don't exist in live exchange
+# - abort:   refuse to proceed (DEFAULT — safest)
+live_transition:
+  auto_action: "abort"              # default safe option for non-interactive mode
+  dry_run_qty: 0.00001              # BTC qty for dry-run validation order (~50¢ at $50k)

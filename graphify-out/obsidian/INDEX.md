@@ -29,7 +29,9 @@ Guaritradbot_Vault/
 │   ├── Sprint_5_Real_Reoptimization.md
 │   ├── Sprint_6_State_Machine_Data_Integrity.md
 │   ├── Sprint_7_PDF_Indicators.md
-│   └── Sprint_18_Audit_Fixes_Portfolio_Management.md   ← Sprint 18 (2026-07-09)
+│   ├── Sprint_18_Audit_Fixes_Portfolio_Management.md
+│   ├── Sprint_19_ML_Pipeline.md                  ← Sprint 19 (2026-07-09)
+│   └── Sprint_21_Alpha_Zoo.md                    ← Sprint 21 (2026-07-09)
 ├── Modules_Index.md             ← índice de los módulos
 ├── Modules/
 │   ├── MarketAnalystAgent.md
@@ -46,13 +48,19 @@ Guaritradbot_Vault/
 │   ├── Data_Validator.md        ← Sprint 6
 │   ├── EventBus.md
 │   ├── PositionRepository.md    ← Sprint 2
-│   └── WorkflowEngine.md
-├── Bugs_Index.md               ← lista maestra de bugs (19 total)
+│   ├── WorkflowEngine.md
+│   ├── AlphaZoo.md              ← Sprint 21 (48 features)
+│   └── MLPipeline.md            ← Sprint 19 (FeatureExtractor + ModelTrainer + Predictor)
+├── Bugs_Index.md               ← lista maestra de bugs (23 total)
 ├── Bugs/
 │   ├── B001_emit_vs_publish.md … B016_pos_id_uuid_collision.md
 │   ├── B017_micro_account_death_loop.md      ← Sprint 18
 │   ├── B018_phantom_exposure_lockup.md       ← Sprint 18
-│   └── B019_punished_for_trying.md           ← Sprint 18
+│   ├── B019_punished_for_trying.md           ← Sprint 18
+│   ├── B020_replacement_loop.md              ← Sprint 18 patch
+│   ├── B021_phantom_pnl_replacement.md       ← Sprint 18 patch
+│   ├── B022_smart_take_dead_code.md          ← Sprint 18 patch
+│   └── B023_dashboard_filter_button_flash.md  ← Sprint 18 patch
 ├── Inspirations.md              ← 5 repos + NautilusTrader, de dónde viene cada idea
 └── Deployment.md                ← cómo subir a Coolify VPS
 ```

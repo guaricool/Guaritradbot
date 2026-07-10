@@ -121,6 +121,49 @@ def main():
 
     kill_switch = KillSwitch(config.get("mandate", {}).get("kill_switch_file", "/tmp/GUARITRADBOT_KILL"))
     position_repo = PositionRepository("data_store/positions.json")
+
+    # Sprint 22: Paper→Live Transition Safety Check
+    # If mandate is being enabled AND exchange.use_testnet is false, we're
+    # switching to live trading. Run the pre-flight checklist to ensure:
+    # 1. Broker API keys work end-to-end
+    # 2. No ghost paper positions remain in the repo
+    # 3. A dry-run validation order succeeds
+    # If the checklist refuses, force mandate.enabled back to False so we
+    # don't accidentally enable live trading without safeguards.
+    mandate_being_enabled = bool(config.get("mandate", {}).get("enabled", False))
+    exchange_use_testnet = bool(config.get("exchange", {}).get("use_testnet", True))
+    is_live_attempt = mandate_being_enabled and not exchange_use_testnet
+
+    if is_live_attempt:
+        from src.safety.paper_to_live import PaperToLiveChecklist
+        interactive = sys.stdin.isatty() if hasattr(sys, "stdin") else False
+        print(
+            "\n🚀 Live mode detected (mandate.enabled=true, use_testnet=false).\n"
+            "   Running pre-flight checklist...\n"
+        )
+        checklist = PaperToLiveChecklist(
+            position_repo=position_repo,
+            audit=audit,
+            broker=broker_client,
+            interactive=interactive,
+            auto_action=config.get("live_transition", {}).get("auto_action", "abort"),
+            min_order_qty=config.get("live_transition", {}).get("dry_run_qty", 0.00001),
+        )
+        decision = checklist.run(dry_run=True)
+        print(f"\n[Pre-flight] Decision: {decision}")
+        if not decision.proceed:
+            print(
+                f"\n⛔ Live transition BLOCKED by pre-flight check: {decision.reason}\n"
+                "   Forcing back to paper mode (mandate.enabled=false) for safety.\n"
+            )
+            audit.append("LIVE_TRANSITION_BLOCKED", {
+                "reason": decision.reason,
+                "forced_back_to_paper": True,
+            })
+            config["mandate"]["enabled"] = False
+        else:
+            print(f"\n✅ Pre-flight passed. Live mode is GO.")
+
     mandate_gate, mandate_cfg = _build_mandate(config, audit, position_repo=position_repo)
 
     if kill_switch.is_triggered():

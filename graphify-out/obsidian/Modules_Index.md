@@ -32,6 +32,20 @@ Módulos del sistema, ordenados por capa.
 - [[Modules/Position_Monitor]] — cierra stops/TPs cada tick
   - Sprint 18: `check_with_signals()` para smart profit-take en reversals
 
+## Features (Sprint 21 — Alpha Zoo)
+
+- [[Modules/AlphaZoo]] — 48+ alpha features (RSI/MACD/BB/ATR/ADX/Ichimoku/etc.) via `ta` library
+
+## ML (Sprint 19 — ML Pipeline)
+
+- [[Modules/MLPipeline]] — FeatureExtractor + ModelTrainer (LogisticRegression) + Predictor
+  - Genera nuevas señales `ML_Baseline_LONG/SHORT` integradas en StrategyAgent
+
+## Optimización (Sprint 4-5)
+
+- `src/optimization/backtester.py` — métricas gold-standard + walk-forward
+- `src/optimization/hyperopt.py` — grid search
+
 ## Optimización (Sprint 4-5)
 
 - `src/optimization/backtester.py` — métricas gold-standard + walk-forward
