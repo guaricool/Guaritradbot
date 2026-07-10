@@ -1,0 +1,502 @@
+"""
+Sprint 46A — State snapshot builder for the bot HTTP API.
+
+Pure read-only layer that turns the bot's on-disk state (positions
+JSON, audit JSONL, mode_override JSON) + a live price snapshot into
+typed Pydantic models the REST/WS endpoints can serve.
+
+Design principle
+----------------
+The bot writes state to disk (positions, audit, mode). The API
+layer does NOT mutate the state — it only reads. Mutations (close
+position, toggle mode) go through dedicated POST endpoints in
+server.py that write to the same on-disk files the bot already reads.
+That keeps the bot logic untouched.
+
+What this module does
+---------------------
+- `build_state_snapshot()` — full snapshot for the dashboard's
+  initial load: positions + P&L + balance + mode + counts.
+- `build_positions()` — list of positions with computed current
+  P&L (calls yfinance for live prices; falls back to entry price
+  if fetch fails, with `current_price_source` flag so the UI can
+  label it appropriately).
+- `build_audit()` — recent audit events (filterable by since/until).
+- `read_mode()` — current mode from `audit/mode_override.json` or
+  config.yaml fallback.
+- `write_mode()` — toggle mode (writes the override file; the bot
+  re-reads it on next cycle via B033 paper-mode gate in the broker,
+  and on next startup for the main loop).
+- `read_current_prices()` — live prices via yfinance with a 30s
+  in-process cache so we don't hammer the API.
+
+Threading model
+---------------
+This module is sync. The FastAPI app can run the heavy lifting
+(yfinance fetch) in a thread pool via `run_in_threadpool` from
+`fastapi.concurrency`. The state files are read in the request
+handler — short operations, no need for a worker process.
+"""
+from __future__ import annotations
+
+import json
+import os
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import pandas as pd
+
+from src.data_store.positions import PositionRepository, Position
+from src.safety.audit_ledger import AuditLedger
+
+
+# ----------------------------------------------------------------------
+# Pydantic response models
+# ----------------------------------------------------------------------
+
+# Pydantic models for the API surface. Kept here (not in server.py) so
+# the snapshot builder can return them directly and the server can
+# just `return` them — FastAPI serializes them automatically.
+from pydantic import BaseModel, Field
+
+
+class PositionSummary(BaseModel):
+    """One open position with live P&L. Suitable for the dashboard table."""
+    id: str
+    asset: str
+    direction: str
+    entry_price: float
+    current_price: Optional[float] = None
+    current_price_source: str = "live"   # "live" | "entry_fallback" | "stale_cache"
+    qty: float
+    notional_usd: float
+    unrealized_pnl_usd: Optional[float] = None
+    unrealized_pnl_pct: Optional[float] = None
+    stop_loss: float
+    take_profit: float
+    entry_ts: float
+    strategy: str
+    age_hours: Optional[float] = None
+
+
+class ModeInfo(BaseModel):
+    """Current LIVE/PAPER mode and the path used to toggle it."""
+    mode: str                                       # "live" or "paper"
+    mandate_enabled: bool
+    use_testnet: bool                               # from config.yaml
+    switched_at: Optional[float] = None
+    switched_by: Optional[str] = None
+    mode_override_path: str
+
+
+class StateSnapshot(BaseModel):
+    """Full dashboard snapshot — what the home page requests once on load."""
+    mode: ModeInfo
+    balance_usd: float = 0.0
+    balance_source: str = "unknown"                 # "broker" | "testnet_sim" | "live"
+    positions: List[PositionSummary] = Field(default_factory=list)
+    open_count: int = 0
+    total_unrealized_usd: float = 0.0
+    total_unrealized_pct: float = 0.0
+    total_exposure_usd: float = 0.0
+    daily_realized_pnl_usd: float = 0.0
+    total_realized_pnl_usd: float = 0.0
+    last_update_ts: Optional[float] = None
+
+
+class AuditEvent(BaseModel):
+    """A single line from audit.jsonl, lightly typed."""
+    ts: float
+    iso: str
+    event_type: str
+    payload: Dict = Field(default_factory=dict)
+
+    @classmethod
+    def from_row(cls, row: dict) -> "AuditEvent":
+        # The audit row has `ts`, `iso`, `event_type`, plus all
+        # payload fields spread at top level. Pull the rest into
+        # `payload` so the API surface is consistent.
+        ts = float(row.get("ts", 0.0))
+        iso = str(row.get("iso", ""))
+        et = str(row.get("event_type", "unknown"))
+        known = {"ts", "iso", "event_type"}
+        payload = {k: v for k, v in row.items() if k not in known}
+        return cls(ts=ts, iso=iso, event_type=et, payload=payload)
+
+
+# ----------------------------------------------------------------------
+# Live price cache
+# ----------------------------------------------------------------------
+
+_PRICE_CACHE: Dict[str, Tuple[float, float, str]] = {}
+"""asset -> (price, fetched_at, source). Source: 'live' | 'cache'."""
+
+PRICE_CACHE_TTL_S = 30.0
+
+
+def _fetch_one_price(asset: str) -> Tuple[Optional[float], str]:
+    """Fetch latest close for one asset via yfinance.
+
+    Returns (price, source) where source is 'live' on a fresh fetch
+    and 'fetch_failed' if the API call returned no data. The
+    caller decides how to use this.
+    """
+    from src.data.yf_safe import safe_yf_download  # local to avoid import cost at module load
+    try:
+        df = safe_yf_download(asset, period="5d", interval="1d")
+    except Exception:
+        return None, "fetch_failed"
+    if df is None or df.empty:
+        return None, "fetch_failed"
+    price_col = "Adj Close" if "Adj Close" in df.columns else "Close"
+    if price_col not in df.columns:
+        return None, "fetch_failed"
+    try:
+        price = float(df[price_col].dropna().iloc[-1])
+    except Exception:
+        return None, "fetch_failed"
+    if not (price == price and price != float("inf")):  # NaN/Inf check
+        return None, "fetch_failed"
+    return price, "live"
+
+
+def read_current_prices(assets: List[str], max_age_s: float = PRICE_CACHE_TTL_S) -> Dict[str, float]:
+    """Return {asset: price} for the given assets.
+
+    Uses a process-level cache (TTL = max_age_s) to avoid hammering
+    yfinance on every dashboard refresh. Unknown assets or fetch
+    failures are simply omitted from the result — the caller can
+    fall back to the entry price (which it does, with a
+    `current_price_source = "entry_fallback"` label so the UI can
+    show the staleness to the operator).
+    """
+    now = time.time()
+    out: Dict[str, float] = {}
+    for asset in assets:
+        if not asset:
+            continue
+        cached = _PRICE_CACHE.get(asset)
+        if cached and (now - cached[1]) < max_age_s:
+            out[asset] = cached[0]
+            continue
+        price, source = _fetch_one_price(asset)
+        if price is not None:
+            _PRICE_CACHE[asset] = (price, now, source)
+            out[asset] = price
+    return out
+
+
+def invalidate_price_cache(asset: Optional[str] = None) -> None:
+    """Clear the price cache. Pass an asset to clear one, or None for all.
+
+    Useful for tests and for a "force refresh" button on the
+    dashboard if the user suspects stale data.
+    """
+    if asset is None:
+        _PRICE_CACHE.clear()
+    else:
+        _PRICE_CACHE.pop(asset, None)
+
+
+# ----------------------------------------------------------------------
+# Position summary
+# ----------------------------------------------------------------------
+
+def _build_position_summary(
+    pos: Position,
+    current_price: Optional[float],
+    current_price_source: str,
+) -> PositionSummary:
+    """Build a PositionSummary from a Position + its current price.
+
+    If current_price is None, falls back to entry_price (so the
+    P&L is reported as 0.0 and the source label is "entry_fallback").
+    The dashboard can then highlight the staleness.
+    """
+    notional = pos.notional_usd
+    if current_price is None:
+        # Fallback to entry price — P&L is 0, source flagged.
+        current_price = pos.entry_price
+        current_price_source = "entry_fallback"
+    if pos.direction == "long":
+        upnl = (current_price - pos.entry_price) * pos.qty
+    else:
+        upnl = (pos.entry_price - current_price) * pos.qty
+    upnl_pct = (upnl / notional) if notional > 0 else 0.0
+    age_h = (time.time() - pos.entry_ts) / 3600.0 if pos.entry_ts else None
+    return PositionSummary(
+        id=pos.position_id,
+        asset=pos.asset,
+        direction=pos.direction,
+        entry_price=pos.entry_price,
+        current_price=current_price,
+        current_price_source=current_price_source,
+        qty=pos.qty,
+        notional_usd=notional,
+        unrealized_pnl_usd=upnl,
+        unrealized_pnl_pct=upnl_pct,
+        stop_loss=pos.stop_loss,
+        take_profit=pos.take_profit,
+        entry_ts=pos.entry_ts,
+        strategy=pos.strategy,
+        age_hours=age_h,
+    )
+
+
+# ----------------------------------------------------------------------
+# Mode
+# ----------------------------------------------------------------------
+
+def read_mode(
+    config: Optional[dict] = None,
+    audit_path: Optional[str] = None,
+) -> ModeInfo:
+    """Read the current LIVE/PAPER mode.
+
+    Source of truth is `audit/mode_override.json` (the file the
+    dashboard writes when you click the toggle). Falls back to
+    `config.yaml:mandate.enabled` and `config.yaml:exchange.use_testnet`
+    if the override file doesn't exist.
+
+    The override file's `mandate_enabled` is the master switch. The
+    config's `use_testnet` only affects the broker endpoint URL when
+    the override is missing.
+
+    `audit_path` defaults to the DASHBOARD_AUDIT_PATH env var, then
+    to "audit/audit.jsonl" relative to the CWD.
+    """
+    if audit_path is None:
+        audit_path = os.getenv("DASHBOARD_AUDIT_PATH", "audit/audit.jsonl")
+    """Read the current LIVE/PAPER mode.
+
+    Source of truth is `audit/mode_override.json` (the file the
+    dashboard writes when you click the toggle). Falls back to
+    `config.yaml:mandate.enabled` and `config.yaml:exchange.use_testnet`
+    if the override file doesn't exist.
+
+    The override file's `mandate_enabled` is the master switch. The
+    config's `use_testnet` only affects the broker endpoint URL when
+    the override is missing.
+    """
+    override_path = str(Path(audit_path).parent / "mode_override.json")
+    mandate_enabled = False
+    use_testnet = True
+    switched_at = None
+    switched_by = None
+    if config is None:
+        config = {}
+    if "mandate" in config:
+        mandate_enabled = bool(config["mandate"].get("enabled", False))
+    if "exchange" in config:
+        use_testnet = bool(config["exchange"].get("use_testnet", True))
+    if os.path.exists(override_path):
+        try:
+            with open(override_path, "r", encoding="utf-8") as f:
+                ov = json.load(f)
+            if "mandate_enabled" in ov:
+                mandate_enabled = bool(ov["mandate_enabled"])
+            switched_at_raw = ov.get("switched_at")
+            if switched_at_raw is not None:
+                try:
+                    switched_at = float(switched_at_raw)
+                except (TypeError, ValueError):
+                    switched_at = None
+            switched_by = ov.get("switched_by")
+        except Exception:
+            pass  # Malformed override file = ignore, use config fallback
+    mode = "live" if mandate_enabled else "paper"
+    return ModeInfo(
+        mode=mode,
+        mandate_enabled=mandate_enabled,
+        use_testnet=use_testnet,
+        switched_at=switched_at,
+        switched_by=switched_by,
+        mode_override_path=str(override_path),
+    )
+
+
+def write_mode(
+    mandate_enabled: bool,
+    switched_by: str = "api",
+    audit_path: Optional[str] = None,
+) -> ModeInfo:
+    """Write the mode override file. Returns the new ModeInfo.
+
+    Creates `audit/mode_override.json` (parent dir if needed) with:
+        {
+          "mandate_enabled": bool,
+          "switched_at": <unix_ts>,
+          "switched_by": "api"
+        }
+
+    The bot reads this on next startup (main loop) AND on every
+    broker call (B033 paper-mode gate in `AlpacaBroker` /
+    `binanceus`), so the toggle takes effect within ~1 cycle without
+    requiring a bot restart.
+    """
+    if audit_path is None:
+        audit_path = os.getenv("DASHBOARD_AUDIT_PATH", "audit/audit.jsonl")
+    override_path = Path(audit_path).parent / "mode_override.json"
+    """Write the mode override file. Returns the new ModeInfo.
+
+    Creates `audit/mode_override.json` (parent dir if needed) with:
+        {
+          "mandate_enabled": bool,
+          "switched_at": <unix_ts>,
+          "switched_by": "api"
+        }
+
+    The bot reads this on next startup (main loop) AND on every
+    broker call (B033 paper-mode gate in `AlpacaBroker` /
+    `binanceus`), so the toggle takes effect within ~1 cycle without
+    requiring a bot restart.
+    """
+    override_path = Path(audit_path).parent / "mode_override.json"
+    override_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "mandate_enabled": bool(mandate_enabled),
+        "switched_at": time.time(),
+        "switched_by": switched_by,
+    }
+    tmp = override_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(override_path)  # atomic on POSIX
+    return read_mode(audit_path=audit_path)
+
+
+# ----------------------------------------------------------------------
+# State snapshot
+# ----------------------------------------------------------------------
+
+def build_state_snapshot(
+    config: Optional[dict] = None,
+    audit_path: str = "audit/audit.jsonl",
+    positions_path: str = "data_store/positions.json",
+) -> StateSnapshot:
+    """Build the full dashboard snapshot.
+
+    Reads:
+      - `data_store/positions.json` (PositionRepository)
+      - `audit/audit.jsonl` (AuditLedger, for daily/total realized P&L)
+      - `audit/mode_override.json` (mode)
+      - yfinance (live prices for open positions)
+
+    Pure read-only — does NOT mutate any state file.
+    """
+    repo = PositionRepository(path=positions_path)
+    opens = repo.open()
+    assets = [p.asset for p in opens if p.asset]
+    prices = read_current_prices(assets) if assets else {}
+    summaries: List[PositionSummary] = []
+    for p in opens:
+        price = prices.get(p.asset)
+        src = "live" if (price is not None and p.asset in prices) else "fetch_failed"
+        summaries.append(_build_position_summary(p, price, src))
+    total_unrealized = sum(
+        s.unrealized_pnl_usd or 0.0 for s in summaries
+    )
+    total_exposure = sum(s.notional_usd for s in summaries)
+    total_unrealized_pct = (total_unrealized / total_exposure) if total_exposure > 0 else 0.0
+
+    # Realized P&L: from positions.closed() (preferred) or audit fallback
+    daily_pnl = 0.0
+    total_pnl = 0.0
+    cutoff = time.time() - 24 * 3600
+    for p in repo.all():
+        if p.closed_ts is None or p.realized_pnl is None:
+            continue
+        total_pnl += p.realized_pnl
+        if p.closed_ts >= cutoff:
+            daily_pnl += p.realized_pnl
+
+    mode = read_mode(config=config, audit_path=audit_path)
+    return StateSnapshot(
+        mode=mode,
+        balance_usd=0.0,            # set by caller from broker (if available)
+        balance_source="unknown",
+        positions=summaries,
+        open_count=len(summaries),
+        total_unrealized_usd=total_unrealized,
+        total_unrealized_pct=total_unrealized_pct,
+        total_exposure_usd=total_exposure,
+        daily_realized_pnl_usd=daily_pnl,
+        total_realized_pnl_usd=total_pnl,
+        last_update_ts=time.time(),
+    )
+
+
+def build_audit(
+    limit: int = 100,
+    after: Optional[float] = None,
+    event_type: Optional[str] = None,
+    audit_path: str = "audit/audit.jsonl",
+) -> List[AuditEvent]:
+    """Return recent audit events, newest first.
+
+    Args:
+        limit: cap on returned events (default 100, max 1000).
+        after: only events with `ts >= after` (for live tailing).
+        event_type: only events of this type (optional filter).
+    """
+    limit = max(1, min(int(limit), 1000))
+    audit = AuditLedger(path=audit_path)
+    if after is not None:
+        rows = audit.read_since(after)
+    else:
+        rows = audit.read_all()
+    if event_type is not None:
+        rows = [r for r in rows if r.get("event_type") == event_type]
+    rows = sorted(rows, key=lambda r: r.get("ts", 0.0), reverse=True)
+    rows = rows[:limit]
+    return [AuditEvent.from_row(r) for r in rows]
+
+
+def close_position(
+    position_id: str,
+    audit_path: str = "audit/audit.jsonl",
+    positions_path: str = "data_store/positions.json",
+) -> Optional[Dict]:
+    """Close an open position at its entry price (best-effort fallback).
+
+    Real price discovery happens in the bot's PositionMonitor. This
+    endpoint is for MANUAL operator-initiated closes from the
+    dashboard. We use the entry price as a fallback because the
+    dashboard doesn't have a live price feed as authoritative as the
+    bot's. The trade-off: the operator gets an audit trail of the
+    manual action, but the realized_pnl is 0.0 until the next bot
+    cycle reconciles via PositionMonitor.
+
+    Returns the closed position dict on success, None if the position
+    doesn't exist or was already closed.
+    """
+    repo = PositionRepository(path=positions_path)
+    target = None
+    for p in repo.open():
+        if p.position_id == position_id:
+            target = p
+            break
+    if target is None:
+        return None
+    closed = repo.close_position(position_id, close_price=target.entry_price, reason="MANUAL_CLOSE_VIA_API")
+    if closed is None:
+        return None
+    audit = AuditLedger(path=audit_path)
+    audit.append("MANUAL_CLOSE", {
+        "position_id": position_id,
+        "asset": closed.asset,
+        "direction": closed.direction,
+        "entry_price": closed.entry_price,
+        "close_price": closed.entry_price,    # fallback; bot will reconcile
+        "reason": "MANUAL_CLOSE_VIA_API",
+        "via": "api",
+    })
+    return {
+        "position_id": closed.position_id,
+        "asset": closed.asset,
+        "direction": closed.direction,
+        "entry_price": closed.entry_price,
+        "close_price": closed.entry_price,
+        "realized_pnl_usd": closed.realized_pnl or 0.0,
+    }
