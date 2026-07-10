@@ -175,6 +175,11 @@ class PositionReplacementTest(unittest.TestCase):
             max_open_trades=2,  # we're already at the limit
             enable_position_replacement=True,
             replacement_score_threshold=0.20,
+            # Sprint 44A: disable the concentration check for this test.
+            # The test is measuring the replacement flow (max_open_trades →
+            # worst_position_closure), NOT the sector concentration gate.
+            # Default cap (60%) would block ETH/BTC crypto in this 2-pos book.
+            asset_concentration_check=False,
             current_prices={
                 "ETH-USD": 2900.0,   # pos_a is -1.66% below entry (loser)
                 "GLD": 182.0,        # pos_b is +1.1% above entry (winner but stale)
@@ -229,6 +234,9 @@ class PositionReplacementTest(unittest.TestCase):
             max_open_trades=2,
             enable_position_replacement=True,
             replacement_score_threshold=0.20,
+            # Sprint 44A: disable the concentration check (see comment in
+            # test_replace_worst_when_new_score_much_higher).
+            asset_concentration_check=False,
             current_prices={
                 "ETH-USD": 2970.0,   # pos_a slightly down (small negative score)
                 "GLD": 181.0,        # pos_b slightly up (small positive score)
@@ -336,6 +344,9 @@ class B020OneReplacementPerCycleTest(unittest.TestCase):
             max_open_trades=2,
             enable_position_replacement=True,
             replacement_score_threshold=0.20,
+            # Sprint 44A: disable the concentration check (see comment in
+            # test_replace_worst_when_new_score_much_higher).
+            asset_concentration_check=False,
             current_prices={
                 "ETH-USD": 2900,  # losing
                 "GLD": 184,        # winning

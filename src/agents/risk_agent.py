@@ -1,5 +1,5 @@
 """
-Sprint 0+1+2+18 — RiskManagerAgent.
+Sprint 0+1+2+18+44A — RiskManagerAgent.
 
 Sprint 0 fixes: ATR-based stops, qty = risk/distance, min order check.
 Sprint 1: Mandate Gate + audit ledger integration.
@@ -11,12 +11,17 @@ max_notional < min_order). Esto permite operar cuentas pequeñas donde
 Sprint 18 (Portfolio mgmt): position replacement — si max_open_trades
 está lleno pero aparece una señal MUY superior, cerrar la peor posición
 y abrir la nueva. Score = combinación de expected value + momentum.
+Sprint 44A (Bridgewater risk): asset-class concentration check. Antes
+de aprobar un trade, simular la exposure post-add y rechazar si una
+clase (crypto / equity_growth / commodity) supera el cap. Cierra el
+gap entre "5 posiciones abiertas" y "5 bets independientes".
 """
 import os
 import math
 from typing import Dict, Any, List, Optional, Tuple
 
 from src.data_store.positions import Position, PositionRepository
+from src.data.asset_class import get_asset_class, AssetClass
 
 
 class RiskManagerAgent:
@@ -37,6 +42,9 @@ class RiskManagerAgent:
         enable_position_replacement: bool = True,
         replacement_score_threshold: float = 0.20,
         current_prices: Optional[Dict[str, float]] = None,
+        # Sprint 44A: asset-class concentration gate (Bridgewater risk)
+        asset_concentration_check: bool = True,
+        max_asset_class_concentration_pct: float = 60.0,
     ):
         self.broker = broker_client
         self.risk_per_trade_pct = risk_per_trade_pct
@@ -56,6 +64,11 @@ class RiskManagerAgent:
         self.replacement_score_threshold = replacement_score_threshold
         # Used by position-replacement scoring (passed per-cycle from main loop)
         self.current_prices = current_prices or {}
+        # Sprint 44A: sector concentration gate. Configurable so you can
+        # dial it down (e.g. 40%) for a stricter portfolio or up (e.g.
+        # 80%) to allow a more concentrated high-conviction book.
+        self.asset_concentration_check = asset_concentration_check
+        self.max_asset_class_concentration_pct = max_asset_class_concentration_pct
 
     def get_account_balance(self) -> tuple:
         if self.broker is None:
@@ -271,6 +284,35 @@ class RiskManagerAgent:
                 if self.audit:
                     self.audit.append("MANDATE_OK", {"asset": trade["asset"], "notional": trade["notional_usd"], "risk": trade["risk_usd"]})
 
+            # --- Sprint 44A: asset-class concentration check (Bridgewater risk) ---
+            # Without this, the bot can fill `max_open_trades=5` slots with
+            # BTC + ETH + SOL + SPY + QQQ and call it "diversified" when it's
+            # really 2 correlated bets (crypto bucket + equity_growth bucket).
+            # We compute the *projected* exposure per class after this trade
+            # would be added, and reject if any class would cross the cap.
+            if self.asset_concentration_check and self.position_repo is not None:
+                conc_ok, conc_reason = self._check_concentration(
+                    asset=h["asset"],
+                    proposed_notional_usd=trade["notional_usd"],
+                )
+                if not conc_ok:
+                    rejected.append({"trade": trade, "reason": conc_reason})
+                    if self.audit:
+                        self.audit.append(
+                            "CONCENTRATION_BLOCKED",
+                            {
+                                "asset": trade["asset"],
+                                "reason": conc_reason,
+                                "proposed_notional_usd": trade["notional_usd"],
+                                "max_pct": self.max_asset_class_concentration_pct,
+                            },
+                        )
+                    print(
+                        f"  🪙  {trade['asset']:8} {direction:5} — "
+                        f"blocked by concentration: {conc_reason}"
+                    )
+                    continue
+
             # --- Sprint 2: max_open_trades ---
             if slots_left <= 0:
                 # Sprint 18: try position replacement before outright rejection.
@@ -364,6 +406,78 @@ class RiskManagerAgent:
     # ----------------------------------------------------------------------
     # Sprint 18: Portfolio Management — Position Replacement + Scoring
     # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
+    # Sprint 44A: Asset-class concentration (Bridgewater risk)
+    # ----------------------------------------------------------------------
+
+    def _exposure_by_class(self) -> Dict[str, float]:
+        """Return current exposure (USD notional) per asset class.
+
+        CASH is bucketed separately and does NOT trigger the gate (it's
+        parked capital, not a risky position). Symbols we don't have
+        in our asset-class map fall into CASH too.
+        """
+        out: Dict[str, float] = {}
+        if self.position_repo is None:
+            return out
+        for p in self.position_repo.open():
+            cls = get_asset_class(p.asset).value
+            out[cls] = out.get(cls, 0.0) + p.notional_usd
+        return out
+
+    def _check_concentration(
+        self,
+        asset: str,
+        proposed_notional_usd: float,
+    ) -> Tuple[bool, str]:
+        """Reject a trade if its asset class would exceed the cap.
+
+        Returns (ok, reason). `ok=True` means the trade passes the gate
+        (or the gate is disabled / no open positions to compare against).
+        `ok=False` carries a human-readable reason that goes to the
+        audit ledger.
+
+        Edge cases:
+          - No open positions: always allow (first trade sets the
+            baseline; concentration is a portfolio-level concept).
+          - Unknown asset class (CASH): always allow (it's parking).
+          - proposed_notional <= 0: allow (other gates will reject it).
+        """
+        if not self.asset_concentration_check or self.position_repo is None:
+            return True, "concentration_check_disabled"
+        if proposed_notional_usd <= 0:
+            return True, "zero_notional_skipped"
+        cls = get_asset_class(asset)
+        if cls == AssetClass.CASH:
+            # Unknown / parked symbol — not subject to the concentration
+            # gate. Other gates (mandate allowlist) handle it.
+            return True, "cash_class_skipped"
+
+        open_positions = self.position_repo.open()
+        if not open_positions:
+            # First trade of an empty book — no concentration possible.
+            return True, "empty_book_no_concentration"
+
+        # Current exposure per class (only classes that have open positions).
+        exposure_by_class = self._exposure_by_class()
+        current_total = sum(exposure_by_class.values())
+        if current_total <= 0:
+            return True, "zero_existing_exposure"
+
+        # Project the new exposure post-add.
+        projected_class = exposure_by_class.get(cls.value, 0.0) + proposed_notional_usd
+        projected_total = current_total + proposed_notional_usd
+        if projected_total <= 0:
+            return True, "zero_projected_exposure"
+        projected_pct = (projected_class / projected_total) * 100.0
+
+        if projected_pct > self.max_asset_class_concentration_pct:
+            return False, (
+                f"asset_class_{cls.value}_{projected_pct:.1f}pct_"
+                f"exceeds_{self.max_asset_class_concentration_pct:.0f}pct_cap"
+            )
+        return True, "concentration_ok"
 
     def score_position(self, pos: Position, current_price: Optional[float] = None) -> float:
         """
