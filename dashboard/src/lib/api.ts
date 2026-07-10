@@ -1,0 +1,189 @@
+// Tiny fetch wrapper that injects the bearer token and handles 401/redirect.
+// The token is stored in localStorage by AuthProvider; we read it on every call.
+
+import type {
+  Allocation,
+  AuditEvent,
+  CandlesResponse,
+  CorrelationResult,
+  CVaRResult,
+  EquityPoint,
+  Health,
+  LoginResponse,
+  ModeInfo,
+  StateSnapshot,
+  StressResult,
+} from "./types";
+
+const API_BASE =
+  (typeof window !== "undefined" &&
+    (window as unknown as { __API_BASE__?: string }).__API_BASE__) ||
+  process.env.NEXT_PUBLIC_API_URL ||
+  "http://localhost:8080";
+
+// Token store — single source of truth, mirrored to localStorage.
+// We keep this here (not in React state) so the same module instance
+// is reachable from both server and client components without needing
+// a provider for read-only access.
+const TOKEN_KEY = "guaritradbot_token";
+const TOKEN_EXP_KEY = "guaritradbot_token_exp";
+
+export function getToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(TOKEN_KEY);
+}
+
+export function getTokenExpiry(): number | null {
+  if (typeof window === "undefined") return null;
+  const v = window.localStorage.getItem(TOKEN_EXP_KEY);
+  return v ? parseInt(v, 10) : null;
+}
+
+export function setToken(token: string, expiresInS: number) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(TOKEN_KEY, token);
+  window.localStorage.setItem(
+    TOKEN_EXP_KEY,
+    String(Date.now() + expiresInS * 1000),
+  );
+}
+
+export function clearToken() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(TOKEN_KEY);
+  window.localStorage.removeItem(TOKEN_EXP_KEY);
+}
+
+export function isTokenValid(): boolean {
+  const t = getToken();
+  const exp = getTokenExpiry();
+  if (!t || !exp) return false;
+  return Date.now() < exp;
+}
+
+class ApiError extends Error {
+  constructor(public status: number, message: string, public body?: unknown) {
+    super(message);
+  }
+}
+
+async function request<T>(
+  path: string,
+  opts: RequestInit & { auth?: boolean } = {},
+): Promise<T> {
+  const url = `${API_BASE.replace(/\/+$/, "")}${path}`;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((opts.headers as Record<string, string>) || {}),
+  };
+  if (opts.auth !== false) {
+    const t = getToken();
+    if (t) headers["Authorization"] = `Bearer ${t}`;
+  }
+  const res = await fetch(url, { ...opts, headers });
+  const text = await res.text();
+  let body: unknown = null;
+  if (text) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = text;
+    }
+  }
+  if (!res.ok) {
+    // 401: drop the token so the user gets bounced to /login
+    if (res.status === 401) {
+      clearToken();
+      // Soft-redirect handled by AuthProvider's reactive subscription;
+      // we don't navigate here to avoid coupling this lib to router.
+    }
+    const detail =
+      (body && typeof body === "object" && (body as { detail?: string }).detail) ||
+      res.statusText ||
+      "Request failed";
+    throw new ApiError(res.status, String(detail), body);
+  }
+  return body as T;
+}
+
+// ---------------- Endpoints ----------------
+
+export const api = {
+  baseUrl: API_BASE,
+
+  health: () => request<Health>("/api/health"),
+
+  // Auth
+  login: (password: string) =>
+    request<LoginResponse>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ password }),
+      auth: false,
+    }),
+
+  // State
+  state: () => request<StateSnapshot>("/api/state"),
+  positions: () => request<StateSnapshot["positions"]>("/api/positions"),
+  position: (id: string) => request<StateSnapshot["positions"][number]>(`/api/positions/${id}`),
+  positionCandles: (id: string, interval = "15m", window = 200) =>
+    request<CandlesResponse>(
+      `/api/positions/${id}/candles?interval=${interval}&window=${window}`,
+    ),
+
+  // Audit
+  audit: (limit = 100, eventType?: string) => {
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (eventType) qs.set("event_type", eventType);
+    return request<AuditEvent[]>(`/api/audit?${qs}`);
+  },
+  signals: (limit = 20) =>
+    request<
+      Array<{ ts: number; iso: string; event_type: string; payload: Record<string, unknown> }>
+    >(`/api/signals?limit=${limit}`),
+
+  // Mode
+  getMode: () => request<ModeInfo>("/api/mode"),
+  setMode: (mode: "live" | "paper", switchedBy?: string) =>
+    request<{ mode: ModeInfo; note: string }>("/api/mode", {
+      method: "POST",
+      body: JSON.stringify({ mode, switched_by: switchedBy || "dashboard" }),
+    }),
+
+  // Position control
+  closePosition: (id: string) =>
+    request<{
+      position_id: string;
+      asset: string;
+      direction: string;
+      entry_price: number;
+      close_price: number;
+      realized_pnl_usd: number;
+    }>(`/api/positions/${id}/close`, { method: "POST" }),
+
+  // Risk + allocation
+  allocation: () => request<Allocation>("/api/allocation"),
+  riskStress: () => request<StressResult>("/api/risk/stress"),
+  riskCorrelation: () => request<CorrelationResult>("/api/risk/correlation"),
+  riskCvar: () => request<CVaRResult>("/api/risk/cvar"),
+
+  // Equity curve
+  equity: (windowDays = 30) =>
+    request<{ window_days: number; series: EquityPoint[] }>(
+      `/api/equity?window_days=${windowDays}`,
+    ),
+
+  // Stats (compact KPIs)
+  stats: () =>
+    request<{
+      mode: string;
+      open_count: number;
+      total_exposure_usd: number;
+      total_unrealized_usd: number;
+      total_unrealized_pct: number;
+      daily_realized_pnl_usd: number;
+      total_realized_pnl_usd: number;
+      ts: number | null;
+    }>("/api/stats"),
+};
+
+export { ApiError };

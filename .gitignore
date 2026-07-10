@@ -10,10 +10,12 @@ __pycache__/
 
 # ─────────────────────────────────────────────────────────────────
 # Runtime state (regenerated on every bot run)
+# (Anchored to repo root so we don't accidentally ignore
+# `dashboard/src/app/(app)/audit/page.tsx` etc.)
 # ─────────────────────────────────────────────────────────────────
-latest_state.json
-audit/
-logs/
+/latest_state.json
+/audit/
+/logs/
 
 # ─────────────────────────────────────────────────────────────────
 # data_store/ — CSV files ARE tracked (needed for reproducible backtests)
