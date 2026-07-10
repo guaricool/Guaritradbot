@@ -9,5 +9,22 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy source code
 COPY . .
 
+# Sprint 43 M8 fix: run as non-root user. The audit flagged
+# "Contenedores Docker corren como root, sin límites de recursos
+# ni healthcheck". Non-root reduces the blast radius of any
+# exploit (e.g. the H8 dashboard-auth vulnerability is much
+# worse if the compromised process is root). The 'app' UID/GID
+# must match the WORKDIR owner so the volume mount works.
+RUN groupadd -r app && useradd -r -g app -u 1000 app \
+    && chown -R app:app /app
+USER app
+
+# Healthcheck: check that the bot process is alive and the audit
+# log is being written. The exact command depends on the bot's
+# output (--once mode for one-off healthcheck, daemon for prod).
+# For now, a simple liveness check: is the process running?
+HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
+    CMD pgrep -f "python -u main.py" > /dev/null || exit 1
+
 # Run the bot in background daemon mode
 CMD ["python", "-u", "main.py"]

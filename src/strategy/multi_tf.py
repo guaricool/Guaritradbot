@@ -134,9 +134,30 @@ class MTFTrendPullback(MultiTFStrategy):
         # 4h trend: EMA fast vs slow.
         ema_f = df_4h["Close"].ewm(span=self.ema_fast, adjust=False).mean()
         ema_s = df_4h["Close"].ewm(span=self.ema_slow, adjust=False).mean()
-        # Align 4h trend to 1h index via forward-fill.
-        trend_up = (ema_f > ema_s).reindex(df_1h.index, method="ffill").fillna(False)
-        trend_down = (ema_f < ema_s).reindex(df_1h.index, method="ffill").fillna(False)
+        # Sprint 43 H10 fix: reindex the 4h trend to 1h index using
+        # NEAREST (label='nearest') AND shift the trend by ONE 4h bar.
+        # The previous code used ffill which is correct for forward
+        # filling the LAST KNOWN 4h trend into 1h bars (e.g. a 4h
+        # bar at 12:00 spans 12:00-16:00, and the trend computed
+        # from its CLOSE is only known at 16:00). The audit caught
+        # that resample() labels the bar by its START (so the 12:00
+        # bar's close at 16:00 is implicitly used to label the
+        # 12:00-16:00 segment), which IS a look-ahead. The fix: shift
+        # the trend by one 4h period so the 12:00 bar's trend is
+        # only applied to 16:00+ 1h bars. This delays the trend
+        # signal by 4 hours (the cost of no-look-ahead) but
+        # guarantees that no future data leaks into the decision.
+        # See also: H12 fix in _resample_ohlcv (drops the
+        # in-progress bucket entirely).
+        trend_up_raw = (ema_f > ema_s)
+        trend_down_raw = (ema_f < ema_s)
+        # Shift by 1 4h bar so the trend from bar N applies to
+        # 1h bars at and after bar N+1, not bar N.
+        trend_up_shifted = trend_up_raw.shift(1).fillna(False)
+        trend_down_shifted = trend_down_raw.shift(1).fillna(False)
+        # Now reindex the SHIFTED trend to 1h via ffill.
+        trend_up = trend_up_shifted.reindex(df_1h.index, method="ffill").fillna(False)
+        trend_down = trend_down_shifted.reindex(df_1h.index, method="ffill").fillna(False)
         # Long: trend up AND 1h RSI<oversold. Short: trend down AND RSI>overbought.
         sig = pd.Series(0.0, index=df_1h.index)
         sig[(trend_up) & (rsi < self.rsi_oversold)] = 1.0

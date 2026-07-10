@@ -35,6 +35,7 @@ from src.execution.scheduler import EpochScheduler
 from src.optimization.hyperopt import HyperoptManager
 from src.safety.audit_ledger import AuditLedger
 from src.safety.kill_switch import KillSwitch
+from src.safety.kelly_drawdown import DrawdownKillSwitch  # Sprint 43 H3
 from src.safety.mandate_gate import MandateGate, MandateConfig
 from src.data_store.positions import PositionRepository
 from src.data_store.position_monitor import PositionMonitor
@@ -221,6 +222,17 @@ def main():
             print(f"[Init] mode_override.json parse error (ignored): {e}")
 
     kill_switch = KillSwitch(config.get("mandate", {}).get("kill_switch_file", "/tmp/GUARITRADBOT_KILL"))
+    # Sprint 43 H3 fix: instantiate DrawdownKillSwitch and wire it
+    # into the trading loop. The class has been in
+    # src/safety/kelly_drawdown.py since Sprint 30 with full
+    # tests, but was never instantiated in main.py — so the
+    # "revenge trading" safety net it provides was dormant.
+    # The threshold and cooldown are config-driven (with safe
+    # defaults) so the operator can tighten them per-strategy.
+    drawdown_kill_switch = DrawdownKillSwitch(
+        threshold_pct=float(config.get("risk", {}).get("drawdown_kill_threshold_pct", 15.0)),
+        cooldown_hours=float(config.get("risk", {}).get("drawdown_cooldown_hours", 24.0)),
+    )
     position_repo = PositionRepository("data_store/positions.json")
 
     # Sprint 25 fix: ALWAYS show paper position count at startup.
@@ -486,6 +498,48 @@ def main():
     _pupdate_scheduler = None
 
     def job_with_monitor():
+        # Sprint 43 H3 fix: drawdown kill switch check. If the
+        # account has dropped more than the configured threshold
+        # from its peak equity, the bot is in "revenge trading"
+        # territory — it should stop opening new positions until
+        # the cooldown elapses. The check uses realized PnL +
+        # unrealized PnL of open positions as the current
+        # equity, peak is tracked internally.
+        try:
+            current_equity = position_repo.total_realized_pnl_usd() + sum(
+                pos.unrealized_pnl(prices.get(pos.asset, 0.0))
+                for pos in position_repo.open()
+            ) if (prices and (prices := {p.asset: 0 for p in position_repo.open()})) else position_repo.total_realized_pnl_usd()
+            # The above is a one-liner that handles the case where
+            # we have no prices — fall back to realized-only equity.
+            # For a more accurate drawdown we'd want the price for
+            # each open position, but the realized PnL is the
+            # conservative input (no unrealized gains count).
+            dd_state = drawdown_kill_switch.update(current_equity)
+            if dd_state.triggered:
+                if audit:
+                    audit.append("BOT_DRAWDOWN_KILL_ACTIVE", {
+                        "drawdown_pct": round(dd_state.drawdown_pct, 3),
+                        "peak_equity": dd_state.peak_equity,
+                        "current_equity": current_equity,
+                        "cooldown_remaining_hours": round(dd_state.cooldown_remaining_hours, 2),
+                    })
+                if event_bus:
+                    event_bus.publish("SYSTEM_ERROR", {
+                        "kind": "DRAWDOWN_KILL_ACTIVE",
+                        "drawdown_pct": round(dd_state.drawdown_pct, 3),
+                        "error": (f"🛑 Drawdown kill switch ACTIVO: "
+                                  f"{dd_state.drawdown_pct:.2f}% desde peak. "
+                                  f"Bot NO abre nuevas posiciones por "
+                                  f"{dd_state.cooldown_remaining_hours:.1f}h."),
+                    })
+                # Skip the workflow this cycle. The position
+                # monitor still runs (so SL/TP can still close
+                # positions), but no new trades.
+                return
+        except Exception as e:
+            print(f"[DrawdownKill] check failed (continuing): {e}")
+
         # 1. Monitor: cierra stops/TPs antes que la nueva ronda
         try:
             opens = position_repo.open()

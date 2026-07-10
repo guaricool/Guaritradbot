@@ -279,22 +279,97 @@ class PaperToLiveChecklist:
 
     def _validate_dry_run(self) -> bool:
         """
-        Send a tiny test order (qty = `min_order_qty`) to validate that
-        the live broker connection actually works end-to-end. This costs
-        a few cents but verifies:
-        - API authentication works
-        - Order routing works
-        - Position tracking works
+        Sprint 43 H4 fix: validate the live broker connection WITHOUT
+        placing a real order. The previous version called
+        `broker.create_market_order("BTC/USDT", "buy", min_order_qty)`
+        and then never closed the position or registered it via
+        `PositionRepository.add_open()`. Result: a few cents of
+        real BTC was bought but never sold, and the position was
+        invisible to the bot's repo — neither the mandate gate
+        nor the position monitor tracked it. The audit called
+        this "un test destructivo sin rollback".
+
+        Now: use a read-only API call (`get_usdt_balance`) to
+        verify auth + connectivity. No position is opened, no
+        order is sent. If the broker needs more than a balance
+        read to validate (some Alpaca accounts require an
+        initial trade to fully activate), the operator can
+        opt into the legacy destructive path with the
+        `dry_run_placement: true` flag in `live_transition` config.
 
         Returns True if the dry-run succeeded.
         """
         if self.broker is None:
             return False
+        # Sprint 43 H4: skip the destructive test by default.
+        # Set live_transition.dry_run_placement = true in config
+        # to opt into the legacy "place and forget" behavior
+        # (NOT recommended — kept for backward compat only).
+        legacy_placement = False
         try:
-            # Try to place a tiny market buy on BTC/USDT (most liquid pair)
-            # If even this fails, we can't safely go live.
+            cfg = getattr(self, "_config", None) or {}
+            legacy_placement = bool(
+                cfg.get("live_transition", {}).get("dry_run_placement", False)
+            )
+        except Exception:
+            legacy_placement = False
+
+        if legacy_placement:
+            return self._legacy_destructive_dry_run()
+
+        try:
+            # Read-only validation: does the broker respond with a
+            # valid balance? This exercises auth, connectivity, and
+            # the JSON parsing of ccxt/Alpaca responses — all the
+            # things that the actual order path would fail on.
+            bal = self.broker.get_usdt_balance()
+            if bal is None or (isinstance(bal, float) and not (bal >= 0)):
+                print(f"[Checklist] ❌ Dry-run failed: invalid balance {bal!r}")
+                if self.audit is not None:
+                    self.audit.append("DRY_RUN_FAILED", {
+                        "reason": "invalid_balance",
+                        "balance": bal,
+                    })
+                return False
+            print(
+                f"[Checklist] ✅ Dry-run succeeded (read-only): "
+                f"balance=${bal:.2f}"
+            )
+            if self.audit is not None:
+                self.audit.append("DRY_RUN_OK", {
+                    "method": "read_only",
+                    "balance_usd": bal,
+                })
+            return True
+        except Exception as e:
+            print(f"[Checklist] ❌ Dry-run exception: {e}")
+            if self.audit is not None:
+                self.audit.append("DRY_RUN_EXCEPTION", {"error": str(e)[:200]})
+            return False
+
+    def _legacy_destructive_dry_run(self) -> bool:
+        """
+        BACKWARD-COMPATIBLE destructive dry-run. Sprint 43 H4
+        keeps this path for operators who explicitly opt in via
+        config (live_transition.dry_run_placement = true), but
+        the default is the read-only path in _validate_dry_run.
+
+        The audit's complaint: this method places a real market
+        buy on BTC/USDT, never closes the position, never
+        registers it via PositionRepository.add_open(). The
+        result is a few cents of real BTC bought and forgotten.
+        The new default avoids this; this method is only called
+        if the operator has explicitly accepted the risk.
+        """
+        if self.broker is None:
+            return False
+        try:
             symbol = "BTC/USDT"
-            print(f"[Checklist] Dry-run: placing test order on {symbol} qty={self.min_order_qty}")
+            print(
+                f"[Checklist] ⚠️ LEGACY destructive dry-run: "
+                f"placing real order on {symbol} qty={self.min_order_qty}. "
+                f"This is opt-in only — set live_transition.dry_run_placement=true."
+            )
             result = self.broker.create_market_order(symbol, "buy", self.min_order_qty)
             if result is None or result.get("status") == "failed":
                 print(f"[Checklist] ❌ Dry-run failed: {result}")
@@ -303,12 +378,16 @@ class PaperToLiveChecklist:
                         "result": str(result)[:200] if result else "None",
                     })
                 return False
-            print(f"[Checklist] ✅ Dry-run succeeded: order {result.get('id', '?')}")
+            print(
+                f"[Checklist] ⚠️ Dry-run succeeded but position is now OPEN and UNREGISTERED. "
+                f"Order id: {result.get('id', '?')}. Manually close the position."
+            )
             if self.audit is not None:
-                self.audit.append("DRY_RUN_OK", {
+                self.audit.append("DRY_RUN_LEGACY_PLACED_ORDER", {
                     "symbol": symbol,
                     "qty": self.min_order_qty,
                     "order_id": str(result.get("id", "?")),
+                    "warning": "position_not_registered_in_repo",
                 })
             return True
         except Exception as e:

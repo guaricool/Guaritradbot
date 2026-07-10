@@ -11,5 +11,18 @@ COPY . .
 
 EXPOSE 8501
 
+# Sprint 43 M8 fix: run as non-root user. See Dockerfile.bot for
+# the rationale. Streamlit needs to write to its config dir,
+# so we create that as the app user.
+RUN groupadd -r app && useradd -r -g app -u 1000 app \
+    && mkdir -p /home/app/.streamlit \
+    && chown -R app:app /app /home/app
+USER app
+
+# Healthcheck: HTTP HEAD on the streamlit port. If the dashboard
+# is dead but the container is alive, this catches it.
+HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=5).read()" || exit 1
+
 # Run the Streamlit dashboard
 CMD ["streamlit", "run", "dashboard.py", "--server.port=8501", "--server.address=0.0.0.0"]
