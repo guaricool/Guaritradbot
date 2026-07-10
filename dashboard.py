@@ -517,6 +517,81 @@ CUSTOM_CSS = """
     border-top: 1px solid rgba(76, 201, 240, 0.3);
   }
 
+  /* === Sprint 26: LIVE MODE theme + badge === */
+  /* Carlos: "cuando se cambia a live me gustaria que cambiara el color
+     de la app" — visual indicator cuando estás en live trading.
+     El banner prominent tiene pulse animation roja para reforzar
+     que es REAL money, no paper. */
+  .live-mode-banner {
+    background: linear-gradient(90deg, rgba(239, 71, 111, 0.25), rgba(247, 37, 133, 0.20));
+    border: 2px solid #ef476f;
+    border-left: 6px solid #ef476f;
+    border-radius: 8px;
+    padding: 14px 20px;
+    margin-bottom: 16px;
+    position: relative;
+    overflow: hidden;
+    animation: live-mode-glow 2.5s ease-in-out infinite;
+  }
+  @keyframes live-mode-glow {
+    0%, 100% {
+      box-shadow: 0 0 0 0 rgba(239, 71, 111, 0.5), inset 0 0 0 0 rgba(239, 71, 111, 0);
+    }
+    50% {
+      box-shadow: 0 0 0 8px rgba(239, 71, 111, 0), inset 0 0 20px 0 rgba(239, 71, 111, 0.15);
+    }
+  }
+  .live-mode-pulse {
+    position: absolute;
+    top: 12px;
+    right: 16px;
+    width: 16px;
+    height: 16px;
+    background: #ef476f;
+    border-radius: 50%;
+    box-shadow: 0 0 0 0 rgba(239, 71, 111, 0.7);
+    animation: live-pulse 1.5s infinite;
+  }
+  @keyframes live-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(239, 71, 111, 0.7); }
+    70% { box-shadow: 0 0 0 12px rgba(239, 71, 111, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(239, 71, 111, 0); }
+  }
+  .live-mode-content {
+    margin-right: 30px;
+  }
+  .live-mode-title {
+    font-size: 1.2rem;
+    font-weight: 800;
+    color: #ef476f;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .live-mode-subtitle {
+    font-size: 0.88rem;
+    color: #e0e6ff;
+    line-height: 1.4;
+  }
+  .live-mode-actions {
+    font-size: 0.78rem;
+    color: #ffd166;
+    font-weight: 700;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255, 209, 102, 0.3);
+  }
+
+  /* === Live mode theme: warm-red accents (vs paper cool-blue) === */
+  body.live-mode {
+    --accent-color: #ef476f;
+    --accent-secondary: #f72585;
+  }
+  /* When live mode active, override key elements with red accents */
+  .live-mode-banner ~ * .kpi-value {
+    color: #ef476f;
+  }
+
   /* ---------- signal cards ---------- */
   .signal-card {
     background: #1a1f3a;
@@ -1689,6 +1764,11 @@ with st.sidebar:
                     st.rerun()
 
     if st.button("💾 Save Quick Risk", use_container_width=True, key="sidebar_save"):
+        # Sprint 26: detect live mode toggle to apply auto-clean + theme switch
+        _was_live = bool(mand.get("enabled", False))
+        _is_now_live = bool(sidebar_mandate)
+        _transitioned_to_live = (not _was_live) and _is_now_live
+
         overrides = {
             "trading": {
                 "risk_per_trade_pct": sidebar_risk_pct,
@@ -1705,8 +1785,59 @@ with st.sidebar:
         os.makedirs("audit", exist_ok=True)
         with open("audit/risk_overrides.json", "w", encoding="utf-8") as f:
             json.dump(overrides, f, indent=2)
-        st.success("✓ Saved → audit/risk_overrides.json")
-        st.info("ℹ️ Restart the bot to apply. Click *Restart bot* below.")
+
+        # Sprint 26: also write mode_override.json so the bot sees the
+        # live toggle immediately on next run.
+        mode_override = {
+            "mandate_enabled": sidebar_mandate,
+            "switched_at": datetime.now().isoformat(),
+            "switched_by": "dashboard_sidebar",
+            "previous_value": _was_live,
+        }
+        with open("audit/mode_override.json", "w", encoding="utf-8") as f:
+            json.dump(mode_override, f, indent=2)
+
+        # Sprint 26: AUTO-CLEAN paper positions when transitioning to live.
+        # Carlos: "se pusiera en 0 todo para que pueda encontrar una entrada
+        # sin pensar que tiene ya 2 entradas." → close all open paper
+        # positions at entry_price (P&L=0) automatically on live transition.
+        if _transitioned_to_live:
+            _pp_path = "data_store/positions.json"
+            if os.path.exists(_pp_path):
+                _pp = _load_json(_pp_path)
+                if _pp and "positions" in _pp:
+                    _closed_count = 0
+                    import time as _t
+                    for p in _pp["positions"]:
+                        if p.get("closed_ts") is None:
+                            p["closed_ts"] = _t.time()
+                            p["closed_price"] = p.get("entry_price", 0)
+                            p["close_reason"] = "AUTO_CLEAN_ON_LIVE_TRANSITION"
+                            _closed_count += 1
+                    with open(_pp_path, "w", encoding="utf-8") as f:
+                        json.dump(_pp, f, indent=2, default=str)
+                    # Mirror to audit/
+                    _audit_pp_path = "audit/positions.json"
+                    if os.path.exists(_audit_pp_path):
+                        with open(_audit_pp_path, "w", encoding="utf-8") as f:
+                            json.dump(_pp, f, indent=2, default=str)
+                    st.success(
+                        f"🔴 LIVE mode enabled + {len(_pp['positions']) - _closed_count} paper positions closed at entry. "
+                        f"Clean slate to find your first real entry."
+                    )
+                    st.balloons()
+                else:
+                    st.success("🔴 LIVE mode enabled. Clean slate — no paper positions to clean.")
+            else:
+                st.success("🔴 LIVE mode enabled. Clean slate — no paper positions found.")
+        else:
+            if _is_now_live:
+                st.success("🔴 LIVE mode (no change). Restart the bot to apply any other risk changes.")
+            else:
+                st.success("✓ Saved → audit/risk_overrides.json")
+                st.info("ℹ️ Restart the bot to apply.")
+
+        st.rerun()
 
     st.markdown("---")
     st.markdown("### 🔭 Search")
@@ -1798,6 +1929,49 @@ audit_events = _load_audit_cached(n=50)
 open_positions = [p for p in positions if p.get("closed_ts") is None]
 closed_positions = [p for p in positions if p.get("closed_ts") is not None]
 realized_pnl = sum((p.get("realized_pnl") or 0.0) for p in positions)
+
+# Sprint 26: LIVE MODE visual indicator + auto-theme switch
+# Carlos: "cuando se cambia a live me gustaria que al pasar a live
+# cambiara como el color de la app. sabes? y se pusiera en 0 todo"
+# → 1. Theme cambia de cool-blue (paper) a warm-red (live)
+# → 2. LIVE badge prominent con pulse animation
+# → 3. Auto-clean de paper positions (handled in main.py + dashboard button)
+# Read the live mode from the mode_override.json
+import json as _json_live
+_mode_override_live = _load_json("audit/mode_override.json") or {}
+is_live_mode = bool(_mode_override_live.get("mandate_enabled", False))
+# Also check the config (in case the user toggled via config.yaml)
+if not is_live_mode:
+    _config_path = "config.yaml"
+    if os.path.exists(_config_path):
+        try:
+            import yaml as _yaml
+            with open(_config_path) as _f:
+                _cfg_live = _yaml.safe_load(_f) or {}
+            is_live_mode = bool(_cfg_live.get("mandate", {}).get("enabled", False))
+        except Exception:
+            pass
+
+# === LIVE MODE BADGE + THEME SWITCH ===
+if is_live_mode:
+    st.markdown(
+        """
+        <div class="live-mode-banner">
+            <div class="live-mode-pulse"></div>
+            <div class="live-mode-content">
+                <div class="live-mode-title">🔴 LIVE TRADING ENABLED</div>
+                <div class="live-mode-subtitle">
+                    Real money is at risk. The bot is submitting real orders to binance.us.
+                    Every trade, every stop, every take-profit is <b>REAL</b>.
+                </div>
+            </div>
+            <div class="live-mode-actions">
+                👇 Toggle OFF in the sidebar to return to paper mode
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # Sprint 25 fix: BANNER prominent cuando hay paper positions y mandate
 # está enabled. Carlos reportó: "cuando cambio a live no me dice nada de las
