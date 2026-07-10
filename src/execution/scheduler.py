@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo
 import yaml
 import os
 
+from src.workflows.engine import WorkflowAgentFaultError, WorkflowDependencyError
+
 # Sprint 19: Carlos lives in America/Chicago (IL). All timestamps the bot
 # writes to disk are stored as tz-aware ISO strings in CT, so the
 # dashboard doesn't have to guess the VPS TZ.
@@ -27,6 +29,7 @@ class EpochScheduler:
         hyperopt=None,
         audit=None,
         assets=("BTC-USD", "SPY"),
+        event_bus=None,
     ):
         self.engine = engine
         self.workflow_data = workflow_data
@@ -36,6 +39,11 @@ class EpochScheduler:
         self.hyperopt = hyperopt
         self.audit = audit
         self.assets = assets
+        # Sprint 45 fix (N6/H11): needed so `job()` can publish
+        # SYSTEM_ERROR when the workflow engine refuses to run a
+        # cycle (FAULTED component / unmet depends_on), instead of
+        # only logging it to stdout where nobody sees it.
+        self.event_bus = event_bus
         self.load_config()
 
         self.epoch_start = datetime.now()
@@ -146,8 +154,35 @@ class EpochScheduler:
         try:
             final_state = self.engine.run(self.workflow_data)
             self._save_state(final_state)
+        except (WorkflowAgentFaultError, WorkflowDependencyError) as e:
+            # Sprint 45 fix (N6/H11): H11 made WorkflowEngine correctly
+            # abort a cycle when a component is FAULTED or a
+            # depends_on isn't met (e.g. a total market-data outage),
+            # instead of silently proceeding with empty data. But this
+            # was the only caller, and it swallowed the new exceptions
+            # with the same generic `except Exception` used for every
+            # other error — logged to stdout only, no audit entry, no
+            # SYSTEM_ERROR. Carlos had no way to distinguish "the
+            # engine correctly refused this cycle" from any other
+            # crash. Now it gets its own audit event + alert.
+            logger.error(f"[Scheduler] Workflow cycle aborted: {e}")
+            if self.audit is not None:
+                self.audit.append("WORKFLOW_CYCLE_ABORTED", {
+                    "kind": type(e).__name__,
+                    "error": str(e)[:500],
+                })
+            if self.event_bus is not None:
+                try:
+                    self.event_bus.publish("SYSTEM_ERROR", {
+                        "kind": "WORKFLOW_CYCLE_ABORTED",
+                        "error": f"⛔ Ciclo de trading abortado: {e}",
+                    })
+                except Exception as pub_err:
+                    logger.error(f"[Scheduler] No se pudo publicar SYSTEM_ERROR: {pub_err}")
         except Exception as e:
             logger.error(f"Error during workflow execution: {e}")
+            if self.audit is not None:
+                self.audit.append("WORKFLOW_CYCLE_ERROR", {"error": str(e)[:500]})
 
         logger.info("--- Scheduled run complete. Waiting for next interval ---")
 

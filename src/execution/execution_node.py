@@ -291,10 +291,47 @@ class ExecutionNode:
         if asset in self._asset_to_class:
             asset_class = self._asset_to_class[asset]
             cfg = self.brokers_config.get(asset_class, {}) or {}
+            if asset_class == "crypto":
+                return self.broker, "crypto", cfg
             if asset_class == "equity":
                 return self.alpaca_broker, "equity", cfg
-            # default: crypto
-            return self.broker, "crypto", cfg
+            # Sprint 45 fix (N3): `asset_class` here is whatever key the
+            # asset was found under in `brokers_config` (config.yaml's
+            # `brokers:` section) — it is NOT necessarily "crypto" or
+            # "equity". The previous code only special-cased "equity"
+            # and silently routed EVERYTHING else (including any
+            # future third asset class like "forex"/"commodity") to
+            # the crypto broker, mislabeled as "crypto" in every audit
+            # event — reintroducing exactly the fail-open-to-crypto
+            # pattern the M9 fix was meant to eliminate, the moment a
+            # new class gets added to config.yaml. Treat an unmapped
+            # class the same way `_resolve_broker` already treats an
+            # unmapped SYMBOL: reject loudly instead of guessing.
+            warning_msg = (
+                f"[ExecutionNode] ⚠️ asset_class '{asset_class}' (for '{asset}') "
+                f"has no broker implementation wired up in _resolve_broker "
+                f"(only 'crypto' and 'equity' are supported). Rejecting the "
+                f"order instead of silently routing it to the crypto broker."
+            )
+            print(warning_msg)
+            if self.audit is not None:
+                self.audit.append(
+                    "UNSUPPORTED_ASSET_CLASS_ROUTED",
+                    {"asset": asset, "asset_class": asset_class, "action": "rejected_no_broker"},
+                )
+            if self.event_bus is not None:
+                try:
+                    self.event_bus.publish("SYSTEM_ERROR", {
+                        "kind": "UNSUPPORTED_ASSET_CLASS",
+                        "asset": asset,
+                        "asset_class": asset_class,
+                        "error": (f"❓ '{asset}' está configurado con asset_class "
+                                  f"'{asset_class}', que no tiene broker implementado. "
+                                  f"Orden RECHAZADA (no se enruta a crypto por defecto)."),
+                    })
+                except Exception:
+                    pass
+            return None, asset_class, cfg
 
         # === Unknown asset: audit + warn + return (None, "unknown", {}) ===
         warning_msg = (
@@ -415,9 +452,17 @@ class ExecutionNode:
         # === Sprint 36: Resolve broker by asset class ===
         broker_instance, asset_class, broker_cfg = self._resolve_broker(asset)
         # Sprint 43 M9 fix: an unknown symbol now resolves to
-        # (None, "unknown", {}). Reject the order loudly instead of
-        # silently falling through to any other code path.
-        if asset_class == "unknown" or broker_instance is None and asset_class not in ("equity", "crypto"):
+        # (None, "unknown", {}). Sprint 45 fix (N3/NEW-3): an asset
+        # whose configured class has no broker implementation (not
+        # "crypto"/"equity") now ALSO resolves with broker_instance
+        # None, using its real class name instead of "unknown" — so
+        # the two cases need distinct handling here, not the old
+        # single condition (`asset_class == "unknown" or broker_instance
+        # is None and asset_class not in ("equity", "crypto")`) whose
+        # `and`-before-`or` branch was actually unreachable dead code
+        # (it could only be true when asset_class == "unknown", which
+        # the left side already covered).
+        if asset_class == "unknown":
             status = f"FAILED (UNKNOWN_SYMBOL: {asset})"
             print(
                 f"[ExecutionNode] ❌ UNKNOWN_SYMBOL: '{asset}' is not in the "
@@ -440,6 +485,32 @@ class ExecutionNode:
                 self.event_bus.publish(
                     "ORDER_EXECUTED",
                     {"status": status, "order": order_data, "kind": "UNKNOWN_SYMBOL"},
+                )
+            return
+        if broker_instance is None and asset_class not in ("equity", "crypto"):
+            status = f"FAILED (UNSUPPORTED_ASSET_CLASS: {asset_class})"
+            print(
+                f"[ExecutionNode] ❌ UNSUPPORTED_ASSET_CLASS: '{asset}' has "
+                f"asset_class '{asset_class}', which has no broker wired up. "
+                f"Order REJECTED (not silently routed to crypto)."
+            )
+            if self.audit:
+                self.audit.append(
+                    "TRADE_FAILED",
+                    {
+                        "asset": asset,
+                        "direction": direction,
+                        "qty": qty,
+                        "entry_price": entry_price,
+                        "status": status,
+                        "kind": "UNSUPPORTED_ASSET_CLASS",
+                        "asset_class": asset_class,
+                    },
+                )
+            if self.event_bus:
+                self.event_bus.publish(
+                    "ORDER_EXECUTED",
+                    {"status": status, "order": order_data, "kind": "UNSUPPORTED_ASSET_CLASS"},
                 )
             return
         # If the asset is equity but Alpaca isn't configured, fail loudly.

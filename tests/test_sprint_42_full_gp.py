@@ -475,12 +475,25 @@ class CLIRunnerTest(unittest.TestCase):
         from src.analysis.genetic_programming import run_evolution_cli
         with tempfile.TemporaryDirectory() as tmp:
             output = os.path.join(tmp, "lib.json")
+            # Sprint 45 fix (C7): `run_evolution_cli` now defaults to a
+            # real (min_oos_ratio=0.4) overfit gate, per the fix for
+            # the C7 integration bug — the gate is meant to reject
+            # candidates that don't generalize. With only 8 individuals
+            # / 2 generations of random synthetic data, it's entirely
+            # possible NOTHING clears a strict OOS bar, and an empty
+            # library is the CORRECT outcome, not a bug. This test's
+            # purpose is to verify the CLI plumbing (evolve -> save
+            # library -> file exists), not the strictness of the OOS
+            # gate itself (see test_sprint_43_c7_oos_validation.py for
+            # that), so it explicitly opts into the old permissive
+            # threshold here.
             result = run_evolution_cli(
                 output_path=output,
                 population_size=8,
                 n_generations=2,
                 seed=42,
                 verbose=False,
+                min_oos_ratio=0.0,
             )
             self.assertIsNotNone(result.best_tree)
             # Library was saved

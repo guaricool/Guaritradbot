@@ -187,7 +187,26 @@ class DryRunValidationTest(unittest.TestCase):
         self.repo = PositionRepository(os.path.join(self.tmpdir, "positions.json"))
 
     def test_dry_run_failure_blocks_live(self):
-        broker = _make_fake_broker(balance=20.0, dry_run_success=False)
+        """Sprint 45 fix (H4 test gap): this test used to mock
+        `create_market_order` to fail, and asserted it was called.
+        But Sprint 43's H4 fix made `_validate_dry_run` use a
+        READ-ONLY `get_usdt_balance()` check by default instead of
+        placing a real order (the old behavior left a few cents of
+        real BTC bought and never sold/registered). The new default
+        path never calls `create_market_order` at all, so this test
+        was silently testing dead code — it kept "passing" for the
+        wrong reason until the re-audit actually ran it and found
+        `decision.proceed` was True (the mocked `create_market_order`
+        failure was simply never exercised). Now it fails the
+        dry-run the way it actually fails in production: the
+        connectivity check (`_check_broker_connection`, step 1)
+        succeeds with a valid balance, but the dry-run validation
+        (`_validate_dry_run`, step 4) gets an invalid balance back.
+        """
+        broker = _make_fake_broker(balance=20.0)
+        # First call (connectivity check) succeeds with $20; second
+        # call (dry-run validation) returns an invalid balance.
+        broker.get_usdt_balance.side_effect = [20.0, None]
         checklist = PaperToLiveChecklist(
             position_repo=self.repo,
             audit=self.audit,
@@ -198,7 +217,30 @@ class DryRunValidationTest(unittest.TestCase):
         decision = checklist.run(dry_run=True)
         self.assertFalse(decision.proceed)
         self.assertEqual(decision.reason, "dry_run_validation_failed")
-        # Broker was called for the dry-run
+        # Read-only balance check was called for both connectivity AND
+        # the dry-run — no real order should ever be placed by default.
+        self.assertEqual(broker.get_usdt_balance.call_count, 2)
+        broker.create_market_order.assert_not_called()
+
+    def test_legacy_destructive_dry_run_opt_in(self):
+        """The old "place a real order" dry-run still exists as an
+        explicit opt-in (`live_transition.dry_run_placement: true`),
+        for brokers where a balance read alone doesn't prove the
+        account can actually trade. Verify the opt-in path still
+        works and that it's NOT used unless explicitly requested."""
+        broker = _make_fake_broker(balance=20.0, dry_run_success=False)
+        checklist = PaperToLiveChecklist(
+            position_repo=self.repo,
+            audit=self.audit,
+            broker=broker,
+            interactive=False,
+            auto_action="abort",
+        )
+        checklist._config = {"live_transition": {"dry_run_placement": True}}
+        decision = checklist.run(dry_run=True)
+        self.assertFalse(decision.proceed)
+        self.assertEqual(decision.reason, "dry_run_validation_failed")
+        # Opted in explicitly -> the legacy path DOES place a real order.
         broker.create_market_order.assert_called_once()
 
     def test_dry_run_skipped_when_disabled(self):

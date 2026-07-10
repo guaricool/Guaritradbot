@@ -296,10 +296,33 @@ class MarketAnalystAgent(Component):
         except Exception:
             return None
 
-    def _validate_or_fault(self, df, asset_tf: str) -> bool:
+    # Sprint 45 fix (M5): map each supported timeframe string to its
+    # duration in seconds, so `_validate_or_fault` can pass a sane
+    # `max_staleness_seconds` to `validate_dataframe`. The staleness
+    # check itself was implemented correctly in Sprint 43 (M5), but
+    # this — the only production call site — never passed the
+    # parameter that activates it, leaving the exact scenario the
+    # audit flagged (a delisted/paused symbol returning the same
+    # stale last bar for days) uncaught in the live pipeline.
+    _TF_SECONDS = {
+        "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
+        "1h": 3600, "60m": 3600, "4h": 14400,
+        "1d": 86400, "1wk": 604800,
+    }
+
+    def _validate_or_fault(self, df, asset_tf: str, tf: str = None) -> bool:
         """Sprint 6: fail-fast. Devuelve False si los datos son corruptos."""
+        # Allow 3x the bar's own interval before flagging staleness —
+        # generous enough to tolerate a slow/late data provider or a
+        # weekend/holiday gap on daily bars, tight enough to still
+        # catch a symbol that's stopped updating entirely.
+        max_staleness = None
+        if tf is not None:
+            interval_s = self._TF_SECONDS.get(tf)
+            if interval_s:
+                max_staleness = interval_s * 3
         try:
-            validate_dataframe(df)
+            validate_dataframe(df, max_staleness_seconds=max_staleness)
             return True
         except DataIntegrityError as e:
             print(f"  ⚠️  {asset_tf}: data integrity fail — {e}")
@@ -349,7 +372,7 @@ class MarketAnalystAgent(Component):
                         df = _resample_ohlcv(df, resample_rule)
 
                     # Sprint 6 fail-fast: validar ANTES de calcular indicadores
-                    if not self._validate_or_fault(df, f"{asset}@{tf}"):
+                    if not self._validate_or_fault(df, f"{asset}@{tf}", tf=tf):
                         fail_count += 1
                         continue
 

@@ -102,14 +102,31 @@ class AuditLedger:
         if not self.path.exists():
             return []
         out = []
+        dropped = 0
         with open(self.path, "r", encoding="utf-8") as f:
-            for line in f:
+            for lineno, line in enumerate(f, start=1):
                 line = line.strip()
                 if line:
                     try:
                         out.append(json.loads(line))
                     except json.JSONDecodeError:
+                        # Sprint 45 fix (M1): the audit ledger's own
+                        # docstring calls it "forenseable" / tamper-
+                        # evident, but a corrupted or torn line (e.g.
+                        # a crash mid-write, or — before the flock fix
+                        # above — an interleaved write from a second
+                        # process) was silently discarded with no
+                        # trace at all. Log a warning so a corrupted
+                        # ledger is at least visible instead of just
+                        # quietly missing events.
+                        dropped += 1
+                        print(
+                            f"[AuditLedger] WARNING: dropping malformed "
+                            f"line {lineno} in {self.path} (invalid JSON)"
+                        )
                         continue
+        if dropped:
+            print(f"[AuditLedger] WARNING: {dropped} malformed line(s) skipped in {self.path}")
         return out
 
     def read_since(self, ts: float) -> list[dict]:

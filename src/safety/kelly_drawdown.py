@@ -114,6 +114,14 @@ class DrawdownState:
     current_equity: float
     drawdown_pct: float  # negative or 0
     triggered: bool       # True if kill switch is active
+    # Sprint 45 fix (N2): main.py reads `dd_state.cooldown_remaining_hours`
+    # when building the SYSTEM_ERROR alert for an active kill switch, but
+    # this field never existed on `DrawdownState` — every time the kill
+    # switch actually triggered, that line raised AttributeError, which
+    # the broad `except Exception` around it in main.py swallowed, letting
+    # the cycle fall through to normal trading instead of skipping it.
+    # 0.0 when not triggered (nothing to count down).
+    cooldown_remaining_hours: float = 0.0
 
 
 class DrawdownKillSwitch:
@@ -183,11 +191,20 @@ class DrawdownKillSwitch:
                 self.triggered = False
                 self.triggered_at = None
 
+        # Sprint 45 fix (N2): compute how many hours remain in the
+        # cooldown window, for display/alerting. 0.0 whenever the
+        # switch isn't currently triggered.
+        cooldown_remaining_hours = 0.0
+        if self.triggered and self.triggered_at is not None:
+            elapsed_h = (time.time() - self.triggered_at) / 3600.0
+            cooldown_remaining_hours = max(0.0, self.cooldown_hours - elapsed_h)
+
         return DrawdownState(
             peak_equity=self.peak_equity,
             current_equity=current_equity,
             drawdown_pct=drawdown_pct,
             triggered=self.triggered,
+            cooldown_remaining_hours=cooldown_remaining_hours,
         )
 
     def is_triggered(self) -> bool:

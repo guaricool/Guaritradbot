@@ -196,10 +196,23 @@ class MTFDailyBiasHourlyTrigger(MultiTFStrategy):
         df_1h = data.get("1h")
         df_1d = data.get("1d")
         # 1d bias
+        # Sprint 45 fix (H10): same look-ahead bug the audit found in
+        # MTFTrendPullback (Sprint 43 H10) was still present here — a
+        # daily bar labeled by resample()'s START means its EMA cross
+        # (computed from its CLOSE) isn't actually known until the bar
+        # ends. Reindexing the raw (un-shifted) boolean series with
+        # ffill made a not-yet-closed daily bar's bias available to
+        # every 1h bar from its label timestamp onward. Shifting by
+        # one daily bar before reindexing guarantees day N's bias only
+        # applies from day N+1 onward — no future data leaks in.
         ema_f = df_1d["Close"].ewm(span=self.ema_fast_1d, adjust=False).mean()
         ema_s = df_1d["Close"].ewm(span=self.ema_slow_1d, adjust=False).mean()
-        bias_up = (ema_f > ema_s).reindex(df_1h.index, method="ffill").fillna(False)
-        bias_down = (ema_f < ema_s).reindex(df_1h.index, method="ffill").fillna(False)
+        bias_up_raw = (ema_f > ema_s)
+        bias_down_raw = (ema_f < ema_s)
+        bias_up_shifted = bias_up_raw.shift(1).fillna(False)
+        bias_down_shifted = bias_down_raw.shift(1).fillna(False)
+        bias_up = bias_up_shifted.reindex(df_1h.index, method="ffill").fillna(False)
+        bias_down = bias_down_shifted.reindex(df_1h.index, method="ffill").fillna(False)
         # 1h MACD trigger
         macd_line = _ema(df_1h["Close"], self.macd_fast) - _ema(df_1h["Close"], self.macd_slow)
         sig_line = _ema(macd_line, self.macd_signal)

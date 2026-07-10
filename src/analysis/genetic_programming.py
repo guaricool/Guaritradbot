@@ -207,11 +207,15 @@ def random_tree(
 # Tree evaluation (from Sprint 41, with bool dtype fix)
 # ============================================================
 
-def evaluate_tree(
+def _evaluate_tree_unsigned(
     tree: StrategyTree,
     indicators: Dict[str, pd.Series],
-    direction: int = 1,
 ) -> pd.Series:
+    """Evaluate a strategy tree WITHOUT applying direction. Internal
+    helper for `evaluate_tree` — AND/OR/SIGNAL combinators only ever
+    need to reason about unsigned 0/1 boolean signals; `direction`
+    (long=1/short=-1) is a property of the whole tree's final output,
+    not of any individual node, so it must never be applied here."""
     if not tree.children:
         cond_name, params = tree.node
         if cond_name == "rsi_below":
@@ -240,24 +244,44 @@ def evaluate_tree(
             return cond_below_bb_lower(indicators["close"], lower).astype(float)
         return pd.Series(0.0, index=indicators["close"].index)
     if tree.node == "AND":
-        out = evaluate_tree(tree.children[0], indicators, direction).astype(bool)
+        out = _evaluate_tree_unsigned(tree.children[0], indicators).astype(bool)
         for c in tree.children[1:]:
-            child_sig = evaluate_tree(c, indicators, direction).astype(bool)
+            child_sig = _evaluate_tree_unsigned(c, indicators).astype(bool)
             out = out & child_sig
         return out.astype(float)
     if tree.node == "OR":
-        out = evaluate_tree(tree.children[0], indicators, direction).astype(bool)
+        out = _evaluate_tree_unsigned(tree.children[0], indicators).astype(bool)
         for c in tree.children[1:]:
-            child_sig = evaluate_tree(c, indicators, direction).astype(bool)
+            child_sig = _evaluate_tree_unsigned(c, indicators).astype(bool)
             out = out | child_sig
         return out.astype(float)
     if tree.node == "SIGNAL":
-        conds = [evaluate_tree(c, indicators, direction).astype(bool) for c in tree.children]
+        conds = [_evaluate_tree_unsigned(c, indicators).astype(bool) for c in tree.children]
         out = conds[0]
         for c in conds[1:]:
             out = out & c
-        return (out.astype(float) * direction)
+        return out.astype(float)
     return pd.Series(0.0, index=indicators["close"].index)
+
+
+def evaluate_tree(
+    tree: StrategyTree,
+    indicators: Dict[str, pd.Series],
+    direction: int = 1,
+) -> pd.Series:
+    """Evaluate a strategy tree and apply `direction` (long=1/short=-1)
+    exactly once, regardless of the tree's root node type.
+
+    Sprint 45 fix (H9): the previous implementation only multiplied by
+    `direction` inside the "SIGNAL" branch, deep in the recursion. But
+    `random_tree()` and `mutate_combinator_swap()` can both produce (or
+    mutate into) a tree rooted at "AND"/"OR", which returned unsigned
+    0/1 regardless of `direction` — so any GP search configured for
+    short strategies (direction=-1) silently scored AND/OR-rooted
+    trees as if they were long-only, corrupting fitness comparisons
+    and letting long-only trees get promoted as "short" strategies.
+    """
+    return _evaluate_tree_unsigned(tree, indicators).astype(float) * direction
 
 
 def precompute_indicators(close: pd.Series) -> Dict[str, pd.Series]:
@@ -738,6 +762,7 @@ def evolve(
     seed: Optional[int] = None,
     verbose: bool = False,
     oos_fraction: float = 0.0,
+    oos_candidates: int = 5,
 ) -> EvolutionResult:
     """Run a full GP evolution loop.
 
@@ -769,6 +794,12 @@ def evolve(
               the strategy is flagged as OVERFIT and rejected by
               `add_from_evolution()`. This is the walk-forward
               validation the audit flagged as missing in Sprint 42.
+        oos_candidates: Sprint 45 fix (C7 integration bug) — how many
+            of the top-scoring final-generation candidates get
+            OOS-scored (not just the single best). Matches the
+            typical `top_k` used by `StrategyLibrary.add_from_evolution`
+            so every candidate that could actually be added to the
+            library has a real `is_oos_ratio`, not just rank #1.
 
     Returns:
         EvolutionResult with the best tree found + run history.
@@ -871,43 +902,77 @@ def evolve(
     if final_population and (not best_ever or final_population[0]["score"] > best_ever["score"]):
         best_ever = final_population[0]
 
-    # Sprint 43 C7: OOS validation of the best-ever strategy.
-    # If the OOS score is much lower than the IS score, the
-    # strategy is overfit to the training window. The audit
-    # flagged this as the missing piece of the GP loop: the
-    # library could absorb strategies that were lucky on the
-    # training data and would lose money live.
+    # Sprint 43 C7 / Sprint 45 fix (C7 integration bug): OOS validation.
     #
-    # Important: we mutate the original dict in `final_population`
-    # (and in any earlier best_ever snapshot) so the OOS fields
-    # are visible to `add_from_evolution`. Creating a new dict
-    # here would leave the original final_population entries
-    # without OOS data, breaking the overfit filter.
-    if oos_enabled and best_ever and oos_prices:
-        oos_scored = _evaluate_population(
-            [best_ever["tree"]], oos_prices,
-            direction=direction, use_multi_symbol=use_multi_symbol,
-            use_min_symbols=min_symbols,
-        )
-        if oos_scored:
+    # The Sprint 43 version only OOS-scored `best_ever` and mutated
+    # that dict in place, on the assumption that `best_ever` IS one of
+    # the objects inside `final_population` — but `best_ever` is
+    # tracked across ALL generations (line ~821), and each generation's
+    # `scored` list is a fresh set of dicts from `_evaluate_population`.
+    # Whenever the true best came from an earlier generation and no
+    # later generation beat it, `best_ever` was a dict from an OLD,
+    # already-discarded `scored` list — a different object than
+    # anything in `final_population`. Mutating it did nothing visible
+    # to `StrategyLibrary.add_from_evolution()`, which only ever reads
+    # `result.final_population`. Confirmed by the re-audit: every
+    # candidate reached `add_from_evolution` with no `is_oos_ratio` key
+    # at all, so the overfit filter silently never fired.
+    #
+    # Fix: OOS-score the top `oos_candidates` entries of
+    # `final_population` DIRECTLY — mutating dicts that are
+    # guaranteed (by construction) to be the same objects
+    # `add_from_evolution` iterates over — instead of only the
+    # separately-tracked `best_ever`. This also addresses the related
+    # complaint that only the #1-ranked candidate ever got OOS-scored;
+    # now every candidate that's actually eligible for the library
+    # (top_k) gets a real ratio.
+    if oos_enabled and final_population and oos_prices:
+        n_to_score = min(oos_candidates, len(final_population))
+        for entry in final_population[:n_to_score]:
+            oos_scored = _evaluate_population(
+                [entry["tree"]], oos_prices,
+                direction=direction, use_multi_symbol=use_multi_symbol,
+                use_min_symbols=min_symbols,
+            )
+            if not oos_scored:
+                continue
             oos_entry = oos_scored[0]
-            is_score = float(best_ever["score"])
+            is_score = float(entry["score"])
             oos_score = float(oos_entry["score"])
-            # Mutate the original dict in-place so add_from_evolution
-            # can see the OOS fields via the final_population list.
-            best_ever["score_is"] = is_score
-            best_ever["score_oos"] = oos_score
-            best_ever["metrics_is"] = best_ever.get("metrics", {})
-            best_ever["metrics_oos"] = oos_entry.get("metrics", {})
-            best_ever["per_symbol_oos"] = oos_entry.get("per_symbol", {})
-            best_ever["is_oos_ratio"] = _safe_ratio(oos_score, is_score)
+            entry["score_is"] = is_score
+            entry["score_oos"] = oos_score
+            entry["metrics_is"] = entry.get("metrics", {})
+            entry["metrics_oos"] = oos_entry.get("metrics", {})
+            entry["per_symbol_oos"] = oos_entry.get("per_symbol", {})
+            entry["is_oos_ratio"] = _safe_ratio(oos_score, is_score)
             if verbose:
-                ratio = best_ever["is_oos_ratio"]
                 print(
-                    f"[GP C7] best_ever IS score={is_score:.3f}, "
+                    f"[GP C7] candidate IS score={is_score:.3f}, "
                     f"OOS score={oos_score:.3f}, "
-                    f"ratio={ratio:.2f}"
+                    f"ratio={entry['is_oos_ratio']:.2f}"
                 )
+        # `best_ever` may be a stale object from an earlier generation
+        # that never made it into `final_population` (rare — elitism
+        # normally carries the true best forward, but a regression is
+        # possible with small elite_size). If so, it still won't have
+        # OOS fields; that's surfaced honestly via `EvolutionResult`
+        # below (best_score_oos/is_oos_ratio = None) rather than
+        # faked. `final_population[0]` (annotated above) is what
+        # `add_from_evolution` actually acts on, which is the part
+        # that matters for the overfit gate.
+        if best_ever is not None and best_ever is final_population[0]:
+            pass  # already annotated above
+        elif best_ever is not None:
+            matching = next(
+                (e for e in final_population[:n_to_score]
+                 if _tree_signature(e["tree"]) == _tree_signature(best_ever["tree"])),
+                None,
+            )
+            if matching is not None:
+                for k in ("score_is", "score_oos", "metrics_is", "metrics_oos",
+                          "per_symbol_oos", "is_oos_ratio"):
+                    if k in matching:
+                        best_ever[k] = matching[k]
 
     elapsed = time.time() - t_start
     return EvolutionResult(
@@ -1292,6 +1357,8 @@ def run_evolution_cli(
     n_generations: int = 8,
     seed: int = 42,
     verbose: bool = True,
+    oos_fraction: float = 0.3,
+    min_oos_ratio: float = 0.4,
 ) -> EvolutionResult:
     """End-to-end: load synthetic multi-symbol data, evolve, save library.
 
@@ -1324,6 +1391,12 @@ def run_evolution_cli(
         n_generations=n_generations,
         seed=seed,
         verbose=verbose,
+        # Sprint 45 fix (C7): the production entry point previously
+        # didn't pass oos_fraction/min_oos_ratio at all, so the
+        # walk-forward overfit gate was off by default even after the
+        # Sprint 43 fix built the machinery for it. 0.3/0.4 match the
+        # values the module's own docstrings recommend.
+        oos_fraction=oos_fraction,
     )
     if verbose:
         print(f"\n[GP] best score: {result.best_score:.3f}")
@@ -1333,7 +1406,7 @@ def run_evolution_cli(
             print(f"\n[GP] best tree:\n{result.best_tree.to_string()}")
     # Save to library
     lib = StrategyLibrary(output_path)
-    n_added = lib.add_from_evolution(result, top_k=5)
+    n_added = lib.add_from_evolution(result, top_k=5, min_oos_ratio=min_oos_ratio)
     lib.save()
     if verbose:
         print(f"\n[GP] added {n_added} strategies to library ({len(lib)} total)")

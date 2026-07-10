@@ -3,8 +3,16 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Sprint 45 fix (L7): the audit found requirements.lock (exact pins,
+# generated via pip freeze) existed but was never referenced by
+# either Dockerfile — both still installed from requirements.txt's
+# wide version ranges, so a rebuild months later could silently pull
+# a different minor version (especially risky for pre-1.0 packages
+# like alpaca-py). Installing from the lockfile makes builds
+# reproducible; requirements.txt stays as the human-edited source
+# of truth for local dev / regenerating the lock.
+COPY requirements.lock .
+RUN pip install --no-cache-dir -r requirements.lock
 
 # Copy source code
 COPY . .

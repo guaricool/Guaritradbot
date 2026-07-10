@@ -163,6 +163,20 @@ def main():
     audit = AuditLedger(_audit_path(config))
     override_path = str(audit.path.parent / "mode_override.json")
 
+    # Sprint 45 fix (N1): `event_bus` was constructed at its old location
+    # (originally right before `ExecutionNode(...)`, ~40 lines further
+    # down) but was already referenced above that point — first by
+    # `_build_mandate(..., event_bus=event_bus)` and then by the
+    # kill-switch SYSTEM_ERROR publish block. Same bug class as the
+    # original C2 (name used before assignment inside the same
+    # function scope -> Python treats it as local for the whole
+    # function body -> UnboundLocalError on every single startup,
+    # unconditionally, since this path always runs). Constructing it
+    # here — right alongside `audit`, which nothing else depends on —
+    # makes it available to every consumer below, including
+    # `_build_mandate` and the kill-switch block.
+    event_bus = EventBus()
+
     # Sprint 36: Alpaca broker for equities/ETFs. OPTIONAL — bot
     # degrades gracefully to single-broker (crypto-only) if env vars
     # are missing. Only construct if BOTH keys are present, so the
@@ -358,7 +372,6 @@ def main():
         f"(realized PnL total ${position_repo.total_realized_pnl_usd():.4f})"
     )
 
-    event_bus = EventBus()
     execution_node = ExecutionNode(
         event_bus,
         execution_mode=execution_mode,
@@ -444,6 +457,7 @@ def main():
         hyperopt=hyperopt,
         audit=audit,
         assets=("BTC-USD", "SPY", "GLD", "QQQ", "USO"),
+        event_bus=event_bus,  # Sprint 45 fix (N6/H11): alert on aborted cycles
     )
 
     # Sprint 23: Live Equity Tracker
