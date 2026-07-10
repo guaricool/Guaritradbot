@@ -150,6 +150,18 @@ def main():
         except Exception as e:
             print(f"[Broker] Error al inicializar: {e}. Modo paper-only.")
 
+    # Sprint 43 C2 fix: initialize `audit` and `override_path` BEFORE
+    # the Alpaca broker block. The previous order declared
+    # `override_path` (line 194) AFTER it was used in
+    # `AlpacaBroker(mode_override_path=override_path, ...)` (line 172),
+    # which made Python treat it as a local variable and raise
+    # UnboundLocalError on every init where ALPACA_* env vars were set.
+    # The try/except at the old line 167-178 caught the error and made
+    # the failure look like a credentials/network issue. Moving these
+    # initializations up restores the multi-broker routing.
+    audit = AuditLedger(_audit_path(config))
+    override_path = str(audit.path.parent / "mode_override.json")
+
     # Sprint 36: Alpaca broker for equities/ETFs. OPTIONAL — bot
     # degrades gracefully to single-broker (crypto-only) if env vars
     # are missing. Only construct if BOTH keys are present, so the
@@ -181,17 +193,15 @@ def main():
 
     brokers_config = config.get("brokers", {}) or {}
 
-    audit = AuditLedger(_audit_path(config))
-
     # Sprint 12: mode_override.json takes precedence over config.yaml.
     # The dashboard writes here when the user toggles PAPER/LIVE.
     # This lets you flip modes WITHOUT editing config.yaml or restarting manually.
     #
-    # B031 fix: `audit.path_dir` was a phantom attribute (AuditLedger only
-    # exposes `path` as a `Path` object). The hasattr check hid the dead
-    # branch but the code was misleading. Now we derive the dir from
-    # `audit.path.parent` — same source of truth as where the ledger lives.
-    override_path = str(audit.path.parent / "mode_override.json")
+    # NOTE: `audit` and `override_path` were originally assigned here
+    # (after the Alpaca block), which caused an UnboundLocalError when
+    # AlpacaBroker tried to use `override_path` (Sprint 43 C2). They
+    # are now initialized above the Alpaca block. The mode_override.json
+    # content-loading logic below stays here.
     if os.path.exists(override_path):
         try:
             with open(override_path, "r", encoding="utf-8") as f:
