@@ -143,6 +143,33 @@ components.html(
         } else {
           inject();
         }
+
+        // 3. B030 fix: Streamlit 1.36 widgets render with `autocomplete=""`
+        //    (empty attribute). DevTools flags this as the accessibility
+        //    warning "A form field's autocomplete attribute is empty".
+        //    Mutate the DOM to replace empty autocomplete with a valid value
+        //    (we use "off" because this is a trading dashboard — we never
+        //    want the browser to autofill credentials or form history).
+        //    Runs on initial load AND on every MutationObserver tick so
+        //    newly rendered widgets (after a streamlit rerun) are patched too.
+        function fixAutocomplete() {
+          var nodes = document.querySelectorAll(
+            'input[autocomplete=""], textarea[autocomplete=""]'
+          );
+          for (var i = 0; i < nodes.length; i++) {
+            nodes[i].setAttribute('autocomplete', 'off');
+          }
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', fixAutocomplete);
+        } else {
+          fixAutocomplete();
+        }
+        var autocompleteObserver = new MutationObserver(fixAutocomplete);
+        autocompleteObserver.observe(document.body, {
+          childList: true,
+          subtree: true,
+        });
       })();
     </script>
     """,
@@ -161,12 +188,22 @@ CUSTOM_CSS_HTML_INJECT = """
   textarea:not([name]) {
     name: auto-fill;
   }
-  /* Privacy: disable browser autofill by default for trading-related forms */
-  input[autocomplete=""],
+  /* Privacy: disable browser autofill by default for trading-related forms.
+     Note: Streamlit 1.36 emits `autocomplete=""` (empty attribute) on widgets,
+     which triggers the DevTools accessibility warning "form field's
+     autocomplete attribute is empty". The CSS below handles inputs that
+     have no autocomplete attribute at all; the empty-attribute case is
+     handled by the JS helper script in the components.html block (CSP/head
+     injection), which mutates the DOM to set autocomplete="off" on every
+     input/textarea after each Streamlit rerun. */
   input:not([autocomplete]) {
     autocomplete: off;
   }
-</style>
+  /* Inputs where autocomplete is the empty string — CSS suppression so the
+     rendered control visibly says "off" even before the JS mutator runs. */
+  input[autocomplete=""] {
+    autocomplete: off;
+  }
 """
 st.markdown(CUSTOM_CSS_HTML_INJECT, unsafe_allow_html=True)
 
