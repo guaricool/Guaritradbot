@@ -83,7 +83,13 @@ def main():
             except Exception as e:
                 print(f"[--test-telegram] Warning: could not load config.yaml: {e}")
         try:
-            from src.agents.notification_agent import NotificationAgent
+            # Sprint 34b fix: removed redundant `from ... import
+            # NotificationAgent` here. Python's scoping rule treats ANY
+            # import inside a function as a local binding for the whole
+            # function, which made the module-level import (line 29)
+            # shadowed and the production code at line 341 raised
+            # UnboundLocalError on every startup. Reusing the top-level
+            # import is enough.
             agent = NotificationAgent(
                 event_bus=None,  # no subscriptions needed for smoke test
                 config=config,
