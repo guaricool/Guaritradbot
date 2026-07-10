@@ -154,13 +154,25 @@ def main():
     # degrades gracefully to single-broker (crypto-only) if env vars
     # are missing. Only construct if BOTH keys are present, so the
     # absence of one doesn't half-init and fail later.
+    #
+    # Sprint 36.1: pass `mode_override_path` so the broker can read
+    # the runtime `alpaca_paper` flag on every call. The dashboard's
+    # Paper/Live toggle writes BOTH `mandate_enabled` and `alpaca_paper`
+    # together, so one click switches both the B033 paper gate AND
+    # the Alpaca endpoint in lockstep.
     alpaca_broker = None
     _alpaca_key = os.getenv("ALPACA_API_KEY")
     _alpaca_secret = os.getenv("ALPACA_SECRET_KEY")
     if _alpaca_key and _alpaca_secret:
         try:
-            alpaca_broker = AlpacaBroker(api_key=_alpaca_key, secret_key=_alpaca_secret, paper=True)
-            print(f"[Init] Alpaca broker armado (paper). Balance USD: ${alpaca_broker.get_usd_balance():.2f}")
+            alpaca_broker = AlpacaBroker(
+                api_key=_alpaca_key,
+                secret_key=_alpaca_secret,
+                paper=True,        # legacy, ignored at runtime
+                mode_override_path=override_path,
+            )
+            _bal = alpaca_broker.get_usd_balance()
+            print(f"[Init] Alpaca broker armado. Balance USD: ${_bal:.2f} (endpoint = runtime-driven por alpaca_paper en mode_override.json)")
         except Exception as e:
             print(f"[Init] ⚠️ Alpaca broker falló al inicializar: {e}. Sigo solo con crypto.")
             alpaca_broker = None

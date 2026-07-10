@@ -357,5 +357,160 @@ class AlpacaBrokerInitTest(unittest.TestCase):
                     AlpacaBroker(paper=True)
 
 
+class RuntimePaperLiveSwitchTest(unittest.TestCase):
+    """Sprint 36.1: ``alpaca_paper`` flag in mode_override.json must
+    dispatch to the right TradingClient on every call (no restart)."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.mode_override_path = _write_mode_override(self.tmpdir, True)
+        # Use a real file for the override so the broker can read it
+        self.mode_override_path = os.path.join(self.tmpdir, "mode_override.json")
+        with open(self.mode_override_path, "w", encoding="utf-8") as f:
+            json.dump({"mandate_enabled": False, "alpaca_paper": True}, f)
+
+    def _set_paper(self, paper: bool):
+        with open(self.mode_override_path, "w", encoding="utf-8") as f:
+            json.dump({"mandate_enabled": True, "alpaca_paper": paper}, f)
+
+    def _broker_with_mock_clients(self, paper_client, live_client):
+        """Build an AlpacaBroker with TradingClient patched to return
+        our two pre-built mock clients (one for paper, one for live)."""
+        with patch(
+            "alpaca.trading.client.TradingClient",
+            side_effect=[paper_client, live_client],
+            create=True,
+        ):
+            return AlpacaBroker(
+                api_key="FAKE_KEY",
+                secret_key="FAKE_SECRET",
+                paper=True,  # legacy, ignored
+                mode_override_path=self.mode_override_path,
+            )
+
+    def test_default_mode_is_paper(self):
+        """If the file says alpaca_paper=true, the broker uses paper client."""
+        paper = MagicMock()
+        paper.get_account.return_value.cash = "100000.00"
+        live = MagicMock()
+        live.get_account.return_value.cash = "999999.00"
+        broker = self._broker_with_mock_clients(paper, live)
+        bal = broker.get_usd_balance()
+        # Paper client was called
+        paper.get_account.assert_called_once()
+        live.get_account.assert_not_called()
+        self.assertEqual(bal, 100000.00)
+
+    def test_toggle_to_live_picks_live_client(self):
+        """Toggling alpaca_paper=false in the file must route to live client
+        on the NEXT call, no restart needed."""
+        paper = MagicMock()
+        paper.get_account.return_value.cash = "100000.00"
+        live = MagicMock()
+        live.get_account.return_value.cash = "999999.00"
+        broker = self._broker_with_mock_clients(paper, live)
+
+        # Start: paper
+        bal_paper = broker.get_usd_balance()
+        self.assertEqual(bal_paper, 100000.00)
+        paper.get_account.assert_called_once()
+
+        # Toggle to live
+        self._set_paper(False)
+
+        # Next call: must use LIVE client
+        bal_live = broker.get_usd_balance()
+        self.assertEqual(bal_live, 999999.00)
+        live.get_account.assert_called_once()
+        # Paper client was NOT called again (still only 1 call from before)
+        self.assertEqual(paper.get_account.call_count, 1)
+
+    def test_toggle_back_to_paper(self):
+        """Toggle live → paper must work the same way."""
+        self._set_paper(False)
+        paper = MagicMock()
+        paper.get_account.return_value.cash = "100000.00"
+        live = MagicMock()
+        live.get_account.return_value.cash = "999999.00"
+        broker = self._broker_with_mock_clients(paper, live)
+
+        bal_live = broker.get_usd_balance()
+        self.assertEqual(bal_live, 999999.00)
+        live.get_account.assert_called_once()
+
+        # Toggle back to paper
+        self._set_paper(True)
+        bal_paper = broker.get_usd_balance()
+        self.assertEqual(bal_paper, 100000.00)
+        self.assertEqual(paper.get_account.call_count, 1)
+
+    def test_create_order_respects_runtime_flag(self):
+        """create_market_order also dispatches by runtime flag, and tags
+        the result with the endpoint for audit clarity."""
+        self._set_paper(True)
+        paper = MagicMock()
+        live = MagicMock()
+        order = MagicMock()
+        order.id = "ord_p"
+        order.status = "filled"
+        order.symbol = "SPY"
+        order.side = "buy"
+        order.qty = "0.0133"
+        order.notional = "10.00"
+        order.submitted_at = "2026-07-10T12:00:00Z"
+        paper.submit_order.return_value = order
+        live.submit_order.return_value = order
+        broker = self._broker_with_mock_clients(paper, live)
+
+        result = broker.create_market_order("SPY", "buy", notional_usd=10.00)
+        self.assertEqual(result["endpoint"], "paper")
+        paper.submit_order.assert_called_once()
+        live.submit_order.assert_not_called()
+
+        # Toggle to live
+        self._set_paper(False)
+        order.id = "ord_l"
+        result_live = broker.create_market_order("SPY", "buy", notional_usd=10.00)
+        self.assertEqual(result_live["endpoint"], "live")
+        live.submit_order.assert_called_once()
+        # Paper wasn't called again for the order (only 1 call from before)
+        self.assertEqual(paper.submit_order.call_count, 1)
+
+    def test_missing_file_defaults_to_paper(self):
+        """If mode_override.json doesn't exist, default to paper (safe)."""
+        os.unlink(self.mode_override_path)
+        paper = MagicMock()
+        paper.get_account.return_value.cash = "100000.00"
+        live = MagicMock()
+        broker = self._broker_with_mock_clients(paper, live)
+        broker.get_usd_balance()
+        paper.get_account.assert_called_once()
+        live.get_account.assert_not_called()
+
+    def test_malformed_file_defaults_to_paper(self):
+        """If mode_override.json is garbage, default to paper (safe)."""
+        with open(self.mode_override_path, "w", encoding="utf-8") as f:
+            f.write("not json {{{")
+        paper = MagicMock()
+        paper.get_account.return_value.cash = "100000.00"
+        live = MagicMock()
+        broker = self._broker_with_mock_clients(paper, live)
+        broker.get_usd_balance()
+        paper.get_account.assert_called_once()
+        live.get_account.assert_not_called()
+
+    def test_alpaca_paper_field_missing_defaults_to_paper(self):
+        """If file has mandate_enabled but no alpaca_paper, default to paper."""
+        with open(self.mode_override_path, "w", encoding="utf-8") as f:
+            json.dump({"mandate_enabled": True}, f)  # no alpaca_paper key
+        paper = MagicMock()
+        paper.get_account.return_value.cash = "100000.00"
+        live = MagicMock()
+        broker = self._broker_with_mock_clients(paper, live)
+        broker.get_usd_balance()
+        paper.get_account.assert_called_once()
+        live.get_account.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
