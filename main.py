@@ -30,6 +30,7 @@ from src.agents.notification_agent import NotificationAgent
 from src.core.event_bus import EventBus
 from src.execution.execution_node import ExecutionNode
 from src.execution.broker import BrokerClient
+from src.execution.alpaca_broker import AlpacaBroker
 from src.execution.scheduler import EpochScheduler
 from src.optimization.hyperopt import HyperoptManager
 from src.safety.audit_ledger import AuditLedger
@@ -148,6 +149,25 @@ def main():
             )
         except Exception as e:
             print(f"[Broker] Error al inicializar: {e}. Modo paper-only.")
+
+    # Sprint 36: Alpaca broker for equities/ETFs. OPTIONAL — bot
+    # degrades gracefully to single-broker (crypto-only) if env vars
+    # are missing. Only construct if BOTH keys are present, so the
+    # absence of one doesn't half-init and fail later.
+    alpaca_broker = None
+    _alpaca_key = os.getenv("ALPACA_API_KEY")
+    _alpaca_secret = os.getenv("ALPACA_SECRET_KEY")
+    if _alpaca_key and _alpaca_secret:
+        try:
+            alpaca_broker = AlpacaBroker(api_key=_alpaca_key, secret_key=_alpaca_secret, paper=True)
+            print(f"[Init] Alpaca broker armado (paper). Balance USD: ${alpaca_broker.get_usd_balance():.2f}")
+        except Exception as e:
+            print(f"[Init] ⚠️ Alpaca broker falló al inicializar: {e}. Sigo solo con crypto.")
+            alpaca_broker = None
+    else:
+        print("[Init] ALPACA_API_KEY/ALPACA_SECRET_KEY no configuradas. Bot en modo crypto-only (equity signals fallarán con ALPACA_NOT_CONFIGURED).")
+
+    brokers_config = config.get("brokers", {}) or {}
 
     audit = AuditLedger(_audit_path(config))
 
@@ -294,6 +314,8 @@ def main():
         event_bus,
         execution_mode=execution_mode,
         broker_client=broker_client,
+        alpaca_broker=alpaca_broker,         # Sprint 36
+        brokers_config=brokers_config,        # Sprint 36
         kill_switch=kill_switch,
         audit=audit,
         mode_override_path=override_path,  # B033: paper-mode gate

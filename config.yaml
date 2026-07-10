@@ -15,6 +15,32 @@ exchange:
   # (defensive). Tune later as the account grows.
   max_capital_per_trade_pct: 50
 
+# === Sprint 36 — Multi-broker routing ===
+# ExecutionNode dispatches each order to the broker matching the asset's
+# asset_class. The asset → class map is built from `symbols` lists here.
+# Symbols not listed default to "crypto" (binanceus).
+#
+# To add a new equity/ETF: append the ticker to the `equity.symbols` list.
+# To add a new crypto: append to the `crypto.symbols` list.
+#
+# Alpaca is OPTIONAL: if ALPACA_API_KEY/ALPACA_SECRET_KEY aren't set,
+# the bot runs in single-broker mode (crypto only) and equity signals
+# fail with ALPACA_NOT_CONFIGURED.
+brokers:
+  crypto:
+    name: "binanceus"
+    symbols:
+      - "BTC-USD"
+      - "ETH-USD"
+      - "SOL-USD"
+  equity:
+    name: "alpaca"
+    symbols:
+      - "SPY"
+      - "QQQ"
+      - "GLD"
+      - "USO"
+
 trading:
   risk_per_trade_pct: 1.0          # 1% del balance arriesgado por trade (regla #1 del playbook)
   atr_stop_multiplier: 2.0         # Stop = entry ± k * ATR (k=2 es estándar)
