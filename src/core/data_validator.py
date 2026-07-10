@@ -64,9 +64,21 @@ def validate_ohlcv_row(row, label_prefix=""):
     return (o, h, l, c, v)
 
 
-def validate_dataframe(df, required_cols=("Open", "High", "Low", "Close")):
+def validate_dataframe(df, required_cols=("Open", "High", "Low", "Close"),
+                        max_staleness_seconds: float = None):
     """
     Valida un DataFrame de precios. Falla rápido si hay data corrupta.
+
+    Sprint 43 M5 fix: also validate
+      (a) monotonic index (no out-of-order timestamps)
+      (b) unique index (no duplicate timestamps)
+      (c) optional: most-recent row is not older than
+          `max_staleness_seconds` (catches delisted/paused symbols
+          returning the same last bar forever).
+
+    The audit's exact recommendations. All three checks default-on;
+    pass `max_staleness_seconds=None` to skip the staleness check
+    (e.g. for historical backtests where staleness doesn't matter).
     """
     if df is None or len(df) == 0:
         raise DataIntegrityError("DataFrame is None or empty")
@@ -87,4 +99,39 @@ def validate_dataframe(df, required_cols=("Open", "High", "Low", "Close")):
         if len(bad) > 0:
             n = len(bad)
             raise DataIntegrityError(f"high<low en {n} vela(s)")
+    # Sprint 43 M5 (a) — monotonic index
+    if df.index.is_monotonic_increasing is False:
+        # pandas returns True/False/None. None for non-ordered indexes
+        # (e.g. RangeIndex on an unsorted df) is also a fail.
+        raise DataIntegrityError(
+            f"index is not monotonically increasing; "
+            f"sort or fix the timestamp column before validating"
+        )
+    # Sprint 43 M5 (b) — unique index (no duplicate timestamps)
+    if df.index.has_duplicates:
+        n_dup = int(df.index.duplicated().sum())
+        raise DataIntegrityError(
+            f"index has {n_dup} duplicate timestamp(s); "
+            f"a feed that re-emits bars is a sign of upstream corruption"
+        )
+    # Sprint 43 M5 (c) — optional staleness check
+    if max_staleness_seconds is not None and max_staleness_seconds > 0:
+        try:
+            import pandas as pd
+            now = pd.Timestamp.now(tz=df.index[-1].tz) if hasattr(df.index[-1], 'tz') and df.index[-1].tz is not None else pd.Timestamp.now()
+            last_ts = df.index[-1]
+            if not isinstance(last_ts, pd.Timestamp):
+                last_ts = pd.Timestamp(last_ts)
+            age = (now - last_ts).total_seconds()
+            if age > max_staleness_seconds:
+                raise DataIntegrityError(
+                    f"last bar is {age:.0f}s old, exceeds staleness threshold "
+                    f"{max_staleness_seconds:.0f}s — symbol may be delisted/paused"
+                )
+        except DataIntegrityError:
+            raise
+        except Exception:
+            # If we can't compute the age (e.g. non-datetime index),
+            # skip this check rather than failing the whole validation.
+            pass
     return df

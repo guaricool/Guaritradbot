@@ -168,7 +168,16 @@ class MarketAnalystAgent(Component):
         self.ready()
 
     def fetch_one(self, asset: str, interval: str = "1d", period: str = "1y") -> "pd.DataFrame | None":
-        """Helper público (Sprint 2): trae datos OHLCV de un solo asset. Usado por PositionMonitor."""
+        """Helper público (Sprint 2): trae datos OHLCV de un solo asset. Usado por PositionMonitor.
+
+        Sprint 43 M6 fix: when `interval='4h'`, the previous code
+        mapped it to yfinance's 60m and returned 4x more bars,
+        labeled as '4h' but actually 1h data. Now we resample
+        60m → 4h via _resample_ohlcv (the same helper
+        fetch_and_analyze uses) so the result is consistent.
+        The fix is dormant when called with interval='1d' (the
+        only current caller per the audit).
+        """
         try:
             import yfinance as yf
             tf_map = {"15m": "15m", "60m": "60m", "1h": "60m", "4h": "60m", "1d": "1d"}
@@ -182,6 +191,13 @@ class MarketAnalystAgent(Component):
             df = df.dropna(how="all")
             if df.empty:
                 return None
+            # Sprint 43 M6: if caller asked for 4h, resample the
+            # 60m bars we just downloaded. Otherwise return as-is.
+            # Note: _resample_ohlcv is a module-level function
+            # (defined as `def _resample_ohlcv(df_60m, rule)`,
+            # not a method), so we call it without self.
+            if interval == "4h":
+                df = _resample_ohlcv(df, "4h")
             # Calcular todos los indicadores (incluyendo los nuevos del PDF2)
             close = df["Close"]
             df["EMA_20"] = close.ewm(span=20, adjust=False).mean()

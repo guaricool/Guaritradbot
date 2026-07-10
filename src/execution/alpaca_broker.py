@@ -293,8 +293,19 @@ class AlpacaBroker:
 
         is_paper = self._alpaca_paper_mode()
         endpoint = "paper" if is_paper else "live"
+        # Sprint 43 M2 fix: read the paper mode ONCE per call and
+        # route directly to the matching pre-built client. The
+        # pre-M2 code went through a `_client()` accessor that
+        # re-read the same mode_override.json file the line
+        # above had just read. If the dashboard toggles
+        # paper↔live between those two reads (microseconds apart
+        # but possible in a dashboard-active session), the
+        # route would say "paper" but the client would be
+        # "live" (or vice versa) — orders would be sent to the
+        # WRONG endpoint. Now: one read, one decision, one client.
+        client = self._paper_client if is_paper else self._live_client
         try:
-            order = self._client().submit_order(req)
+            order = client.submit_order(req)
             return {
                 "id": str(order.id),
                 "status": str(order.status),

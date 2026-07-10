@@ -27,6 +27,12 @@ import time
 from pathlib import Path
 from typing import Any
 
+try:
+    import fcntl  # POSIX-only (Linux/macOS). Not available on Windows.
+    HAS_FCNTL = True
+except ImportError:
+    HAS_FCNTL = False
+
 
 class AuditLedger:
     def __init__(self, path: str):
@@ -41,11 +47,55 @@ class AuditLedger:
             "event_type": event_type,
             **payload,
         }
-        # Append atómico: abrir, escribir, fsync, cerrar
-        with open(self.path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
+        # Sprint 43 M1 fix: take an exclusive lock on the file
+        # before writing, so a concurrent process (e.g. the bot
+        # container + the dashboard container, both mounting the
+        # same audit volume) cannot interleave writes. The audit
+        # caught that "lines corrupt, silently discarded" was
+        # possible because the old `with open(..., 'a')` block
+        # relied solely on O_APPEND for atomicity, which POSIX
+        # only guarantees for writes ≤ PIPE_BUF (~4KB on Linux).
+        # JSONL lines for large TRADE_FILLED events can exceed
+        # that. fcntl.flock blocks the other writer until we're
+        # done.
+        #
+        # On Windows, fcntl is unavailable. We fall back to the
+        # O_APPEND-only behavior. The bot runs on Linux (VPS),
+        # so the Windows path is just for local dev on Carlos's
+        # workstation. The fsync below still ensures the bytes
+        # hit disk before we release the lock.
+        open_mode = "a"
+        if HAS_FCNTL:
+            # Use line-buffered text mode + flock. We need binary
+            # mode for fcntl.flock, so open in 'ab' and write bytes.
+            open_mode = "ab"
+        with open(self.path, open_mode) as f:
+            if HAS_FCNTL:
+                try:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                except (OSError, AttributeError):
+                    # Best-effort: if flock fails for any reason
+                    # (e.g. NFS doesn't support it), fall through
+                    # to O_APPEND-only.
+                    pass
+            line = (json.dumps(event, ensure_ascii=False, default=str) + "\n")
+            if HAS_FCNTL:
+                # Binary mode + flock → need bytes
+                if isinstance(line, str):
+                    line = line.encode("utf-8")
+            f.write(line)
             f.flush()
-            os.fsync(f.fileno())
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                # Some filesystems (e.g. virtual mounts) don't
+                # support fsync. Best effort.
+                pass
+            if HAS_FCNTL:
+                try:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                except (OSError, AttributeError):
+                    pass
         return event
 
     def read_all(self) -> list[dict]:
