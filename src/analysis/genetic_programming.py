@@ -630,6 +630,17 @@ class EvolutionResult:
     history: List[Dict[str, float]]  # per-generation best score, avg score, etc.
     elapsed_seconds: float
     seed: Optional[int]
+    # Sprint 43 C7: out-of-sample validation fields. None when
+    # oos_fraction=0 (backward compatible). When oos_fraction>0,
+    # these capture whether the best strategy generalizes to
+    # unseen data — the missing piece the audit flagged.
+    best_score_is: Optional[float] = None
+    best_score_oos: Optional[float] = None
+    is_oos_ratio: Optional[float] = None
+    # Reference to the best_ever dict so add_from_evolution can
+    # identify it specifically and apply the OOS filter. May be None
+    # if the population is empty.
+    best_ever: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> dict:
         return {
@@ -642,6 +653,10 @@ class EvolutionResult:
             "history": self.history,
             "elapsed_seconds": self.elapsed_seconds,
             "seed": self.seed,
+            # Sprint 43 C7
+            "best_score_is": self.best_score_is,
+            "best_score_oos": self.best_score_oos,
+            "is_oos_ratio": self.is_oos_ratio,
         }
 
 
@@ -704,6 +719,7 @@ def evolve(
     direction: int = 1,
     seed: Optional[int] = None,
     verbose: bool = False,
+    oos_fraction: float = 0.0,
 ) -> EvolutionResult:
     """Run a full GP evolution loop.
 
@@ -725,9 +741,22 @@ def evolve(
         direction: long (1) or short (-1) for the strategy's signal.
         seed: random seed (None = non-deterministic).
         verbose: print progress per generation.
+        oos_fraction: fraction of each symbol's data reserved for
+            out-of-sample (OOS) validation. Sprint 43 C7 fix.
+            - 0.0 (default): no split — backward compatible.
+            - 0.3 (recommended): last 30% of each symbol's rows
+              held out. The GP evolves on the first 70% (in-sample,
+              IS). The best strategy is then re-evaluated on the
+              30% OOS slice. If OOS score < oos_min_ratio * IS score,
+              the strategy is flagged as OVERFIT and rejected by
+              `add_from_evolution()`. This is the walk-forward
+              validation the audit flagged as missing in Sprint 42.
 
     Returns:
         EvolutionResult with the best tree found + run history.
+        When oos_fraction > 0, the best entry includes both
+        `score_is` (in-sample, what the GP optimized) and
+        `score_oos` (out-of-sample, the real generalization test).
     """
     rng = random.Random(seed)
     np.random.seed(seed if seed is not None else None)
@@ -740,10 +769,32 @@ def evolve(
     history: List[Dict[str, float]] = []
     best_ever: Optional[Dict[str, Any]] = None
     final_population: List[Dict[str, Any]] = []
+
+    # Sprint 43 C7: split each symbol's data into IS (in-sample) and
+    # OOS (out-of-sample). The GP evolves on IS only; OOS is held
+    # out for the final validation step. We slice by row index — the
+    # caller is expected to pass data sorted by time.
+    is_prices: Dict[str, pd.DataFrame] = {}
+    oos_prices: Dict[str, pd.DataFrame] = {}
+    oos_enabled = bool(oos_fraction and 0.0 < oos_fraction < 1.0)
+    if oos_enabled:
+        for sym, df in prices_by_symbol.items():
+            n = len(df)
+            if n < 20:
+                # Too little data to split safely — fall back to no OOS
+                is_prices[sym] = df
+                continue
+            cut = int(n * (1.0 - oos_fraction))
+            is_prices[sym] = df.iloc[:cut]
+            oos_prices[sym] = df.iloc[cut:]
+        evolution_data = is_prices
+    else:
+        evolution_data = prices_by_symbol
+
     for gen in range(n_generations):
         # Evaluate
         scored = _evaluate_population(
-            population, prices_by_symbol,
+            population, evolution_data,
             direction=direction, use_multi_symbol=use_multi_symbol,
             use_min_symbols=min_symbols,
         )
@@ -794,18 +845,57 @@ def evolve(
         population = next_population[:population_size]
     # Final eval of last gen
     final_population = _evaluate_population(
-        population, prices_by_symbol,
+        population, evolution_data,
         direction=direction, use_multi_symbol=use_multi_symbol,
         use_min_symbols=min_symbols,
     )
     final_population.sort(key=lambda x: x["score"], reverse=True)
     if final_population and (not best_ever or final_population[0]["score"] > best_ever["score"]):
         best_ever = final_population[0]
+
+    # Sprint 43 C7: OOS validation of the best-ever strategy.
+    # If the OOS score is much lower than the IS score, the
+    # strategy is overfit to the training window. The audit
+    # flagged this as the missing piece of the GP loop: the
+    # library could absorb strategies that were lucky on the
+    # training data and would lose money live.
+    #
+    # Important: we mutate the original dict in `final_population`
+    # (and in any earlier best_ever snapshot) so the OOS fields
+    # are visible to `add_from_evolution`. Creating a new dict
+    # here would leave the original final_population entries
+    # without OOS data, breaking the overfit filter.
+    if oos_enabled and best_ever and oos_prices:
+        oos_scored = _evaluate_population(
+            [best_ever["tree"]], oos_prices,
+            direction=direction, use_multi_symbol=use_multi_symbol,
+            use_min_symbols=min_symbols,
+        )
+        if oos_scored:
+            oos_entry = oos_scored[0]
+            is_score = float(best_ever["score"])
+            oos_score = float(oos_entry["score"])
+            # Mutate the original dict in-place so add_from_evolution
+            # can see the OOS fields via the final_population list.
+            best_ever["score_is"] = is_score
+            best_ever["score_oos"] = oos_score
+            best_ever["metrics_is"] = best_ever.get("metrics", {})
+            best_ever["metrics_oos"] = oos_entry.get("metrics", {})
+            best_ever["per_symbol_oos"] = oos_entry.get("per_symbol", {})
+            best_ever["is_oos_ratio"] = _safe_ratio(oos_score, is_score)
+            if verbose:
+                ratio = best_ever["is_oos_ratio"]
+                print(
+                    f"[GP C7] best_ever IS score={is_score:.3f}, "
+                    f"OOS score={oos_score:.3f}, "
+                    f"ratio={ratio:.2f}"
+                )
+
     elapsed = time.time() - t_start
     return EvolutionResult(
         best_tree=best_ever["tree"] if best_ever else None,
         best_score=best_ever["score"] if best_ever else 0.0,
-        best_metrics=best_ever["metrics"] if best_ever else {},
+        best_metrics=best_ever.get("metrics", {}) if best_ever else {},
         best_per_symbol=best_ever.get("per_symbol", {}) if best_ever else {},
         n_generations=n_generations,
         population_size=population_size,
@@ -813,7 +903,27 @@ def evolve(
         history=history,
         elapsed_seconds=elapsed,
         seed=seed,
+        # Sprint 43 C7: surface OOS fields so callers can see whether
+        # the best is overfit. Both are None when oos_fraction=0.
+        best_score_is=best_ever.get("score_is") if best_ever else None,
+        best_score_oos=best_ever.get("score_oos") if best_ever else None,
+        is_oos_ratio=best_ever.get("is_oos_ratio") if best_ever else None,
+        # Keep a reference to the best_ever dict (with OOS fields
+        # populated if applicable) so `add_from_evolution` can
+        # apply the overfit filter to it specifically.
+        best_ever=best_ever,
     )
+
+
+def _safe_ratio(num: float, den: float) -> float:
+    """Compute num/den without dividing by zero.
+
+    Returns 0.0 if both are 0; returns num/den otherwise. Used for
+    the OOS / IS score ratio in the C7 fix.
+    """
+    if den == 0:
+        return 0.0 if num == 0 else float("inf")
+    return float(num) / float(den)
 
 
 # ============================================================
@@ -959,10 +1069,26 @@ class StrategyLibrary:
         result: EvolutionResult,
         top_k: int = 5,
         min_score: float = 0.0,
+        min_oos_ratio: float = 0.0,
     ) -> int:
         """Add the top-k strategies from an EvolutionResult to the library.
 
-        Returns the number of strategies actually added (after dedup).
+        Returns the number of strategies actually added (after dedup
+        AND after the Sprint 43 C7 overfit rejection).
+
+        Args:
+            result: EvolutionResult from `evolve()`.
+            top_k: maximum number of strategies to consider.
+            min_score: drop candidates with score < this on the training
+                window (in-sample, when oos_fraction was set).
+            min_oos_ratio: Sprint 43 C7 — drop candidates whose OOS/IS
+                score ratio is below this. Default 0.0 = accept any
+                ratio (backward compatible). Recommended: 0.4-0.5.
+                - 0.0 = no OOS rejection (old behavior, only min_score
+                  filters)
+                - 0.5 = require OOS score to be at least 50% of IS
+                  score (the audit's recommendation)
+                - 1.0 = require OOS >= IS (strictest; rarely met)
         """
         added = 0
         # Sort by score descending
@@ -970,6 +1096,23 @@ class StrategyLibrary:
         for ind in candidates[:top_k]:
             if ind["score"] < min_score:
                 continue
+            # Sprint 43 C7: reject strategies that don't generalize.
+            # We check the candidate's own `is_oos_ratio` field if
+            # the caller evaluated it on OOS data. The best_ever
+            # is the one that carries the ratio (because the OOS
+            # re-eval is only done for the best). If a non-best
+            # candidate lacks `is_oos_ratio`, it was never OOS-
+            # evaluated; we accept it (caller can re-eval separately).
+            if min_oos_ratio > 0 and "is_oos_ratio" in ind:
+                ratio = ind["is_oos_ratio"]
+                if ratio < min_oos_ratio:
+                    print(
+                        f"[StrategyLibrary C7] rejected candidate: "
+                        f"IS score {ind['score']:.3f} but OOS ratio "
+                        f"{ratio:.2f} < min_oos_ratio {min_oos_ratio:.2f}. "
+                        f"Strategy is overfit to the training window."
+                    )
+                    continue
             ok = self.add(
                 tree=ind["tree"],
                 score=ind["score"],
