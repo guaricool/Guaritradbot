@@ -35,6 +35,78 @@ import time
 from src.data_store.positions import Position
 
 
+# Sprint 43 H7 fix: known fill statuses from ccxt/Alpaca adapters.
+# Anything not in this set is treated as not-yet-confirmed and the
+# position is NOT added to the repo. The audit caught that the
+# previous code treated any non-"failed" status as FILLED, which
+# would silently add positions for pending/partial/accepted orders.
+_FILLED_STATUSES = frozenset({
+    "filled",      # ccxt standard (binance, bybit, etc.)
+    "closed",      # Alpaca standard
+    "FILLED",      # legacy uppercase
+    "fill",        # some adapters
+})
+_PARTIAL_STATUSES = frozenset({
+    "partially_filled",  # ccxt standard
+    "partial",           # legacy / simplified
+})
+_FAILED_STATUSES = frozenset({
+    "failed",
+    "rejected",
+    "expired",
+    "canceled",
+    "cancelled",
+})
+_PENDING_STATUSES = frozenset({
+    "pending",     # ccxt standard (working)
+    "new",         # just submitted
+    "accepted",    # exchange acknowledged
+    "open",        # still in the order book
+})
+
+
+def _classify_fill_status(broker_order) -> str:
+    """
+    Sprint 43 H7 helper: normalize a broker's order response into
+    one of:
+      - "filled": the full requested qty was filled
+      - "partial": some qty was filled but less than requested
+      - "failed": the order was rejected / expired / canceled
+      - "pending": the order is still working (new, accepted, pending, etc.)
+      - "unknown": broker returned something we don't recognize
+
+    Caller should treat anything other than "filled" as
+    not-yet-confirmed and avoid adding a position to the repo.
+    """
+    if not broker_order or not isinstance(broker_order, dict):
+        return "unknown"
+    status = broker_order.get("status", "")
+    if not isinstance(status, str):
+        return "unknown"
+    status_lower = status.lower()
+    if status_lower in _FILLED_STATUSES:
+        # Even if status says "filled", check the filled qty if present.
+        # If the broker reports filled=0, treat as unknown (defensive).
+        filled = broker_order.get("filled")
+        if filled is not None:
+            try:
+                if float(filled) <= 0:
+                    return "unknown"
+            except (TypeError, ValueError):
+                pass
+        return "filled"
+    if status_lower in _PARTIAL_STATUSES:
+        return "partial"
+    if status_lower in _FAILED_STATUSES:
+        return "failed"
+    if status_lower in _PENDING_STATUSES:
+        return "pending"
+    # Unrecognized status — return "unknown" so the caller is
+    # loud about it. Better to refuse to add a position than to
+    # silently accept an exchange response we don't understand.
+    return "unknown"
+
+
 def _is_mandate_enabled(override_path: str = "audit/mode_override.json") -> bool:
     """Read mode_override.json and return True if mandate_enabled is on.
 
@@ -539,10 +611,21 @@ class ExecutionNode:
             return
 
         broker_order = broker.create_market_order(symbol, side, amount)
-        if broker_order and broker_order.get("status") != "failed":
+        # Sprint 43 H7 fix: don't treat any non-"failed" status as FILLED.
+        # The audit caught that "pending", "partially_filled", "new",
+        # "accepted" would all be treated as FILLED, which would add
+        # a position to the repo for a fill that hadn't actually
+        # happened (or had only partially happened).
+        # Now: only explicit "filled"/"closed" is treated as FILLED.
+        # Anything else is logged with its real status and the order
+        # does NOT enter the repo.
+        fill_verdict = _classify_fill_status(broker_order)
+        if fill_verdict == "filled":
             status = "FILLED (LIVE MARKET)"
-        else:
-            status = "FAILED (LIVE MARKET)"
+        elif fill_verdict == "partial":
+            status = f"PARTIAL_FILL (LIVE MARKET: {broker_order.get('filled', '?')}/{amount})"
+        else:  # pending, unknown, missing
+            status = f"NOT_FILLED (LIVE MARKET: {fill_verdict})"
 
         if self.audit:
             self.audit.append(
@@ -561,12 +644,31 @@ class ExecutionNode:
                 "ORDER_EXECUTED",
                 {"status": status, "order": order_data, "asset_class": "crypto"},
             )
-        # Sprint 43 C5: only persist the position if the broker
-        # confirmed a fill. On FAILED status, no Position is added
-        # to the repo, so the exposure / max_open_trades / mandate
-        # caps remain consistent with ground truth.
-        if status.startswith("FILLED"):
+        # Sprint 43 C5 + H7: only persist the position if the broker
+        # confirmed a FULL fill. On FAILED / PARTIAL / PENDING status,
+        # no Position is added to the repo, so the exposure /
+        # max_open_trades / mandate caps remain consistent with
+        # ground truth.
+        if fill_verdict == "filled":
             self._persist_filled_position(order_data, status)
+        elif fill_verdict == "partial":
+            # Sprint 43 H7: a partial fill is a real money event —
+            # publish SYSTEM_ERROR so Carlos knows to investigate.
+            # We don't add a position (the qty mismatch would corrupt
+            # the audit). A human can decide whether to retry or
+            # top-up manually.
+            if self.event_bus:
+                self.event_bus.publish("SYSTEM_ERROR", {
+                    "kind": "PARTIAL_FILL",
+                    "asset": asset,
+                    "direction": direction,
+                    "requested": amount,
+                    "filled": broker_order.get("filled", "?"),
+                    "broker_status": broker_order.get("status", "?"),
+                    "error": (f"⚠️ Fill parcial: {asset} {direction} "
+                              f"{broker_order.get('filled', '?')}/{amount}. "
+                              f"Posición NO agregada al repo."),
+                })
 
     def _execute_equity_order(self, order_data: dict, broker):
         """Route an equity/ETF order to the Alpaca broker.
@@ -624,10 +726,17 @@ class ExecutionNode:
             broker_order = broker.create_market_order(asset, side, amount=qty)
             order_kind = "qty"
 
-        if broker_order and broker_order.get("status") != "failed":
+        # Sprint 43 H7 fix: same fill-status classification as the
+        # crypto path. Only "filled"/"closed" is treated as a full
+        # fill. Pending/partial/unknown are surfaced and the order
+        # does NOT enter the repo.
+        fill_verdict = _classify_fill_status(broker_order)
+        if fill_verdict == "filled":
             status = "FILLED (LIVE MARKET — ALPACA)"
+        elif fill_verdict == "partial":
+            status = f"PARTIAL_FILL (LIVE MARKET — ALPACA: {broker_order.get('filled', '?')}/{qty})"
         else:
-            status = f"FAILED (LIVE MARKET — ALPACA: {broker_order.get('error', '?')})"
+            status = f"NOT_FILLED (LIVE MARKET — ALPACA: {fill_verdict})"
 
         if self.audit:
             self.audit.append(
@@ -654,9 +763,20 @@ class ExecutionNode:
                     "broker": "alpaca",
                 },
             )
-        # Sprint 43 C5: only persist the position if the broker
-        # confirmed a fill. On FAILED status, no Position is added
-        # to the repo, so the exposure / max_open_trades / mandate
-        # caps remain consistent with ground truth.
-        if status.startswith("FILLED"):
+        # Sprint 43 C5 + H7: only persist on a full fill. See
+        # _classify_fill_status for the exact rule.
+        if fill_verdict == "filled":
             self._persist_filled_position(order_data, status)
+        elif fill_verdict == "partial":
+            if self.event_bus:
+                self.event_bus.publish("SYSTEM_ERROR", {
+                    "kind": "PARTIAL_FILL",
+                    "asset": asset,
+                    "direction": direction,
+                    "requested": qty,
+                    "filled": broker_order.get("filled", "?"),
+                    "broker_status": broker_order.get("status", "?"),
+                    "error": (f"⚠️ Fill parcial Alpaca: {asset} {direction} "
+                              f"{broker_order.get('filled', '?')}/{qty}. "
+                              f"Posición NO agregada al repo."),
+                })
