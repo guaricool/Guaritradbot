@@ -296,6 +296,7 @@ def main():
         broker_client=broker_client,
         kill_switch=kill_switch,
         audit=audit,
+        mode_override_path=override_path,  # B033: paper-mode gate
     )
     position_monitor = PositionMonitor(
         repo=position_repo,
