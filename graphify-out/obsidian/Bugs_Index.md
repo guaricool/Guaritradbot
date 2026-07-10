@@ -1,6 +1,6 @@
 # Bugs Index
 
-22 bugs encontrados y corregidos. Severidad: 🔴 crítico (rompía runtime) | 🟠 medio | 🟡 menor
+23 bugs encontrados y corregidos. Severidad: 🔴 crítico (rompía runtime) | 🟠 medio | 🟡 menor
 
 | ID | Sev | Sprint | Bug | Fix |
 |----|-----|--------|-----|-----|
@@ -26,12 +26,13 @@
 | [[Bugs/B020_replacement_loop]] | 🔴 | 18 patch | `validate_and_size` podía hacer N replacements consecutivos en un ciclo (close+open N veces si N hipótesis) → broker roundtrips innecesarios, audit inflado | Flag `did_replace_this_cycle` limita a 1 replacement por `validate_and_size()` call |
 | [[Bugs/B021_phantom_pnl_replacement]] | 🔴 | 18 patch | `_try_replace_position` usaba `entry_price` como fallback cuando no había precio fresco → cerraba a breakeven falso, audit corrupto | Abortar el replacement si no hay precio fresco; dejar que PositionMonitor cierre después |
 | [[Bugs/B022_smart_take_dead_code]] | 🔴 | 18 patch | `StrategyAgent` nunca emitía eventos `HYPOTHESIS_GENERATED` al audit → `check_with_signals` siempre recibía `signals=[]` → SMART_PROFIT_TAKE nunca se activaba | StrategyAgent ahora acepta `audit` y emite eventos con strength derivado |
+| [[Bugs/B023_dashboard_filter_button_flash]] | 🟡 | 18 patch | 5 botones `st.button()` separados para los filtros de Smart Signals causaban un dark flash nativo de Streamlit al hacer click | Reemplazados por `st.radio` horizontal con CSS custom para verse como chips |
 
 ## Stats
 
 - 🔴 Críticos: **12** (B001, B002, B003, B006, B013, B017, B018, B019, B020, B021, B022; el B015 era operacional pero mataba la portabilidad)
 - 🟠 Medios (estrategia/métricas incorrectas): **8**
-- 🟡 Menores: **2**
+- 🟡 Menores: **3** (B016, B023, y B016 ya estaba)
 
 Sprint 18 cerró:
 - **3 bugs del audit team** (B017/B018/B019) — encontrados por análisis externo

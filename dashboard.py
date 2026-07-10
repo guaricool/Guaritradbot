@@ -322,6 +322,36 @@ CUSTOM_CSS = """
   .chip.long.active  { background: rgba(6, 214, 160, 0.15); border-color: #06d6a0; color: #06d6a0; }
   .chip.short.active { background: rgba(247, 37, 133, 0.15); border-color: #f72585; color: #f72585; }
 
+  /* B023 (2026-07-09): style the underlying st.radio (which replaced the
+     dark-flashing st.button row) so it visually matches the chip row above.
+     Streamlit's radio widget does NOT have the dark active state that
+     buttons have, so clicking is instant and clean. */
+  div[data-testid="stRadio"][role="radiogroup"] {
+    margin-top: -8px;
+    margin-bottom: 8px;
+    gap: 6px;
+  }
+  div[data-testid="stRadio"][role="radiogroup"] label {
+    background: rgba(26, 31, 58, 0.5);
+    border: 1px solid #2a3050;
+    color: #ccd6f6;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 4px 12px;
+    border-radius: 999px;
+    transition: all 0.15s;
+    cursor: pointer;
+  }
+  div[data-testid="stRadio"][role="radiogroup"] label:hover {
+    background: rgba(76, 201, 240, 0.10);
+    border-color: #4cc9f0;
+  }
+  /* Hide the inner radio circle (we only want the label to look like a chip) */
+  div[data-testid="stRadio"][role="radiogroup"] label > div:first-child {
+    display: none;
+  }
+
   /* ---------- signal cards ---------- */
   .signal-card {
     background: #1a1f3a;
@@ -2589,9 +2619,19 @@ with col_sig:
                 unsafe_allow_html=True)
 
     # FILTER CHIPS (signal8 style)
+    # Fix B023 (2026-07-09): Carlos reported that clicking the chip buttons
+    # caused a momentary "dark flash" on the surrounding area. Root cause:
+    # the chips HTML were decorative (not clickable) and we had 5 separate
+    # `st.button()` widgets underneath. Streamlit's default button widget
+    # applies a dark "active/pressed" background on click before the rerun
+    # completes — that's the flash Carlos saw. The fix is to use a single
+    # `st.radio` with horizontal layout and hide its label, then style it
+    # to look like our chips via the existing .chip CSS. `st.radio` does
+    # NOT have the dark active state — clicking is instant.
     if "signal_filter" not in st.session_state:
         st.session_state.signal_filter = "ALL"
 
+    # Display the visual chips (purely cosmetic, reflects current state)
     chips_html = '<div class="chip-row">'
     for label, value in [("ALL", "ALL"), ("LONG", "long"), ("SHORT", "short"),
                          ("HIGH-CONF ≥75%", "high"), ("LOW-CONF <60%", "low")]:
@@ -2604,27 +2644,28 @@ with col_sig:
     chips_html += "</div>"
     st.markdown(chips_html, unsafe_allow_html=True)
 
-    fcol1, fcol2, fcol3, fcol4, fcol5 = st.columns(5)
-    with fcol1:
-        if st.button("ALL", use_container_width=True, key="chip_all"):
-            st.session_state.signal_filter = "ALL"
-            st.rerun()
-    with fcol2:
-        if st.button("LONG", use_container_width=True, key="chip_long"):
-            st.session_state.signal_filter = "long"
-            st.rerun()
-    with fcol3:
-        if st.button("SHORT", use_container_width=True, key="chip_short"):
-            st.session_state.signal_filter = "short"
-            st.rerun()
-    with fcol4:
-        if st.button("HIGH-CONF", use_container_width=True, key="chip_high"):
-            st.session_state.signal_filter = "high"
-            st.rerun()
-    with fcol5:
-        if st.button("LOW-CONF", use_container_width=True, key="chip_low"):
-            st.session_state.signal_filter = "low"
-            st.rerun()
+    # Real interactive control: hidden-label horizontal radio.
+    # The chip visual above mirrors this state.
+    _chip_options = ["ALL", "long", "short", "high", "low"]
+    _chip_labels = {
+        "ALL": "ALL", "long": "LONG", "short": "SHORT",
+        "high": "HIGH-CONF", "low": "LOW-CONF",
+    }
+    # Ensure session_state value is valid (in case it was set by old code path)
+    if st.session_state.signal_filter not in _chip_options:
+        st.session_state.signal_filter = "ALL"
+    new_filter = st.radio(
+        "Signal filter",
+        options=_chip_options,
+        format_func=lambda v: _chip_labels[v],
+        index=_chip_options.index(st.session_state.signal_filter),
+        key="signal_filter_radio",
+        horizontal=True,
+        label_visibility="hidden",
+    )
+    if new_filter != st.session_state.signal_filter:
+        st.session_state.signal_filter = new_filter
+        st.rerun()
 
     # Filter + render signals
     if not hypotheses:
