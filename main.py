@@ -42,7 +42,7 @@ def _audit_path(config: dict) -> str:
     return os.path.join(audit_dir, "audit.jsonl")
 
 
-def _build_mandate(config: dict, audit) -> tuple:
+def _build_mandate(config: dict, audit, position_repo=None) -> tuple:
     cfg = config.get("mandate", {})
     if not cfg.get("enabled", False):
         return (None, None)
@@ -53,7 +53,7 @@ def _build_mandate(config: dict, audit) -> tuple:
         max_daily_loss_usd=float(cfg.get("max_daily_loss_usd", 5.0)),
         max_total_exposure_usd=float(cfg.get("max_total_exposure_usd", 100.0)),
     )
-    return (MandateGate(mc, audit_ledger=audit), mc)
+    return (MandateGate(mc, audit_ledger=audit, position_repo=position_repo), mc)
 
 
 def main():
@@ -79,6 +79,9 @@ def main():
     max_capital_per_trade_pct = trading_cfg.get("max_capital_per_trade_pct", 10.0)
     min_order_usd = trading_cfg.get("min_order_usd", 10.0)
     max_open_trades = trading_cfg.get("max_open_trades", 5)
+    enable_position_replacement = trading_cfg.get("enable_position_replacement", True)
+    replacement_score_threshold = float(trading_cfg.get("replacement_score_threshold", 0.20))
+    min_profit_to_protect = float(trading_cfg.get("min_profit_to_protect", 0.0))
 
     broker_client = None
     exchange_cfg = config.get("exchange", {})
@@ -117,8 +120,8 @@ def main():
             print(f"[Init] mode_override.json parse error (ignored): {e}")
 
     kill_switch = KillSwitch(config.get("mandate", {}).get("kill_switch_file", "/tmp/GUARITRADBOT_KILL"))
-    mandate_gate, mandate_cfg = _build_mandate(config, audit)
     position_repo = PositionRepository("data_store/positions.json")
+    mandate_gate, mandate_cfg = _build_mandate(config, audit, position_repo=position_repo)
 
     if kill_switch.is_triggered():
         audit.append("BOT_START_BLOCKED_KILLSWITCH", {"reason": "kill_file_present"})
@@ -153,6 +156,7 @@ def main():
         audit=audit,
         event_bus=event_bus,
         broker=broker_client,
+        min_profit_to_protect=min_profit_to_protect,
     )
 
     strategy_params = None
@@ -189,6 +193,8 @@ def main():
             mandate_gate=mandate_gate,
             audit=audit,
             position_repo=position_repo,
+            enable_position_replacement=enable_position_replacement,
+            replacement_score_threshold=replacement_score_threshold,
         ),
         "DebateAgent": DebateAgent(position_repo=position_repo, audit=audit),
         "ExecutionAgent": ExecutionAgent(event_bus=event_bus),
@@ -240,9 +246,44 @@ def main():
                     except Exception:
                         continue
                 if prices:
+                    # 1a. SL/TP mechanical check
                     closed = position_monitor.check(prices)
                     if closed:
                         print(f"[PositionMonitor] {len(closed)} posiciones cerradas por stops/TPs")
+
+                    # 1b. Sprint 18: smart profit-take on reversal signals.
+                    # Read latest HYPOTHESIS_GENERATED from audit (last 1h) and
+                    # close any open position in profit that has a strong
+                    # opposite signal.
+                    try:
+                        import time as _t
+                        recent_hyps = audit.read_since(_t.time() - 3600)
+                        signals = [
+                            h for h in recent_hyps
+                            if h.get("event_type") == "HYPOTHESIS_GENERATED"
+                        ]
+                        if signals:
+                            early_closed = position_monitor.check_with_signals(
+                                current_prices=prices,
+                                signals=signals,
+                                signal_min_strength=0.6,
+                            )
+                            if early_closed:
+                                print(
+                                    f"[PositionMonitor] {len(early_closed)} posiciones "
+                                    f"cerradas por SMART_PROFIT_TAKE (reversal)"
+                                )
+                    except Exception as e2:
+                        print(f"[PositionMonitor] smart-profit-take falló: {e2}")
+
+                    # 1c. Refresh RiskAgent's current_prices view so position
+                    # replacement scoring uses live prices.
+                    try:
+                        rm = registry.get("RiskManagerAgent")
+                        if rm is not None:
+                            rm.current_prices = prices
+                    except Exception:
+                        pass
         except Exception as e:
             print(f"[PositionMonitor] check falló: {e}")
 

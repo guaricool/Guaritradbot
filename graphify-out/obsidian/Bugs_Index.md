@@ -1,6 +1,6 @@
 # Bugs Index
 
-16 bugs encontrados y corregidos. Severidad: 🔴 crítico (rompía runtime) | 🟠 medio | 🟡 menor
+19 bugs encontrados y corregidos. Severidad: 🔴 crítico (rompía runtime) | 🟠 medio | 🟡 menor
 
 | ID | Sev | Sprint | Bug | Fix |
 |----|-----|--------|-----|-----|
@@ -20,11 +20,14 @@
 | [[Bugs/B014_market_data_bool_dataframe]] | 🟠 | 0 | `df = df_4h or df_1h` → `bool(df)` ambiguo para DataFrames | `if df is None or len(df)==0: df = df_1h` |
 | [[Bugs/B015_venv_deps_missing]] | 🟠 | 0 | venv sin `yaml`, `schedule`, `streamlit`, `dotenv` | Documentar workaround (system python) |
 | [[Bugs/B016_pos_id_uuid_collision]] | 🟡 | 2 | `position_id` con timestamp-only → colisiones simultáneas | Añadir uuid suffix |
+| [[Bugs/B017_micro_account_death_loop]] | 🔴 | 18 | Auto-adjust solo disparaba con `max_notional < min_order`, no con `notional < min_order` → cuenta $20 muerta | Auto-adjust ahora dispara con cualquier `notional < min_order`, log reason (`max_cap_below_min_order` vs `risk_below_min_order`) |
+| [[Bugs/B018_phantom_exposure_lockup]] | 🔴 | 18 | `_open_exposure_usd()` sumaba TRADE_FILLED sin restar TRADE_CLOSED → exposición crecía sin bound → Mandate Gate bloqueaba todo después de 5 trades round-trip | Usa `PositionRepository.total_exposure_usd()`; audit-fallback ahora sí resta closes |
+| [[Bugs/B019_punished_for_trying]] | 🔴 | 18 | `_daily_loss_usd()` sumaba `risk_usd` teórico de TRADE_APPROVED → 5 trades winners ($1 risk c/u) disparaban kill switch 24h | Suma `realized_pnl` real de TRADE_CLOSED; solo cuenta pérdidas realizadas |
 
 ## Stats
 
-- 🔴 Críticos que rompían runtime: **6** (B001, B002, B003, B006, B013; el B015 era operacional pero mataba la portabilidad)
+- 🔴 Críticos que rompían runtime: **9** (B001, B002, B003, B006, B013, B017, B018, B019; el B015 era operacional pero mataba la portabilidad)
 - 🟠 Medios (estrategia/métricas incorrectas): **8**
 - 🟡 Menores: **2**
 
-Todos cerrados en los sprints 0-5.
+Sprint 18 agregó 3 bugs críticos encontrados por el audit team. Los 3 habrían bloqueado el bot permanentemente en escenarios realistas (cuentas pequeñas, múltiples round-trips, win streaks).

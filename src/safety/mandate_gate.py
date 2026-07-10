@@ -1,5 +1,5 @@
 """
-Sprint 1 — Mandate Gate.
+Sprint 1+18 — Mandate Gate.
 
 Inspirado en el patrón de Vibe-Trading (mandate gate) y TradingAgents
 (risk management team). Antes de ejecutar CUALQUIER trade:
@@ -7,9 +7,17 @@ Inspirado en el patrón de Vibe-Trading (mandate gate) y TradingAgents
 1. El símbolo debe estar en el universe permitido.
 2. El notional por trade debe ser <= max_position_usd.
 3. El risk del trade no puede exceder la pérdida diaria permitida
-   (rolling 24h, basada en audit ledger).
+   (rolling 24h, basada en P&L REALIZADO — no en risk teórico).
 4. El exposure total (open positions + esta propuesta) no puede
    superar el límite del mandate.
+
+Sprint 18 fixes (Audit Team report):
+- B. Phantom Exposure: ahora se calcula desde `PositionRepository`
+  (suma de notional de posiciones abiertas) en vez de acumular
+  TRADE_FILLED sin restar TRADE_CLOSED del audit ledger.
+- C. Punished for Trying: daily_loss ahora suma `realized_pnl` de
+  posiciones CERRADAS en las últimas 24h. Si todas son ganadoras,
+  daily_loss = 0 (no se castiga al bot por abrir trades buenos).
 
 Si cualquier check falla, la propuesta se rechaza con razón explícita.
 Si todo pasa, se sella con `mandate_ok=True` y la razón.
@@ -18,7 +26,7 @@ NO muta estado. Es una clase pura de validación.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Set
+from typing import Set, Optional
 import time
 
 
@@ -40,38 +48,91 @@ class MandateVerdict:
 
 
 class MandateGate:
-    def __init__(self, config: MandateConfig, audit_ledger=None):
+    def __init__(self, config: MandateConfig, audit_ledger=None, position_repo=None):
+        """
+        Args:
+            config: Mandate limits
+            audit_ledger: optional, used as fallback if position_repo missing
+            position_repo: preferred source of truth for exposure + realized PnL
+        """
         self.config = config
-        self.audit = audit_ledger  # para calcular daily loss rolling
+        self.audit = audit_ledger
+        self.position_repo = position_repo
 
     def _daily_loss_usd(self, now_ts: float | None = None) -> float:
         """
-        Suma el risk de todas las trades colocadas en las últimas 24h
-        (no P&L real todavía — eso requiere fills). Lo leemos del audit.
+        Sprint 18 fix: sum REALIZED P&L of closed positions in the last 24h.
+
+        Previously this summed `risk_usd` of TRADE_APPROVED events, which made
+        the bot think it had LOST money every time it OPENED a trade (because
+        risk_usd is theoretical, not realized). After 5 winning trades the bot
+        would still kill-switch for 24h.
+
+        Now: only count actual realized losses from closed positions.
+        If you made money, daily_loss = 0. Win-win trades don't trigger the cap.
         """
-        if self.audit is None:
-            return 0.0
         now = now_ts or time.time()
         cutoff = now - 24 * 3600
-        rows = self.audit.read_since(cutoff)
-        return sum(float(r.get("risk_usd", 0.0)) for r in rows if r.get("event_type") == "TRADE_APPROVED")
 
-    def _open_exposure_usd(self) -> float:
-        """Lee open positions del audit (Sprint 1: lo más simple posible)."""
+        # --- Preferred: query PositionRepository (more reliable than audit) ---
+        if self.position_repo is not None:
+            loss = 0.0
+            for p in self.position_repo.all():
+                if (
+                    p.is_open is False
+                    and p.closed_ts is not None
+                    and p.closed_ts >= cutoff
+                    and p.realized_pnl is not None
+                    and p.realized_pnl < 0
+                ):
+                    loss += abs(p.realized_pnl)
+            return loss
+
+        # --- Fallback: read audit ledger for TRADE_CLOSED events ---
         if self.audit is None:
             return 0.0
-        # TRADE_OPEN aumenta exposure; TRADE_CLOSE/TP/SL la reduce
-        # (en Sprint 1 sólo emitimos TRADE_APPROVED + TRADE_FILLED, simplificamos)
-        rows = self.audit.read_all()
-        exposure = 0.0
+        rows = self.audit.read_since(cutoff)
+        loss = 0.0
         for r in rows:
-            if r.get("event_type") == "TRADE_FILLED":
-                side = r.get("direction", "long")
-                qty = float(r.get("filled_qty", 0))
-                price = float(r.get("fill_price", 0))
-                notional = qty * price
-                exposure += notional if side == "long" else -notional
-        return abs(exposure)
+            if r.get("event_type") == "TRADE_CLOSED":
+                pnl = float(r.get("realized_pnl_usd", 0))
+                if pnl < 0:
+                    loss += abs(pnl)
+        return loss
+
+    def _open_exposure_usd(self) -> float:
+        """
+        Sprint 18 fix: read REAL open exposure from PositionRepository.
+
+        Previously this summed TRADE_FILLED events without ever subtracting
+        TRADE_CLOSED events, causing exposure to grow unboundedly until the
+        bot was permanently blocked.
+
+        Now: sum notional_usd of currently open positions. If position_repo
+        is unavailable, fall back to a corrected audit scan that DOES
+        subtract closes.
+        """
+        # --- Preferred: PositionRepository is the source of truth ---
+        if self.position_repo is not None:
+            return self.position_repo.total_exposure_usd()
+
+        # --- Fallback: corrected audit ledger scan (handles closed properly) ---
+        if self.audit is None:
+            return 0.0
+        rows = self.audit.read_all()
+        # Build a map of open positions from the audit (position_id -> notional).
+        open_notional: dict[str, float] = {}
+        for r in rows:
+            et = r.get("event_type")
+            pid = r.get("position_id")
+            if not pid:
+                continue
+            if et == "POSITION_OPENED":
+                open_notional[pid] = float(r.get("notional_usd", 0))
+            elif et == "TRADE_CLOSED":
+                # Position is no longer open; remove from exposure.
+                open_notional.pop(pid, None)
+        return sum(open_notional.values())
 
     def validate(self, trade_proposal: dict) -> MandateVerdict:
         if not self.config.enabled:
@@ -95,7 +156,7 @@ class MandateGate:
                 reason=f"notional_exceeds_max:${notional:.2f}>${self.config.max_position_usd:.2f}",
             )
 
-        # 3. Daily loss rolling 24h
+        # 3. Daily loss rolling 24h (REALIZED P&L — Sprint 18 fix)
         daily_loss = self._daily_loss_usd()
         if daily_loss + risk > self.config.max_daily_loss_usd:
             return MandateVerdict(
@@ -104,7 +165,7 @@ class MandateGate:
                 daily_loss_so_far_usd=daily_loss,
             )
 
-        # 4. Total exposure (open positions + este trade)
+        # 4. Total exposure (open positions + este trade) — REAL exposure (Sprint 18 fix)
         open_exp = self._open_exposure_usd()
         projected = open_exp + notional
         if projected > self.config.max_total_exposure_usd:

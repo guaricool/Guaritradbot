@@ -8,6 +8,7 @@ Módulos del sistema, ordenados por capa.
 - [[Modules/StrategyAgent]] — detecta hipótesis (cruces)
 - [[Modules/DebateAgent]] — debate Bull/Bear/Risk/PM (Sprint 3)
 - [[Modules/RiskManagerAgent]] — sizing + Mandate Gate
+  - Sprint 18: scoring compuesto para position replacement (`score_position`, `score_new_hypothesis`, `_try_replace_position`)
 - [[Modules/ExecutionAgent]] — publica ORDER_APPROVED
 - [[Modules/ExecutionNode]] — ejecuta real o paper
 - [[Modules/NotificationAgent]] — Telegram (existente, no tocado)
@@ -25,10 +26,11 @@ Módulos del sistema, ordenados por capa.
 - [[Modules/KillSwitch]] — filesystem kill
 - [[Modules/MandateGate]] — validaciones pre-trade
 
-## Data store (Sprint 2)
+## Data store (Sprint 2 + Sprint 18)
 
-- [[Modules/Position_Repository]] — posiciones persistidas en disco
+- [[Modules/Position_Repository]] — posiciones persistidas en disco (source of truth para exposure)
 - [[Modules/Position_Monitor]] — cierra stops/TPs cada tick
+  - Sprint 18: `check_with_signals()` para smart profit-take en reversals
 
 ## Optimización (Sprint 4-5)
 

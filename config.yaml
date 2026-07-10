@@ -28,6 +28,10 @@ trading:
   # minimum. To trade, balance must be ≥ $20. Below that, the bot will
   # skip cycles with a clear "balance below min_order" message.
   min_order_usd: 10.0
+  # Sprint 18: Portfolio Management
+  enable_position_replacement: true        # if max_open reached, try to replace worst with better signal
+  replacement_score_threshold: 0.20        # new signal must score at least +0.20 above worst open position
+  min_profit_to_protect: 0.0               # USD; if open position has unrealized >= this AND reversal signal, smart-close
 
 schedule:
   run_interval_hours: 1
@@ -42,6 +46,7 @@ mandate:
   enabled: false                    # toggle del Mandate Gate
   allowed_symbols: ["BTC-USD", "BTCUSDT", "ETH-USD", "GLD", "USO", "SPY", "QQQ"]
   max_position_usd: 20              # tope absoluto por trade
-  max_daily_loss_usd: 5             # kill switch cuando esta banda se pierde en 24h
+  max_daily_loss_usd: 5             # kill switch cuando esta banda se pierde en 24h (P&L realizado, no teórico)
+  max_total_exposure_usd: 100       # tope de exposición total abierta simultánea
   kill_switch_file: "/tmp/GUARITRADBOT_KILL"
   audit_log_dir: "audit"

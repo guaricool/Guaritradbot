@@ -28,7 +28,8 @@ Guaritradbot_Vault/
 │   ├── Sprint_4_Backtester_Fix.md
 │   ├── Sprint_5_Real_Reoptimization.md
 │   ├── Sprint_6_State_Machine_Data_Integrity.md
-│   └── Sprint_7_PDF_Indicators.md
+│   ├── Sprint_7_PDF_Indicators.md
+│   └── Sprint_18_Audit_Fixes_Portfolio_Management.md   ← Sprint 18 (2026-07-09)
 ├── Modules_Index.md             ← índice de los módulos
 ├── Modules/
 │   ├── MarketAnalystAgent.md
@@ -37,33 +38,21 @@ Guaritradbot_Vault/
 │   ├── ExecutionAgent.md
 │   ├── ExecutionNode.md
 │   ├── DebateAgent.md           ← Sprint 3
-│   ├── PositionMonitor.md       ← Sprint 2
+│   ├── PositionMonitor.md       ← Sprint 2 (+ Sprint 18: smart profit-take)
 │   ├── AuditLedger.md           ← Sprint 1
 │   ├── KillSwitch.md            ← Sprint 1
-│   ├── MandateGate.md           ← Sprint 1
+│   ├── MandateGate.md           ← Sprint 1 (+ Sprint 18: source-of-truth fix)
 │   ├── Component_State_Machine.md  ← Sprint 6
 │   ├── Data_Validator.md        ← Sprint 6
 │   ├── EventBus.md
 │   ├── PositionRepository.md    ← Sprint 2
 │   └── WorkflowEngine.md
-├── Bugs_Index.md               ← lista maestra de bugs
+├── Bugs_Index.md               ← lista maestra de bugs (19 total)
 ├── Bugs/
-│   ├── B001_emit_vs_publish.md
-│   ├── B002_env_keys_mismatch.md
-│   ├── B003_input_blocking_docker.md
-│   ├── B004_rsi_sma_instead_of_wilder.md
-│   ├── B005_macd_state_vs_cross.md
-│   ├── B006_stop_loss_hardcoded_5.md
-│   ├── B007_atr_22x_wilder_missing.md
-│   ├── B008_tf_map_4h_60m.md
-│   ├── B009_signal_generate_never_flat.md
-│   ├── B010_win_rate_misleading.md
-│   ├── B011_num_trades_counted_bars.md
-│   ├── B012_run_reoptimization_placeholder.md
-│   ├── B013_execution_node_disconnected.md
-│   ├── B014_market_data_bool_dataframe.md
-│   ├── B015_venv_deps_missing.md
-│   └── B016_pos_id_uuid_collision.md
+│   ├── B001_emit_vs_publish.md … B016_pos_id_uuid_collision.md
+│   ├── B017_micro_account_death_loop.md      ← Sprint 18
+│   ├── B018_phantom_exposure_lockup.md       ← Sprint 18
+│   └── B019_punished_for_trying.md           ← Sprint 18
 ├── Inspirations.md              ← 5 repos + NautilusTrader, de dónde viene cada idea
 └── Deployment.md                ← cómo subir a Coolify VPS
 ```
@@ -93,11 +82,14 @@ El bot tiene **3 capas principales** ([ver arquitectura](Architecture.md)):
 ## ⚡ Reglas duras
 
 1. **Backtest OBLIGATORIO** antes de cualquier trade (Sprint 4 walk-forward)
-2. **1% del balance por trade** (regla #1 del playbook)
+2. **1% del balance por trade** (regla #1 del playbook) — o más alto en cuentas < $50
 3. **ATR(14) × 2 = stop loss** (no $5 hardcoded, no inventar)
 4. **Risk:Reward mínimo 1:2** (TP = 2× stop distance)
 5. **5 trades máximo abiertos** simultáneos
 6. **Audit ledger NUNCA se borra** (forensics post-mortem)
+7. **Sprint 18 — Exposure = PositionRepository** (NO suma de TRADE_FILLED sin restar)
+8. **Sprint 18 — Daily loss = realized PnL** (NO risk_usd teórico)
+9. **Sprint 18 — Notional < min_order → auto-adjust** (no rechazar)
 
 ## 🔍 Comandos rápidos
 
@@ -126,10 +118,10 @@ python -c "from src.safety.kill_switch import KillSwitch; ks=KillSwitch('/tmp/GU
 
 | | |
 |--|--|
-| Sprints | **7 cerrados** (0 al 6) + Sprint 7 indicadores PDF |
-| Commits locales | **8** (en `main`, sin push) |
-| Archivos Python | **23** (sin contar los external_repos) |
-| Líneas de código añadidas | ~3,300 |
-| Bugs encontrados | **16** (todos corregidos y testeados) |
-| Tests pasando | **Todos** (ver scripts en /tmp/test_sprintN.py) |
+| Sprints | **9 cerrados** (0-7 + 18) |
+| Commits locales | **9** (en `main`, sin push) |
+| Archivos Python | **~26** (sin contar los external_repos, incluyendo tests/) |
+| Líneas de código añadidas | ~4,400 (incluyendo Sprint 18) |
+| Bugs encontrados | **19** (todos corregidos y testeados) |
+| Tests pasando | **18 unit tests Sprint 18** + scripts legacy /tmp/test_sprintN.py |
 | Inspiraciones externas | 6 (5 repos + NautilusTrader) |

@@ -43,6 +43,10 @@ Carlos me pidió continuar. Le hice auditoría completa y encontré
    data validator NaN/Inf. Inspirado en NautilusTrader.
 8. **Sprint 7 — PDF Indicators**: aplicó el Manual del Buen Trader:
    DM/ADX, Estocástico, Bollinger, S/R.
+9. **Sprint 18 — Audit Fixes + Portfolio Management** (2026-07-09):
+   Tres bugs críticos del audit team (micro-account, phantom exposure,
+   punished for trying) + dos features nuevas (position replacement y
+   smart profit-take). 18/18 tests passing.
 
 ## Fuentes de inspiración
 
@@ -75,9 +79,14 @@ Ver [[Inspirations]] para detalle completo.
 ## Hoy (2026-07-09)
 
 - Bot corre localmente con `--once` sin excepciones
-- 8 commits locales (push al remoto esperando decisión de Carlos)
-- Coolify tiene el contenedor pero está exited (muerto por bug
-  original)
+- 9 sprints completados (0-7 + 18)
+- 19 bugs cerrados (16 originales + 3 del audit team en Sprint 18)
+- 18 tests unitarios passing en `tests/` (Sprint 18)
+- Sprint 18 cerró:
+  - **3 bugs críticos del audit team** (B017 micro-account, B018 phantom exposure, B019 punished for trying)
+  - **2 features de portfolio management** (position replacement + smart profit-take)
+- Próximo paso: push a GitHub + smoke test paper mode
+- Coolify tiene el contenedor pero está exited (muerto por bug original; pre-Sprint 0)
 - 0 claves API reales configuradas (todo en paper mode)
 
 ---
