@@ -28,6 +28,7 @@
 | [[Bugs/B022_smart_take_dead_code]] | 🔴 | 18 patch | `StrategyAgent` nunca emitía eventos `HYPOTHESIS_GENERATED` al audit → `check_with_signals` siempre recibía `signals=[]` → SMART_PROFIT_TAKE nunca se activaba | StrategyAgent ahora acepta `audit` y emite eventos con strength derivado |
 | [[Bugs/B023_dashboard_filter_button_flash]] | 🟡 | 18 patch | 5 botones `st.button()` separados para los filtros de Smart Signals causaban un dark flash nativo de Streamlit al hacer click | Reemplazados por `st.radio` horizontal con CSS custom para verse como chips |
 | [[Bugs/B024_dashboard_slider_dark_flash]] | 🟡 | 22 patch | Click/arrastre en los 6 sliders de Risk Settings causaba un dark flash del browser/Streamlit (focus ring + track color change) | CSS neutraliza `:focus` y `:active` states, mantiene thumb con brand color y box-shadow |
+| [[Bugs/B024b_dashboard_universal_dark_flash]] | 🟡 | 22 patch | B024 solo atacaba sliders pero el flash oscuro seguía en `st.button` (Save Settings) y `st.checkbox` (Mandate gate toggle) | CSS universal: `button:focus-visible`, `[role="button"]`, todo `stButton` y `stCheckbox` con brand color sutil |
 
 ## Stats
 

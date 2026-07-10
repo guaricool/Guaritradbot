@@ -384,6 +384,42 @@ CUSTOM_CSS = """
     background: transparent !important;
   }
 
+  /* B024b (2026-07-09): Carlos reported dark flash continues. The previous
+     CSS targeted sliders specifically but didn't catch:
+     1. st.button widgets (have dark "active" background by default)
+     2. st.checkbox widgets (focus ring + checked state flash)
+     3. The Save risk settings button at the bottom
+     Apply universal CSS to all interactive widgets to suppress the dark
+     native states. */
+  /* === ALL st.button: remove dark active state === */
+  div[data-testid="stButton"] button {
+    transition: all 0.15s ease !important;
+  }
+  div[data-testid="stButton"] button:focus,
+  div[data-testid="stButton"] button:active,
+  div[data-testid="stButton"] button:focus-visible {
+    outline: none !important;
+    box-shadow: 0 0 0 2px rgba(76, 201, 240, 0.4) !important;
+  }
+  /* Hide the dark "kinda" hover state on buttons */
+  div[data-testid="stButton"] button:hover:not(:disabled) {
+    filter: brightness(1.05);
+  }
+  /* === ALL st.checkbox: remove dark focus ring === */
+  div[data-testid="stCheckbox"] label:focus-within {
+    outline: none !important;
+  }
+  div[data-testid="stCheckbox"] input[type="checkbox"]:focus {
+    outline: none !important;
+    box-shadow: 0 0 0 2px rgba(76, 201, 240, 0.4) !important;
+  }
+  /* === Universal: prevent any focus flash on any interactive element === */
+  button:focus-visible,
+  [role="button"]:focus-visible,
+  [tabindex]:focus-visible {
+    outline: none !important;
+  }
+
   /* ---------- signal cards ---------- */
   .signal-card {
     background: #1a1f3a;
