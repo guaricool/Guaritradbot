@@ -10,10 +10,6 @@ exchange:
   # mandate.enabled=false mantiene el modo paper — el broker lee data real pero NO ejecuta trades.
   name: "binanceus"
   use_testnet: false
-  # Sprint 17: 50% of $20 = $10, which is exactly binance.us minimum.
-  # For larger balances, this caps a single trade at half your account
-  # (defensive). Tune later as the account grows.
-  max_capital_per_trade_pct: 50
 
 # === Sprint 36 — Multi-broker routing ===
 # ExecutionNode dispatches each order to the broker matching the asset's
@@ -47,6 +43,13 @@ trading:
   atr_take_profit_multiplier: 4.0  # TP = entry ± k_tp * ATR (default 4 = 1:2 R:R)
   risk_reward_ratio: 2.0           # Alternativa explícita: si atr_tp no está, se calcula así
   max_open_trades: 5
+  # Sprint 17 + Sprint 43 H2 fix: 50% of $20 = $10, which is exactly
+  # binance.us minimum. The previous location under `exchange:` was
+  # silently ignored by main.py (which reads from `trading:`) and
+  # the audit caught the bot always defaulting to 10% per trade.
+  # For larger balances, this caps a single trade at half your
+  # account (defensive). Tune later as the account grows.
+  max_capital_per_trade_pct: 50
   # Sprint 17: binance.us real minimum is $10 (NOTIONAL value of the order,
   # not the risk). Previous value of $5 was a workaround that would have
   # caused real orders <$10 to be rejected by binance.us. With $20 balance

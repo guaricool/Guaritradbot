@@ -1915,13 +1915,20 @@ with st.sidebar:
     risk = config.get("trading", {})
     exch = config.get("exchange", {})
     mand = config.get("mandate", {})
+    # Sprint 43 H2 fix: `max_capital_per_trade_pct` used to live
+    # under `exchange:` but main.py reads it from `trading:`. The
+    # bot's actual cap (10% default) didn't match the dashboard's
+    # displayed value (50% from the misplaced entry). Read from
+    # `trading:` first, fall back to `exchange:` for any older
+    # config files that haven't been updated yet.
+    cap_pct_cfg = risk.get("max_capital_per_trade_pct", exch.get("max_capital_per_trade_pct", 50))
 
     st.markdown(
         f"""
         - **Mode**: `{config.get('execution_mode','?')}`
         - **Exchange**: `{exch.get('name','?')}`
         - **Risk/trade**: `{risk.get('risk_per_trade_pct','?')}%`
-        - **Max cap/trade**: `{exch.get('max_capital_per_trade_pct','?')}%`
+        - **Max cap/trade**: `{cap_pct_cfg}%`
         - **Max open**: `{risk.get('max_open_trades','?')}`
         - **Mandate**: `{'ON' if mand.get('enabled') else 'OFF'}`
         """
@@ -1936,7 +1943,7 @@ with st.sidebar:
     # from config ONLY (not balance, which is loaded later). The
     # "Cap at current balance" line shows it via _live_binance_balance
     # if available, else falls back to 0.
-    cap_pct_now = float(exch.get("max_capital_per_trade_pct", 50))
+    cap_pct_now = float(cap_pct_cfg)
     min_order_now = float(risk.get("min_order_usd", 10))
     min_balance_to_trade = min_order_now / max(cap_pct_now / 100.0, 0.01)
     # Try to get a live balance for the "cap at current balance" line
@@ -1968,7 +1975,7 @@ with st.sidebar:
     sidebar_cap_pct = st.slider(
         "Cap per trade (%)",
         10, 90,
-        int(exch.get("max_capital_per_trade_pct", 50)), 5,
+        int(cap_pct_cfg), 5,
         key="sidebar_cap_pct",
         help="Max % of balance allowed per trade. With binance.us $10 minimum, "
              "this caps a single trade at X% × balance. 50% means minimum balance "
@@ -3840,7 +3847,7 @@ with col_s5:
 col_s6, col_s7, col_s8 = st.columns([1, 1, 2])
 with col_s6:
     cap_per_trade = st.slider("Cap % per trade", 1, 50,
-                               int(exch.get("max_capital_per_trade_pct", 10)), 1)
+                               int(cap_pct_cfg), 1)
 with col_s7:
     enable_mandate = st.checkbox(
         "Mandate gate (live trading)",
