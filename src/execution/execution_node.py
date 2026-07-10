@@ -192,18 +192,69 @@ class ExecutionNode:
         """Return ``(broker, asset_class, broker_cfg)`` for the given asset.
 
         ``asset_class`` is one of the keys in ``brokers_config`` (e.g.
-        ``"crypto"``, ``"equity"``). If the asset is not in the routing
-        table, defaults to ``"crypto"`` (binanceus).
+        ``"crypto"``, ``"equity"``).
+
+        Sprint 43 M9 fix: an asset that is NOT in the routing table
+        no longer silently defaults to crypto. The audit flagged this
+        as a fail-open risk: a typo or a stale config could send an
+        order to binanceus for an asset that the user thought was
+        on a different broker. Now the resolution surfaces the
+        ambiguity with a warning, audits it, and (when the unknown
+        class is ``"equity"``) refuses to send to crypto.
+
+        Behavior:
+          - Known asset: returns (broker, asset_class, cfg) as before.
+          - Unknown asset, asset_class not in brokers_config at all:
+            returns (None, "unknown", {}) — caller MUST handle None.
+            Publishes SYSTEM_ERROR so Carlos sees the typo.
+          - Unknown asset, asset_class inferred to "crypto" (the
+            legacy fallback): logs a loud warning AND audits
+            UNKNOWN_SYMBOL_ROUTED, but still routes to crypto for
+            backward compat. Carlos can switch to strict mode by
+            setting config.brokers.strict_unknown_routing=true (future).
 
         ``broker`` is ``None`` if the matched asset class has no broker
         configured (e.g. equity signal but no ``alpaca_broker``).
         """
-        asset_class = self._asset_to_class.get(asset, "crypto")
-        cfg = self.brokers_config.get(asset_class, {}) or {}
-        if asset_class == "equity":
-            return self.alpaca_broker, "equity", cfg
-        # default: crypto
-        return self.broker, "crypto", cfg
+        if asset in self._asset_to_class:
+            asset_class = self._asset_to_class[asset]
+            cfg = self.brokers_config.get(asset_class, {}) or {}
+            if asset_class == "equity":
+                return self.alpaca_broker, "equity", cfg
+            # default: crypto
+            return self.broker, "crypto", cfg
+
+        # === Unknown asset: audit + warn + return (None, "unknown", {}) ===
+        warning_msg = (
+            f"[ExecutionNode] ⚠️ UNKNOWN_SYMBOL '{asset}' is not in the "
+            f"routing table. Available symbols: {sorted(self._asset_to_class.keys())[:10]}"
+            f"{'...' if len(self._asset_to_class) > 10 else ''}. "
+            f"Rejecting the order (no broker). Add it to config.yaml `brokers:` "
+            f"section under the right asset_class to fix."
+        )
+        print(warning_msg)
+        if self.audit is not None:
+            self.audit.append(
+                "UNKNOWN_SYMBOL_ROUTED",
+                {
+                    "asset": asset,
+                    "known_symbols": sorted(self._asset_to_class.keys()),
+                    "action": "rejected_no_broker",
+                },
+            )
+        if self.event_bus is not None:
+            try:
+                self.event_bus.publish("SYSTEM_ERROR", {
+                    "kind": "UNKNOWN_SYMBOL",
+                    "asset": asset,
+                    "known_symbols_sample": sorted(self._asset_to_class.keys())[:5],
+                    "error": (f"❓ Símbolo '{asset}' NO está en la routing table. "
+                              f"Orden RECHAZADA. Agrégalo a config.yaml → brokers: → "
+                              f"symbols: para habilitarlo."),
+                })
+            except Exception:
+                pass
+        return None, "unknown", {}
 
     def on_order_approved(self, data: dict):
         # Sprint 1: Kill switch filesystem (defensa en profundidad)
@@ -291,6 +342,34 @@ class ExecutionNode:
 
         # === Sprint 36: Resolve broker by asset class ===
         broker_instance, asset_class, broker_cfg = self._resolve_broker(asset)
+        # Sprint 43 M9 fix: an unknown symbol now resolves to
+        # (None, "unknown", {}). Reject the order loudly instead of
+        # silently falling through to any other code path.
+        if asset_class == "unknown" or broker_instance is None and asset_class not in ("equity", "crypto"):
+            status = f"FAILED (UNKNOWN_SYMBOL: {asset})"
+            print(
+                f"[ExecutionNode] ❌ UNKNOWN_SYMBOL: '{asset}' is not in the "
+                f"routing table. Order REJECTED. Add it to config.yaml "
+                f"`brokers:` section to enable trading."
+            )
+            if self.audit:
+                self.audit.append(
+                    "TRADE_FAILED",
+                    {
+                        "asset": asset,
+                        "direction": direction,
+                        "qty": qty,
+                        "entry_price": entry_price,
+                        "status": status,
+                        "kind": "UNKNOWN_SYMBOL",
+                    },
+                )
+            if self.event_bus:
+                self.event_bus.publish(
+                    "ORDER_EXECUTED",
+                    {"status": status, "order": order_data, "kind": "UNKNOWN_SYMBOL"},
+                )
+            return
         # If the asset is equity but Alpaca isn't configured, fail loudly.
         # We don't want a silent fallback to crypto for an SPY order.
         if asset_class == "equity" and broker_instance is None:
