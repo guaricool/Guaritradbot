@@ -1,5 +1,5 @@
 """
-Sprint 23 — Live Equity Tracker.
+Sprint 23+24 — Live Equity Tracker.
 
 Carlos: "¿No hay manera de que si mete 10 dólares entonces y va arriba así
 sea muy poquito entonces pueda enseñarte cuántos centavos o dólares vas
@@ -7,6 +7,11 @@ ganando o perdiendo?"
 
 YES. Este módulo rastrea el equity en vivo con precisión de 4 decimales
 (centavos). Funciona con cualquier balance inicial (incluido $10).
+
+Sprint 24 añade persistencia crash-only:
+- `persist(path)` — guarda state + history a JSON en disco
+- `load(path)` — reconstruye tracker desde disco
+- Si el bot se reinicia, el equity curve NO se pierde
 
 Tres componentes:
 1. `EquitySnapshot` — dataclass con todos los campos visibles
@@ -16,15 +21,19 @@ Tres componentes:
 Diseño:
 - **Precision**: 4 decimales (`$10.0123`) — crítico para cuentas pequeñas
 - **History**: ring buffer de últimos N snapshots (default 200)
+- **Persistence**: JSON en disco, escritura atómica (Sprint 2 pattern)
 - **Source-of-truth**: `PositionRepository` para realized, precios live para unrealized
 - **Idempotent**: se puede llamar `update()` múltiples veces; cada llamada
   agrega un snapshot al historial
 - **Sin estados globales**: cada tracker tiene su propio state
 """
 from __future__ import annotations
+import json
+import os
 import time
 from collections import deque
 from dataclasses import dataclass, field, asdict
+from pathlib import Path
 from typing import Deque, Dict, List, Optional
 
 from src.data_store.positions import PositionRepository
@@ -217,3 +226,80 @@ def format_equity_line(snap: EquitySnapshot, precision: int = 4) -> str:
         f"Open: {snap.open_positions} | "
         f"Drawdown: {snap.drawdown_pct:.2f}%"
     )
+
+
+def persist_tracker(tracker: EquityTracker, path: str) -> None:
+    """
+    Save tracker state (starting balance + history + max equity) to disk.
+
+    Atomic write: temp file + replace, so a crash during write doesn't
+    corrupt the existing file (Sprint 2 crash-only design).
+
+    Format: JSON
+    {
+      "starting_balance": 10.0,
+      "precision_decimals": 4,
+      "max_equity": 10.5,
+      "saved_at": 1234567890.0,
+      "history": [<equity_snapshot_dict>, ...]
+    }
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "starting_balance": tracker.starting_balance,
+        "precision_decimals": tracker.precision,
+        "max_equity": tracker._max_equity,
+        "saved_at": time.time(),
+        "history": [s.to_dict() for s in tracker.history],
+    }
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    tmp.replace(p)
+
+
+def load_tracker(path: str, position_repo: Optional[PositionRepository] = None,
+                audit=None) -> EquityTracker:
+    """
+    Load tracker from disk. If file doesn't exist or is corrupt, return
+    a fresh tracker with starting_balance from current broker balance
+    (caller can pre-set this before calling).
+
+    Restores:
+      - starting_balance
+      - precision
+      - max_equity (peak for drawdown calc)
+      - history (up to history_size)
+
+    Does NOT restore position_repo or audit (those are passed in).
+    """
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"EquityTracker state file not found: {path}")
+
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        raise RuntimeError(f"EquityTracker state file corrupt: {path}: {e}") from e
+
+    starting_balance = float(data["starting_balance"])
+    history_size = max(len(data.get("history", [])), 1)
+    tracker = EquityTracker(
+        starting_balance=starting_balance,
+        position_repo=position_repo,
+        audit=audit,
+        history_size=history_size,
+        precision_decimals=int(data.get("precision_decimals", 4)),
+    )
+    # Restore max_equity
+    if "max_equity" in data:
+        tracker._max_equity = float(data["max_equity"])
+
+    # Restore history (skip the synthetic initial snapshot from __init__)
+    if "history" in data and len(data["history"]) > 0:
+        # Replace the auto-initialized history with the persisted one
+        tracker.history.clear()
+        for snap_dict in data["history"]:
+            tracker.history.append(EquitySnapshot(**snap_dict))
+
+    return tracker

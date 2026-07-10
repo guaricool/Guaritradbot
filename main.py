@@ -274,20 +274,44 @@ def main():
     # Carlos wanted to see cents-level P&L in real time, especially with
     # $10 balance. Tracker initializes with the broker's actual balance.
     # Falls back to $10 (paper default) if broker is unreachable.
-    from src.safety.equity_tracker import EquityTracker
-    try:
-        _initial_balance = broker_client.get_usdt_balance() if broker_client else 10.0
-        if _initial_balance is None or _initial_balance <= 0:
-            _initial_balance = 10.0
-    except Exception:
-        _initial_balance = 10.0
-    equity_tracker = EquityTracker(
-        starting_balance=_initial_balance,
-        position_repo=position_repo,
-        audit=audit,
-        history_size=200,
+    from src.safety.equity_tracker import (
+        EquityTracker, persist_tracker, load_tracker,
     )
-    print(f"[EquityTracker] initialized with ${_initial_balance:.4f}")
+    _equity_state_path = "data_store/equity_state.json"
+    try:
+        # Sprint 24: try to load persisted state first (crash-only)
+        if os.path.exists(_equity_state_path):
+            equity_tracker = load_tracker(
+                _equity_state_path,
+                position_repo=position_repo,
+                audit=audit,
+            )
+            print(f"[EquityTracker] loaded from disk: ${equity_tracker.starting_balance:.4f} "
+                  f"({len(equity_tracker.history)} snapshots)")
+        else:
+            # First time: use broker balance or $10 fallback
+            try:
+                _initial_balance = broker_client.get_usdt_balance() if broker_client else 10.0
+                if _initial_balance is None or _initial_balance <= 0:
+                    _initial_balance = 10.0
+            except Exception:
+                _initial_balance = 10.0
+            equity_tracker = EquityTracker(
+                starting_balance=_initial_balance,
+                position_repo=position_repo,
+                audit=audit,
+                history_size=200,
+            )
+            print(f"[EquityTracker] initialized with ${_initial_balance:.4f}")
+    except Exception as _eq_init_err:
+        # Fallback: simple in-memory tracker, no persistence
+        print(f"[EquityTracker] init fallback: {_eq_init_err}")
+        equity_tracker = EquityTracker(
+            starting_balance=10.0,
+            position_repo=position_repo,
+            audit=audit,
+            history_size=200,
+        )
 
     # Monkey-patch el scheduler.job para correr el monitor antes
     original_job = scheduler.job
@@ -352,6 +376,11 @@ def main():
                         snap = equity_tracker.update(prices)
                         from src.safety.equity_tracker import format_equity_line
                         print(f"  [Equity] {format_equity_line(snap, precision=4)}")
+                        # Sprint 24: persist to disk (crash-only)
+                        try:
+                            persist_tracker(equity_tracker, _equity_state_path)
+                        except Exception as _persist_err:
+                            print(f"  [Equity] persist falló: {_persist_err}")
                     except Exception as eqe:
                         print(f"  [Equity] tracker update falló: {eqe}")
         except Exception as e:

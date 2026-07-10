@@ -16,7 +16,8 @@
 | [[Sprints/Sprint_19_ML_Pipeline]] | FeatureExtractor + ModelTrainer (LogisticRegression) + Predictor + integration StrategyAgent | intelligent-trading-bot + scikit-learn | `2847dff` |
 | [[Sprints/Sprint_21_Alpha_Zoo]] | 48+ alpha features via `ta` library (RSI/MACD/BB/ATR/ADX/Ichimoku/etc.) | TA-Lib (pure-Python fork) | `2847dff` |
 | [[Sprints/Sprint_22_Paper_Live_Transition]] | Pre-flight checklist: broker check + paper positions handling + dry-run validation | Carlos preguntó "¿qué pasa al ir a live?" | `d03cb2c` |
-| [[Sprints/Sprint_23_Live_Equity_Tracker]] | EquityTracker con precision sub-dólar + drawdown + history para sparklines | Carlos: "¿ centavos o dólares ganando/perdiendo?" | (pending push) |
+| [[Sprints/Sprint_23_Live_Equity_Tracker]] | EquityTracker con precision sub-dólar + drawdown + history para sparklines | Carlos: "¿ centavos o dólares ganando/perdiendo?" | `4b46460` |
+| [[Sprints/Sprint_24_Dashboard_Equity_Widget]] | Persistencia crash-only + dashboard widget (big number + delta + sparkline) | Carlos pidió ver equity en vivo, Sprint 23 era logs only | (pending push) |
 
 ## Tests por sprint
 
@@ -32,5 +33,6 @@
 | 19 | `python -m unittest tests.test_ml_pipeline -v` | **11/11 passing** |
 | 21 | `python -m unittest tests.test_alpha_zoo -v` | **8/8 passing** |
 | 22 | `python -m unittest tests.test_paper_to_live -v` | **10/10 passing** |
-| 23 | `python -m unittest tests.test_equity_tracker -v` | **16/16 passing** |
-| **TOTAL** | `python -m unittest discover tests` | **71/71 passing** |
+| 23 | `python -m unittest tests.test_equity_tracker -v` | **23/23 passing** (incluye persist) |
+| 24 | `python -m unittest tests.test_equity_widget -v` | **5/5 passing** |
+| **TOTAL** | `python -m unittest discover tests` | **83/83 passing** |

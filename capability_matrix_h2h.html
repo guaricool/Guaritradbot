@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Guaritradbot vs The Field — Head-to-Head 2026-07-09</title>
+<style>
+  :root {
+    --bg: #0a0e27;
+    --panel: #141937;
+    --border: #2a3050;
+    --ink: #e0e6ff;
+    --muted: #8a93b8;
+    --green: #06d6a0;
+    --yellow: #ffd166;
+    --orange: #ff9f1c;
+    --red: #ef476f;
+    --blue: #4cc9f0;
+    --pink: #f72585;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'JetBrains Mono', 'Consolas', monospace;
+    background: var(--bg);
+    color: var(--ink);
+    margin: 0;
+    padding: 32px;
+    line-height: 1.55;
+  }
+  h1 {
+    font-size: 1.7rem;
+    margin: 0 0 8px;
+    background: linear-gradient(135deg, var(--green), var(--blue));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle { color: var(--muted); font-size: 0.9rem; margin-bottom: 28px; }
+
+  .scoreboard {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 14px;
+    margin-bottom: 32px;
+  }
+  .score-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    text-align: center;
+  }
+  .score-card .num {
+    font-size: 2.2rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, var(--green), var(--blue));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .score-card.warm .num { background: linear-gradient(135deg, var(--yellow), var(--orange)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+  .score-card.cold .num { background: linear-gradient(135deg, var(--orange), var(--red)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+  .score-card .label { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-top: 4px; }
+  .score-card .sub { font-size: 0.7rem; color: var(--ink); margin-top: 2px; }
+
+  .h2h-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 18px;
+    margin-bottom: 32px;
+  }
+  .h2h-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .h2h-header {
+    background: linear-gradient(90deg, #1a1f3a, #141937);
+    padding: 14px 18px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+  }
+  .h2h-header .vs {
+    font-size: 0.85rem;
+    font-weight: 800;
+  }
+  .h2h-header .score {
+    font-size: 1.4rem;
+    font-weight: 800;
+    padding: 4px 12px;
+    border-radius: 6px;
+  }
+  .h2h-header .score.we-win { background: rgba(6, 214, 160, 0.2); color: var(--green); border: 1px solid var(--green); }
+  .h2h-header .score.draw { background: rgba(255, 209, 102, 0.2); color: var(--yellow); border: 1px solid var(--yellow); }
+  .h2h-header .score.we-lose { background: rgba(239, 71, 111, 0.2); color: var(--red); border: 1px solid var(--red); }
+  .h2h-body { padding: 16px 18px; }
+  .h2h-row {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0;
+    border-bottom: 1px dashed #1a1f3a;
+    font-size: 0.82rem;
+  }
+  .h2h-row:last-child { border-bottom: none; }
+  .h2h-row .us { text-align: right; }
+  .h2h-row .them { text-align: left; color: var(--muted); }
+  .h2h-row .verdict {
+    font-size: 1.1rem;
+    width: 24px;
+    text-align: center;
+  }
+  .verdict.win { color: var(--green); }
+  .verdict.draw { color: var(--yellow); }
+  .verdict.lose { color: var(--red); }
+  .unique {
+    background: rgba(76, 201, 240, 0.08);
+    border: 1px solid var(--blue);
+    border-radius: 6px;
+    padding: 6px 10px;
+    margin-top: 6px;
+    font-size: 0.74rem;
+    color: var(--blue);
+    text-align: center;
+  }
+
+  .overall {
+    background: var(--panel);
+    border: 2px solid var(--green);
+    border-radius: 12px;
+    padding: 24px;
+    text-align: center;
+    margin-bottom: 32px;
+  }
+  .overall .big-num {
+    font-size: 4rem;
+    font-weight: 900;
+    background: linear-gradient(135deg, var(--green), var(--blue));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    line-height: 1;
+  }
+  .overall .label { color: var(--muted); margin-top: 8px; }
+  .overall .sub { font-size: 0.85rem; margin-top: 6px; color: var(--ink); }
+
+  .gap-list {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 22px;
+  }
+  .gap-list h3 { color: var(--yellow); margin: 0 0 12px; }
+  .gap-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px dashed #1a1f3a;
+    font-size: 0.85rem;
+  }
+  .gap-item:last-child { border-bottom: none; }
+  .gap-item .effort { color: var(--blue); font-weight: 700; }
+
+  footer {
+    margin-top: 36px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.75rem;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<h1>🎯 Guaritradbot vs The Field</h1>
+<div class="subtitle">Head-to-head · Post-Sprint 18 · 2026-07-09</div>
+
+<div class="overall">
+  <div class="big-num">71%</div>
+  <div class="label">PARIDAD GLOBAL CON EL CAMPO</div>
+  <div class="sub">3 cells upgraded in Sprint 18 + 2 unique capabilities added. 23 bugs cerrados, 26 tests passing.</div>
+</div>
+
+<div class="scoreboard">
+  <div class="score-card">
+    <div class="num">9</div>
+    <div class="label">✅ Strong</div>
+    <div class="sub">paridad o superior</div>
+  </div>
+  <div class="score-card warm">
+    <div class="num">3</div>
+    <div class="label">⚠️ Medium</div>
+    <div class="sub">funcional, mejorable</div>
+  </div>
+  <div class="score-card cold">
+    <div class="num">3</div>
+    <div class="label">❌ Gap</div>
+    <div class="sub">no tenemos</div>
+  </div>
+  <div class="score-card">
+    <div class="num">2</div>
+    <div class="label">🆕 Únicas</div>
+    <div class="sub">solo nosotros</div>
+  </div>
+</div>
+
+<h2 style="color: var(--blue); margin: 28px 0 16px;">⚔️ Head-to-Head (15 capacidades cada matchup)</h2>
+
+<div class="h2h-grid">
+
+  <!-- vs freqtrade -->
+  <div class="h2h-card">
+    <div class="h2h-header">
+      <div class="vs">🥇 NOSOTROS <span style="color: var(--muted); font-weight: 400;">vs</span> freqtrade</div>
+      <div class="score we-lose">7-8</div>
+    </div>
+    <div class="h2h-body">
+      <div class="h2h-row"><div class="us">✅ Multi-agente (6)</div><div class="verdict win">🏆</div><div class="them">❌ single-loop</div></div>
+      <div class="h2h-row"><div class="us">✅ Backtest gold metrics</div><div class="verdict draw">=</div><div class="them">✅ gold standard</div></div>
+      <div class="h2h-row"><div class="us">⚠️ Hyperopt básico</div><div class="verdict lose">❌</div><div class="them">✅✅✅ Optuna built-in</div></div>
+      <div class="h2h-row"><div class="us">⚠️ 9 indicadores custom</div><div class="verdict lose">❌</div><div class="them">✅✅✅ talib (200+)</div></div>
+      <div class="h2h-row"><div class="us">✅✅✅ Mandate gate source-of-truth</div><div class="verdict win">🏆</div><div class="them">✅✅✅ stop-loss rules</div></div>
+      <div class="h2h-row"><div class="us">⚠️ Binance only</div><div class="verdict lose">❌</div><div class="them">✅✅✅ ccxt (30+)</div></div>
+      <div class="h2h-row"><div class="us">❌ alpha zoo</div><div class="verdict draw">=</div><div class="them">✅✅ factor library</div></div>
+      <div class="h2h-row"><div class="us">✅✅✅ Portfolio mgmt (único)</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅ Crash-only JSON</div><div class="verdict win">🏆</div><div class="them">⚠️ parcial</div></div>
+      <div class="h2h-row"><div class="us">✅ State machine + fail-fast</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅✅ Dashboard signal8-level</div><div class="verdict win">🏆</div><div class="them">⚠️ freqUI básico</div></div>
+      <div class="h2h-row"><div class="us">✅ Audit ledger JSONL</div><div class="verdict win">🏆</div><div class="them">⚠️ trades DB</div></div>
+      <div class="h2h-row"><div class="us">⚠️ 5 data sources</div><div class="verdict lose">❌</div><div class="them">✅✅✅ 30+ exchanges</div></div>
+      <div class="h2h-row"><div class="us">⚠️ EventBus simple</div><div class="verdict draw">=</div><div class="them">⚠️</div></div>
+      <div class="h2h-row"><div class="us">❌ ML pipeline</div><div class="verdict lose">❌</div><div class="them">❌</div></div>
+      <div class="unique">Les GANAMOS en: multi-agente · portfolio mgmt · dashboard · state machine · audit</div>
+    </div>
+  </div>
+
+  <!-- vs Vibe-Trading -->
+  <div class="h2h-card">
+    <div class="h2h-header">
+      <div class="vs">🥈 NOSOTROS <span style="color: var(--muted); font-weight: 400;">vs</span> Vibe-Trading</div>
+      <div class="score we-lose">8-7</div>
+    </div>
+    <div class="h2h-body">
+      <div class="h2h-row"><div class="us">✅ Multi-agente (6)</div><div class="verdict draw">=</div><div class="them">✅ swarm</div></div>
+      <div class="h2h-row"><div class="us">✅ EventBus</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">❌ ML pipeline</div><div class="verdict draw">=</div><div class="them">⚠️ alpha zoo (no ML)</div></div>
+      <div class="h2h-row"><div class="us">✅ Backtest gold</div><div class="verdict draw">=</div><div class="them">✅ layered attribution</div></div>
+      <div class="h2h-row"><div class="us">⚠️ Hyperopt</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">⚠️ 9 indicadores</div><div class="verdict lose">❌</div><div class="them">✅✅✅ 460 alphas</div></div>
+      <div class="h2h-row"><div class="us">⚠️ 5 data sources</div><div class="verdict lose">❌</div><div class="them">✅✅✅ 18 fuentes</div></div>
+      <div class="h2h-row"><div class="us">✅✅✅ Mandate gate</div><div class="verdict draw">=</div><div class="them">✅✅✅ kill+audit</div></div>
+      <div class="h2h-row"><div class="us">⚠️ Binance</div><div class="verdict lose">❌</div><div class="them">✅✅✅ 10 brokers</div></div>
+      <div class="h2h-row"><div class="us">❌ alpha zoo</div><div class="verdict lose">❌</div><div class="them">✅✅✅ 460+</div></div>
+      <div class="h2h-row"><div class="us">✅✅✅ Portfolio mgmt (único)</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅ Crash-only</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅ State machine</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅✅ Dashboard signal8</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅ Audit ledger</div><div class="verdict draw">=</div><div class="them">✅ audit</div></div>
+      <div class="unique">Les GANAMOS en: portfolio mgmt · event bus · hyperopt · state machine · dashboard</div>
+    </div>
+  </div>
+
+  <!-- vs intelligent-trading-bot -->
+  <div class="h2h-card">
+    <div class="h2h-header">
+      <div class="vs">4° NOSOTROS <span style="color: var(--muted); font-weight: 400;">vs</span> intelligent-trading-bot</div>
+      <div class="score we-win">11-4</div>
+    </div>
+    <div class="h2h-body">
+      <div class="h2h-row"><div class="us">✅ Multi-agente (6)</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅ EventBus</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">❌ ML pipeline</div><div class="verdict lose">❌</div><div class="them">✅✅✅ talib/tsfresh</div></div>
+      <div class="h2h-row"><div class="us">✅ Backtest walk-fwd</div><div class="verdict draw">=</div><div class="them">✅ rolling walk-fwd</div></div>
+      <div class="h2h-row"><div class="us">⚠️ Hyperopt</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">⚠️ 9 indicadores</div><div class="verdict lose">❌</div><div class="them">✅✅✅ talib</div></div>
+      <div class="h2h-row"><div class="us">⚠️ 5 data sources</div><div class="verdict draw">=</div><div class="them">✅ Binance + Yahoo</div></div>
+      <div class="h2h-row"><div class="us">✅✅✅ Mandate gate source-of-truth</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">⚠️ Binance</div><div class="verdict draw">=</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">❌ alpha zoo</div><div class="verdict draw">=</div><div class="them">⚠️ custom only</div></div>
+      <div class="h2h-row"><div class="us">✅✅✅ Portfolio mgmt</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅ Crash-only</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅ State machine</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅✅ Dashboard signal8</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅ Audit ledger</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="unique">Les GANAMOS en TODO menos ML + talib. Único gap crítico para nosotros.</div>
+    </div>
+  </div>
+
+  <!-- vs TradingAgents -->
+  <div class="h2h-card">
+    <div class="h2h-header">
+      <div class="vs">6° NOSOTROS <span style="color: var(--muted); font-weight: 400;">vs</span> TradingAgents</div>
+      <div class="score we-win">11-3</div>
+    </div>
+    <div class="h2h-body">
+      <div class="h2h-row"><div class="us">✅ Multi-agente (6)</div><div class="verdict win">🏆</div><div class="them">✅ debate (4 roles)</div></div>
+      <div class="h2h-row"><div class="us">✅ EventBus</div><div class="verdict lose">❌</div><div class="them">✅ LangGraph (más rico)</div></div>
+      <div class="h2h-row"><div class="us">✅ Backtest gold</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">⚠️ Hyperopt</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">⚠️ 9 indicadores</div><div class="verdict draw">=</div><div class="them">✅ básico</div></div>
+      <div class="h2h-row"><div class="us">⚠️ 5 sources</div><div class="verdict lose">❌</div><div class="them">✅✅✅ Alpha Vantage + FRED</div></div>
+      <div class="h2h-row"><div class="us">✅✅✅ Mandate gate</div><div class="verdict win">🏆</div><div class="them">✅ Risk team</div></div>
+      <div class="h2h-row"><div class="us">⚠️ Binance</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅✅✅ Portfolio mgmt</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅ Crash-only</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅ State machine</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅✅ Dashboard</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅ Audit ledger</div><div class="verdict draw">=</div><div class="them">✅ decision logs</div></div>
+      <div class="h2h-row"><div class="us">✅✅✅ Audit forense</div><div class="verdict win">🏆</div><div class="them">⚠️</div></div>
+      <div class="h2h-row"><div class="us">✅ Sin dependencia LLM externa</div><div class="verdict win">🏆</div><div class="them">❌ ($API costs)</div></div>
+      <div class="unique">Les GANAMOS en: backtest real · hyperopt · broker · portfolio mgmt · state machine · dashboard · sin costos API</div>
+    </div>
+  </div>
+
+  <!-- vs claude-trading-skills -->
+  <div class="h2h-card">
+    <div class="h2h-header">
+      <div class="vs">5° NOSOTROS <span style="color: var(--muted); font-weight: 400;">vs</span> claude-trading-skills</div>
+      <div class="score we-win">11-3</div>
+    </div>
+    <div class="h2h-body">
+      <div class="h2h-row"><div class="us">✅ Multi-agente (6)</div><div class="verdict draw">=</div><div class="them">✅ skills</div></div>
+      <div class="h2h-row"><div class="us">✅ EventBus</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅ Backtest gold</div><div class="verdict draw">=</div><div class="them">✅ Backtest Expert</div></div>
+      <div class="h2h-row"><div class="us">⚠️ Hyperopt</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">⚠️ 9 indicadores</div><div class="verdict draw">=</div><div class="them">✅ chart analyst</div></div>
+      <div class="h2h-row"><div class="us">⚠️ 5 sources</div><div class="verdict lose">❌</div><div class="them">✅ FMP/FINVIZ</div></div>
+      <div class="h2h-row"><div class="us">✅✅✅ Mandate gate</div><div class="verdict win">🏆</div><div class="them">✅ pre-trade</div></div>
+      <div class="h2h-row"><div class="us">⚠️ Binance</div><div class="verdict lose">❌</div><div class="them">✅ Alpaca MCP</div></div>
+      <div class="h2h-row"><div class="us">✅✅✅ Portfolio mgmt</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅ Crash-only</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅ State machine</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="h2h-row"><div class="us">✅✅ Dashboard</div><div class="verdict win">🏆</div><div class="them">⚠️ parcial</div></div>
+      <div class="h2h-row"><div class="us">✅ Audit ledger</div><div class="verdict draw">=</div><div class="them">✅ trade journal</div></div>
+      <div class="h2h-row"><div class="us">✅ Bot autónomo 24/7</div><div class="verdict win">🏆</div><div class="them">❌ (necesita Claude)</div></div>
+      <div class="h2h-row"><div class="us">✅ Sin dependencia LLM</div><div class="verdict win">🏆</div><div class="them">❌</div></div>
+      <div class="unique">Les GANAMOS en: event bus · hyperopt · portfolio mgmt · crash-only · state machine · dashboard · autonomía</div>
+    </div>
+  </div>
+
+</div>
+
+<h2 style="color: var(--yellow); margin: 32px 0 14px;">🔧 Los 3 gaps que nos faltan</h2>
+
+<div class="gap-list">
+  <div class="gap-item">
+    <div>
+      <b style="color: var(--red);">❌ ML pipeline</b><br>
+      <span style="color: var(--muted); font-size: 0.8rem;">Solo intelligent-trading-bot lo tiene. Tala+tsfresh+modelos. Único gap donde nos ganan claramente (3 puntos de 15).</span>
+    </div>
+    <div class="effort">Sprint 19<br>+2.0 score</div>
+  </div>
+  <div class="gap-item">
+    <div>
+      <b style="color: var(--orange);">⚠️ Multi-broker</b><br>
+      <span style="color: var(--muted); font-size: 0.8rem;">Solo Binance. freqtrade (30+) y Vibe-Trading (10) nos ganan. Fix: pip install ccxt + refactor (2-3 días).</span>
+    </div>
+    <div class="effort">Sprint 20<br>+0.7 score</div>
+  </div>
+  <div class="gap-item">
+    <div>
+      <b style="color: var(--orange);">⚠️ Alpha zoo</b><br>
+      <span style="color: var(--muted); font-size: 0.8rem;">9 custom vs 460 de Vibe-Trading. Fix: pip install talib (1 día, +50 indicators).</span>
+    </div>
+    <div class="effort">Sprint 21<br>+0.5 score</div>
+  </div>
+</div>
+
+<div class="overall" style="margin-top: 32px; border-color: var(--blue);">
+  <div class="big-num">85%</div>
+  <div class="label">PARIDAD PROYECTADA TRAS SPRINTS 19-21</div>
+  <div class="sub">Si ejecutamos ML pipeline + multi-broker + alpha zoo, llegamos a paridad con freqtrade (líder),<br>manteniendo nuestras 2 ventajas únicas (portfolio management + dashboard signal8).</div>
+</div>
+
+<footer>
+  Comparativa generada 2026-07-09 · Sprint 18 cerrado · 23 bugs cerrados · 26 tests passing · 9 sprints totales.
+  Head-to-head basado en 15 capacidades con veredigo binario por matchup (no ponderado).
+</footer>
+
+</body>
+</html>

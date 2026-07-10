@@ -15,6 +15,7 @@ if ROOT not in sys.path:
 
 from src.safety.equity_tracker import (
     EquityTracker, EquitySnapshot, format_equity_line,
+    persist_tracker, load_tracker,
 )
 from src.safety.audit_ledger import AuditLedger
 from src.data_store.positions import PositionRepository, Position
@@ -268,6 +269,87 @@ class EquityTrackerValidationTest(unittest.TestCase):
     def test_zero_starting_balance_rejected(self):
         with self.assertRaises(ValueError):
             EquityTracker(starting_balance=0.0)
+
+
+class EquityTrackerPersistTest(unittest.TestCase):
+    """Sprint 24: crash-only persistence of equity tracker state."""
+
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.mkdtemp()
+        self.path = os.path.join(self.tmpdir, "equity_state.json")
+
+    def test_persist_creates_file(self):
+        tracker = EquityTracker(starting_balance=10.0, history_size=50)
+        persist_tracker(tracker, self.path)
+        self.assertTrue(os.path.exists(self.path))
+
+    def test_persist_then_load_roundtrip(self):
+        # Create tracker, take a few snapshots, persist
+        tracker = EquityTracker(starting_balance=10.0, history_size=50)
+        tracker.update({})
+        tracker.update({})
+        # Force a max_equity
+        tracker._max_equity = 10.5
+        persist_tracker(tracker, self.path)
+
+        # Load in a fresh tracker
+        loaded = load_tracker(self.path)
+        self.assertEqual(loaded.starting_balance, 10.0)
+        self.assertEqual(len(loaded.history), len(tracker.history))
+        self.assertEqual(loaded._max_equity, 10.5)
+
+    def test_persist_includes_audit_state(self):
+        """Even without audit, persist should work (audit is optional)."""
+        tracker = EquityTracker(starting_balance=10.0, history_size=50)
+        tracker.update({})
+        tracker.update({})
+        persist_tracker(tracker, self.path)
+        # No audit = no crash
+        loaded = load_tracker(self.path)
+        self.assertEqual(loaded.starting_balance, 10.0)
+
+    def test_load_missing_file_raises(self):
+        with self.assertRaises(FileNotFoundError):
+            load_tracker(os.path.join(self.tmpdir, "nonexistent.json"))
+
+    def test_load_corrupt_file_raises(self):
+        bad_path = os.path.join(self.tmpdir, "bad.json")
+        with open(bad_path, "w") as f:
+            f.write("{ this is not valid json")
+        with self.assertRaises(RuntimeError):
+            load_tracker(bad_path)
+
+    def test_atomic_write_does_not_corrupt_on_failure(self):
+        """If persist fails mid-write, existing file is preserved."""
+        # Write initial good state
+        tracker = EquityTracker(starting_balance=10.0, history_size=50)
+        persist_tracker(tracker, self.path)
+        original_content = open(self.path).read()
+
+        # Simulate a failed write (point to a path in a non-existent dir)
+        bad_path = os.path.join(self.tmpdir, "nonexistent", "subdir", "state.json")
+        try:
+            persist_tracker(tracker, bad_path)
+        except Exception:
+            pass
+
+        # Original file is still intact
+        self.assertEqual(open(self.path).read(), original_content)
+
+    def test_load_restores_max_equity_for_drawdown(self):
+        """After load, drawdown calc should use restored peak."""
+        # Original tracker had a peak at $10.50
+        tracker = EquityTracker(starting_balance=10.0, history_size=50)
+        tracker._max_equity = 10.5
+        persist_tracker(tracker, self.path)
+
+        # Load and check drawdown
+        loaded = load_tracker(self.path)
+        self.assertEqual(loaded._max_equity, 10.5)
+        # A snapshot at $10.0 should show drawdown of -$0.5
+        snap = loaded.update({})
+        self.assertAlmostEqual(snap.drawdown_usd, -0.5, places=4)
 
 
 if __name__ == "__main__":

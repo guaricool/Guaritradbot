@@ -420,6 +420,55 @@ CUSTOM_CSS = """
     outline: none !important;
   }
 
+  /* === Sprint 24: Live Equity Tracker widget === */
+  .equity-card {
+    background: linear-gradient(135deg, #141937, #1a1f3a);
+    border: 1px solid #2a3050;
+    border-radius: 12px;
+    padding: 16px 20px;
+    text-align: center;
+    transition: all 0.2s;
+  }
+  .equity-card.equity-positive {
+    border-left: 4px solid #06d6a0;
+  }
+  .equity-card.equity-negative {
+    border-left: 4px solid #f72585;
+  }
+  .equity-emoji {
+    font-size: 1.5rem;
+    margin-bottom: 4px;
+  }
+  .equity-total {
+    font-size: 2.2rem;
+    font-weight: 800;
+    font-family: 'JetBrains Mono', monospace;
+    background: linear-gradient(135deg, #4cc9f0, #06d6a0);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    line-height: 1.1;
+  }
+  .equity-delta {
+    font-size: 1.1rem;
+    font-weight: 700;
+    margin-top: 4px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .equity-card.equity-positive .equity-delta {
+    color: #06d6a0;
+  }
+  .equity-card.equity-negative .equity-delta {
+    color: #f72585;
+  }
+  .equity-stats {
+    font-size: 0.75rem;
+    color: #8a93b8;
+    margin-top: 10px;
+    line-height: 1.5;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
   /* ---------- signal cards ---------- */
   .signal-card {
     background: #1a1f3a;
@@ -1862,6 +1911,96 @@ with c2:
         ),
         unsafe_allow_html=True,
     )
+
+# Sprint 24: Live Equity Tracker widget
+# Reads from data_store/equity_state.json (persisted by main.py each cycle).
+# Shows: big number + delta + sparkline + realized/unrealized/drawdown stats.
+try:
+    import json as _json
+    _equity_state_path = "data_store/equity_state.json"
+    if os.path.exists(_equity_state_path):
+        with open(_equity_state_path, "r", encoding="utf-8") as _f:
+            _eq_state = _json.load(_f)
+        _eq_history = _eq_state.get("history", [])
+        if _eq_history:
+            _latest_eq = _eq_history[-1]
+            _eq_total = float(_latest_eq.get("total_equity", balance))
+            _eq_delta = float(_latest_eq.get("delta_usd", 0.0))
+            _eq_delta_pct = float(_latest_eq.get("delta_pct", 0.0))
+            _eq_realized = float(_latest_eq.get("realized_pnl", 0.0))
+            _eq_unrealized = float(_latest_eq.get("unrealized_pnl", 0.0))
+            _eq_drawdown = float(_latest_eq.get("drawdown_pct", 0.0))
+            _eq_series = [float(s.get("total_equity", 0.0)) for s in _eq_history[-50:]]
+
+            # === Equity widget ===
+            st.markdown(
+                "<div class='panel-title'>💰 Live Equity Tracker (Sprint 24)</div>",
+                unsafe_allow_html=True,
+            )
+            eq_col1, eq_col2 = st.columns([1, 2])
+
+            with eq_col1:
+                # Big number + delta
+                emoji = "🟢" if _eq_delta >= 0 else "🔴"
+                sign = "+" if _eq_delta >= 0 else ""
+                delta_class = "equity-positive" if _eq_delta >= 0 else "equity-negative"
+                st.markdown(
+                    f"""
+                    <div class='equity-card {delta_class}'>
+                        <div class='equity-emoji'>{emoji}</div>
+                        <div class='equity-total'>${_eq_total:.4f}</div>
+                        <div class='equity-delta'>{sign}${_eq_delta:.4f} ({_eq_delta_pct:+.2f}%)</div>
+                        <div class='equity-stats'>
+                            Realized: ${_eq_realized:+.4f}<br>
+                            Unrealized: ${_eq_unrealized:+.4f}<br>
+                            Drawdown: {_eq_drawdown:.2f}%
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            with eq_col2:
+                # Sparkline (Plotly)
+                if len(_eq_series) >= 2:
+                    import plotly.graph_objects as go
+                    _fig = go.Figure()
+                    _fig.add_trace(go.Scatter(
+                        y=_eq_series,
+                        mode="lines",
+                        line=dict(
+                            color="#06d6a0" if _eq_series[-1] >= _eq_series[0] else "#f72585",
+                            width=2,
+                        ),
+                        fill="tozeroy",
+                        fillcolor="rgba(6, 214, 160, 0.1)" if _eq_series[-1] >= _eq_series[0] else "rgba(247, 37, 133, 0.1)",
+                        hovertemplate="Equity: $%{y:.4f}<extra></extra>",
+                    ))
+                    _fig.update_layout(
+                        height=180,
+                        margin=dict(l=0, r=0, t=10, b=10),
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        xaxis=dict(visible=False),
+                        yaxis=dict(
+                            gridcolor="rgba(76, 201, 240, 0.1)",
+                            tickformat="$.2f",
+                        ),
+                        showlegend=False,
+                    )
+                    st.plotly_chart(_fig, use_container_width=True, theme=None,
+                                    key="equity_tracker_sparkline")
+                else:
+                    st.info("Equity tracker accumulating snapshots...")
+
+            # Caption
+            st.caption(
+                f"📊 {len(_eq_history)} snapshots persisted | "
+                f"Last update: {_latest_eq.get('iso', '?')}"
+            )
+except Exception as _eq_err:
+    # Don't crash dashboard if equity tracker is broken
+    pass
 with c3:
     # Sprint 16: show Open PnL + total invested for clarity on small
     # balances. With $10 starting, seeing "+$0.15" is meaningless
