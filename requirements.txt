@@ -12,6 +12,9 @@ yfinance>=1.0,<2.0
 # curl_cffi: fallback explícito para cuando Yahoo anti-botea al server-pool del VPS.
 curl_cffi>=0.7,<1.0
 ta==0.11.0
+# Sprint 19: ML pipeline (LogisticRegression baseline + scaler)
+scikit-learn>=1.3.0
+scipy>=1.10.0
 plotly==5.22.0
 # streamlit-autorefresh: non-blocking page reload — avoids the 15s sleep that
 # `time.sleep + st.rerun()` causes on the FIRST render of the dashboard.

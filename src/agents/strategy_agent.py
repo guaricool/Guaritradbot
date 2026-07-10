@@ -109,6 +109,13 @@ def _hypothesis_strength(h: dict) -> float:
     if "macd" in strategy or "ema" in strategy or "cross" in strategy:
         return 0.7
 
+    # Sprint 19: ML baseline. Strength = how far prob is from 0.5 (uncertainty).
+    if "ml_" in strategy or "baseline" in strategy:
+        prob = float(h.get("ml_probability", 0.5))
+        # prob in [0, 1]; map distance from 0.5 to strength in [0.5, 0.95]
+        distance = abs(prob - 0.5) * 2  # 0..1
+        return round(0.5 + 0.45 * distance, 3)
+
     # Bollinger / S/R
     if "bb_" in strategy or "resistance" in strategy or "support" in strategy:
         return 0.65
@@ -126,7 +133,8 @@ class StrategyAgent:
     ADX) y zonas más permisivas en RSI/MACD.
     """
 
-    def __init__(self, strategy_params: dict = None, audit=None):
+    def __init__(self, strategy_params: dict = None, audit=None, ml_predictors: dict = None,
+                 ml_long_threshold: float = 0.6, ml_short_threshold: float = 0.4):
         self.params = strategy_params or {
             "rsi_oversold": 30,         # cruce estricto
             "rsi_overbought": 70,
@@ -142,6 +150,14 @@ class StrategyAgent:
         # las señales recientes y dispare SMART_PROFIT_TAKE cuando hay
         # un reversal fuerte contra una posición abierta en profit.
         self.audit = audit
+        # Sprint 19: ML predictors per asset.
+        # Each entry is a `Predictor` instance (loaded from a trained model).
+        # If a model is available for the asset, the StrategyAgent will
+        # generate ML_BASELINE_LONG / ML_BASELINE_SHORT hypotheses based on
+        # the predicted probability of a positive forward return.
+        self.ml_predictors = ml_predictors or {}
+        self.ml_long_threshold = ml_long_threshold
+        self.ml_short_threshold = ml_short_threshold
 
     def _add_hyp(self, hypotheses, asset, tf, direction, strategy, price, **extras):
         hypotheses.append({
@@ -444,6 +460,55 @@ class StrategyAgent:
                         hypotheses, asset, "4h", "short",
                         "Resistance_Fade", price,
                         resistance_level=resistance, atr_at_signal=atr,
+                    )
+
+        # ============================================================
+        # Sprint 19 — ML Baseline signal
+        # If a trained ML model exists for this asset, predict the
+        # probability of a positive forward return and emit a hypothesis
+        # when the probability crosses our thresholds (default 0.6 long,
+        # 0.4 short).
+        # ============================================================
+        if self.ml_predictors:
+            from src.ml.pipeline import FeatureExtractor
+            _extractor = FeatureExtractor()
+            for asset in ("BTC-USD", "SPY", "QQQ", "GLD", "USO"):
+                predictor = self.ml_predictors.get(asset)
+                if predictor is None:
+                    continue
+                # Prefer 4h data (matches our other signals)
+                df_ml = market_data.get(asset, {}).get("4h")
+                if df_ml is None or len(df_ml) < 60:
+                    continue
+                try:
+                    X, feat_names = _extractor.transform(df_ml)
+                except Exception as e:
+                    if self.audit is not None:
+                        self.audit.append("ML_PREDICT_FAILED", {
+                            "asset": asset, "reason": str(e)[:200],
+                        })
+                    continue
+                if len(X) == 0:
+                    continue
+                # Predict probability for the latest bar
+                prob_long = predictor.predict_one(X.iloc[-1])
+                if prob_long >= self.ml_long_threshold:
+                    atr_ml = float(df_ml["ATR_14"].iloc[-1]) if "ATR_14" in df_ml.columns else 0
+                    self._add_hyp(
+                        hypotheses, asset, "4h", "long",
+                        "ML_Baseline", float(df_ml["Close"].iloc[-1]),
+                        ml_probability=float(prob_long),
+                        atr_at_signal=atr_ml,
+                        n_features=len(feat_names),
+                    )
+                elif prob_long <= self.ml_short_threshold:
+                    atr_ml = float(df_ml["ATR_14"].iloc[-1]) if "ATR_14" in df_ml.columns else 0
+                    self._add_hyp(
+                        hypotheses, asset, "4h", "short",
+                        "ML_Baseline", float(df_ml["Close"].iloc[-1]),
+                        ml_probability=float(prob_long),
+                        atr_at_signal=atr_ml,
+                        n_features=len(feat_names),
                     )
 
         # ============================================================
