@@ -449,5 +449,97 @@ class B021NoPriceAbortTest(unittest.TestCase):
         self.assertEqual(skipped[0].get("reason"), "no_current_price")
 
 
+class RiskAgentC3FixTest(unittest.TestCase):
+    """
+    Sprint 43 C3 fix: reject NaN/Inf in price/ATR before they propagate
+    into position sizing and silently fail-open the mandate caps.
+
+    Without this fix, the audit's claim was:
+      - `max(NaN * 2.0, entry_price * 0.005) = NaN`
+      - `quantity = risk_usd / NaN = NaN`
+      - `NaN > max_notional` is False → notional cap is skipped
+      - mandate_gate sees a NaN notional → all 3 caps return False
+        (because `NaN > x` is False in Python) → fails open
+
+    With the fix, both the per-hypothesis guard in `validate_and_size`
+    and the broker-balance guard in `get_account_balance` reject the
+    non-finite value explicitly.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.audit = AuditLedger(os.path.join(self.tmpdir, "audit.jsonl"))
+        self.repo = PositionRepository(os.path.join(self.tmpdir, "positions.json"))
+        self.broker = _FakeBroker()
+        self.agent = RiskManagerAgent(
+            broker_client=self.broker,
+            audit=self.audit,
+            position_repo=self.repo,
+        )
+
+    def _run(self, hyp_overrides):
+        hyp = {
+            "asset": "BTC-USD",
+            "direction": "long",
+            "price": 30000.0,
+            "atr_at_signal": 1500.0,
+        }
+        hyp.update(hyp_overrides)
+        return self.agent.validate_and_size(
+            inputs={},
+            state={"generate_hypotheses": {"hypotheses": [hyp]}},
+        )
+
+    def test_nan_entry_price_rejected(self):
+        out = self._run({"price": float("nan")})
+        self.assertEqual(out["approved_trades"], [])
+        self.assertEqual(out["rejected_trades"][0]["reason"], "non_finite_price_or_atr")
+        evs = [e for e in self.audit.read_all() if e.get("event_type") == "TRADE_REJECTED"]
+        self.assertEqual(len(evs), 1)
+        self.assertEqual(evs[0]["reason"], "non_finite_price_or_atr")
+
+    def test_nan_atr_rejected(self):
+        out = self._run({"atr_at_signal": float("nan")})
+        self.assertEqual(out["approved_trades"], [])
+        self.assertEqual(out["rejected_trades"][0]["reason"], "non_finite_price_or_atr")
+
+    def test_inf_atr_rejected(self):
+        out = self._run({"atr_at_signal": float("inf")})
+        self.assertEqual(out["approved_trades"], [])
+        self.assertEqual(out["rejected_trades"][0]["reason"], "non_finite_price_or_atr")
+
+    def test_nan_balance_falls_back_to_simulated(self):
+        """
+        If the broker returns NaN, the agent must NOT use it — fall
+        back to the simulated $100 (existing behavior on error).
+        Without the fix, NaN would propagate to `risk_amount_usd`,
+        `quantity`, `notional`, and all downstream comparisons.
+        """
+        class _NaNBroker(_FakeBroker):
+            def get_usdt_balance(self):
+                return float("nan")
+        agent = RiskManagerAgent(
+            broker_client=_NaNBroker(),
+            audit=self.audit,
+            position_repo=self.repo,
+        )
+        bal, source = agent.get_account_balance()
+        self.assertEqual(bal, 100.0)
+        self.assertEqual(source, "testnet_sim")
+
+    def test_inf_balance_falls_back_to_simulated(self):
+        class _InfBroker(_FakeBroker):
+            def get_usdt_balance(self):
+                return float("inf")
+        agent = RiskManagerAgent(
+            broker_client=_InfBroker(),
+            audit=self.audit,
+            position_repo=self.repo,
+        )
+        bal, source = agent.get_account_balance()
+        self.assertEqual(bal, 100.0)
+        self.assertEqual(source, "testnet_sim")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,7 @@ está lleno pero aparece una señal MUY superior, cerrar la peor posición
 y abrir la nueva. Score = combinación de expected value + momentum.
 """
 import os
+import math
 from typing import Dict, Any, List, Optional, Tuple
 
 from src.data_store.positions import Position, PositionRepository
@@ -61,8 +62,16 @@ class RiskManagerAgent:
             return (100.0, "no_broker_sim")
         try:
             bal = self.broker.get_usdt_balance()
+            # Sprint 43 C3 fix: defend against NaN/Inf in the broker's
+            # balance response. Some ccxt error paths (e.g. transient
+            # network, sandbox returning None coerced to NaN) can return
+            # non-finite numbers WITHOUT raising. Treating NaN as 0 (or
+            # letting it propagate) silently inflates risk calculations
+            # and can fail-open downstream comparisons in mandate_gate.
+            if not math.isfinite(float(bal)):
+                raise ValueError(f"non_finite_balance:{bal!r}")
             source = self.broker.exchange.options.get("sandboxMode", False)
-            return (bal, "testnet_sim" if source else "live")
+            return (float(bal), "testnet_sim" if source else "live")
         except Exception as e:
             if os.getenv("GUARICO_ALLOW_SIMULATED_BALANCE", "1") == "1":
                 print(f"[RiskManagerAgent] ⚠️ Balance indisponible ({e}). SIMULATED fallback $100.")
@@ -122,6 +131,26 @@ class RiskManagerAgent:
                 rejected.append({"hypothesis": h, "reason": "invalid_entry_price"})
                 if self.audit:
                     self.audit.append("TRADE_REJECTED", {"asset": h.get("asset"), "reason": "invalid_entry_price"})
+                continue
+
+            # Sprint 43 C3 fix: reject non-finite prices/ATR.
+            # Python's `NaN <= 0` returns False (IEEE 754), so the
+            # check above would let NaN slip through. Then
+            # `max(NaN * 2.0, entry_price * 0.005) = NaN`,
+            # `quantity = risk_usd / NaN = NaN`, and every downstream
+            # comparison (max_notional, mandate_gate) silently
+            # fails-open (`NaN > x` is False). The bot would then
+            # try to open a position with a NaN quantity. Bail early
+            # with an explicit reason.
+            if not (math.isfinite(entry_price) and math.isfinite(atr)):
+                rejected.append({"hypothesis": h, "reason": "non_finite_price_or_atr"})
+                if self.audit:
+                    self.audit.append("TRADE_REJECTED", {
+                        "asset": h.get("asset"),
+                        "reason": "non_finite_price_or_atr",
+                        "entry_price": entry_price,
+                        "atr": atr,
+                    })
                 continue
 
             # --- Stop y Take Profit (ATR-based, Sprint 0+2) ---

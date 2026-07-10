@@ -231,5 +231,86 @@ class MandateIntegrationTest(unittest.TestCase):
         self.assertEqual(verdict.daily_loss_so_far_usd, 0.0)
 
 
+class MandateGateC3FixTest(unittest.TestCase):
+    """
+    Sprint 43 C3 fix: NaN/Inf in notional_usd or risk_usd must be
+    rejected explicitly, not silently fail-open.
+
+    Python's IEEE 754 behavior: `NaN > x` returns False, so a NaN
+    notional would pass all 3 cap checks (per-trade size, daily
+    loss, total exposure) and the mandate would approve a trade
+    with undefined size. The audit flagged this as a fail-open
+    vulnerability.
+    """
+
+    def _gate(self):
+        cfg = MandateConfig(
+            enabled=True,
+            allowed_symbols={"BTC-USD"},
+            max_position_usd=20.0,
+            max_daily_loss_usd=5.0,
+            max_total_exposure_usd=100.0,
+        )
+        return MandateGate(cfg)
+
+    def test_nan_notional_rejected(self):
+        gate = self._gate()
+        v = gate.validate({
+            "asset": "BTC-USD",
+            "notional_usd": float("nan"),
+            "risk_usd": 1.0,
+        })
+        self.assertFalse(v.ok)
+        self.assertIn("non_finite_notional_or_risk", v.reason)
+
+    def test_nan_risk_rejected(self):
+        gate = self._gate()
+        v = gate.validate({
+            "asset": "BTC-USD",
+            "notional_usd": 10.0,
+            "risk_usd": float("nan"),
+        })
+        self.assertFalse(v.ok)
+        self.assertIn("non_finite_notional_or_risk", v.reason)
+
+    def test_inf_notional_rejected(self):
+        gate = self._gate()
+        v = gate.validate({
+            "asset": "BTC-USD",
+            "notional_usd": float("inf"),
+            "risk_usd": 1.0,
+        })
+        self.assertFalse(v.ok)
+        self.assertIn("non_finite_notional_or_risk", v.reason)
+
+    def test_negative_inf_risk_rejected(self):
+        gate = self._gate()
+        v = gate.validate({
+            "asset": "BTC-USD",
+            "notional_usd": 10.0,
+            "risk_usd": float("-inf"),
+        })
+        self.assertFalse(v.ok)
+        self.assertIn("non_finite_notional_or_risk", v.reason)
+
+    def test_finite_zero_still_works(self):
+        """
+        Regression guard: the C3 fix must NOT change behavior for
+        legitimate zero notional (a $0 trade is not a NaN and should
+        be evaluated normally). $0 notional is below max_position_usd
+        so it should pass the per-trade cap and only fail later checks
+        (which is fine — the test just confirms we don't reject $0).
+        """
+        gate = self._gate()
+        v = gate.validate({
+            "asset": "BTC-USD",
+            "notional_usd": 0.0,
+            "risk_usd": 0.0,
+        })
+        # $0 notional passes per-trade cap; daily-loss cap (0+0 > 5) is False; exposure (0+0 > 100) is False.
+        # So it should pass.
+        self.assertTrue(v.ok, f"$0 trade should pass: {v.reason}")
+
+
 if __name__ == "__main__":
     unittest.main()

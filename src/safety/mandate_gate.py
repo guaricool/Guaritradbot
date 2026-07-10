@@ -27,6 +27,7 @@ NO muta estado. Es una clase pura de validación.
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Set, Optional
+import math
 import time
 
 
@@ -141,6 +142,19 @@ class MandateGate:
         asset = trade_proposal.get("asset", "")
         notional = float(trade_proposal.get("notional_usd", 0.0))
         risk = float(trade_proposal.get("risk_usd", 0.0))
+
+        # Sprint 43 C3 fix: reject NaN/Inf BEFORE running the cap checks.
+        # Python's `NaN > x` returns False, so a NaN notional would
+        # silently pass all 3 caps (per-trade, daily loss, total exposure)
+        # and the mandate would approve a trade whose size is undefined.
+        # This is a fail-open vulnerability: the audit agent could be
+        # convinced the mandate is working, while in reality every check
+        # returns False and the proposal slips through.
+        if not (math.isfinite(notional) and math.isfinite(risk)):
+            return MandateVerdict(
+                ok=False,
+                reason=f"non_finite_notional_or_risk:notional={notional!r},risk={risk!r}",
+            )
 
         # 1. Universe
         if self.config.allowed_symbols and asset not in self.config.allowed_symbols:
