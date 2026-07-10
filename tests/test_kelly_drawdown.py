@@ -198,7 +198,6 @@ class DrawdownKillSwitchTest(unittest.TestCase):
         self.assertEqual(state.current_equity, 108.0)
         self.assertAlmostEqual(state.drawdown_pct, -10.0, places=2)
         self.assertFalse(state.triggered)
-        self.assertEqual(state.cooldown_hours, 24.0)
 
     def test_zero_equity_no_crash(self):
         """Edge case: zero equity should not crash (avoid div by zero)."""

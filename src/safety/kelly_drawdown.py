@@ -107,13 +107,13 @@ def kelly_fraction(
 
 @dataclass
 class DrawdownState:
-    """Estado del drawdown tracker."""
+    """Estado del drawdown tracker (snapshot derivado, no persistente).
+    Note: `triggered_at` lives on DrawdownKillSwitch instance, not here —
+    DrawdownState is a derived snapshot for the caller, not a duplicate store."""
     peak_equity: float
     current_equity: float
     drawdown_pct: float  # negative or 0
     triggered: bool       # True if kill switch is active
-    triggered_at: Optional[float] = None  # unix ts when triggered
-    cooldown_hours: float = 24.0  # how long to stay paused
 
 
 class DrawdownKillSwitch:
@@ -133,9 +133,9 @@ class DrawdownKillSwitch:
         ds = DrawdownKillSwitch(threshold_pct=15.0, cooldown_hours=24.0)
         # ... on each cycle:
         for snapshot in tracker.history:
-            ds.update(snapshot.total_equity)
-        if ds.is_triggered():
-            print(f"Kill switch active: {ds.state().drawdown_pct:.2f}% drawdown")
+            state = ds.update(snapshot.total_equity)
+        if state.triggered:
+            print(f"Kill switch active: {state.drawdown_pct:.2f}% drawdown")
             # skip trading
     """
 
@@ -188,8 +188,6 @@ class DrawdownKillSwitch:
             current_equity=current_equity,
             drawdown_pct=drawdown_pct,
             triggered=self.triggered,
-            triggered_at=self.triggered_at,
-            cooldown_hours=self.cooldown_hours,
         )
 
     def is_triggered(self) -> bool:
@@ -200,18 +198,3 @@ class DrawdownKillSwitch:
         """Manually reset the kill switch (e.g., user override)."""
         self.triggered = False
         self.triggered_at = None
-
-    def state(self) -> DrawdownState:
-        """Returns current state without updating."""
-        drawdown_pct = 0.0
-        if self.peak_equity > 0:
-            drawdown_pct = ((self.peak_equity - self.peak_equity) / self.peak_equity) * 100.0
-        # Use a synthetic "current" = peak for the read-only case
-        return DrawdownState(
-            peak_equity=self.peak_equity,
-            current_equity=self.peak_equity,  # placeholder
-            drawdown_pct=drawdown_pct,
-            triggered=self.triggered,
-            triggered_at=self.triggered_at,
-            cooldown_hours=self.cooldown_hours,
-        )
