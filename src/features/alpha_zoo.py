@@ -20,11 +20,14 @@ Design choices:
 - Optional: only compute selected categories (momentum_only=True) for speed
 """
 from __future__ import annotations
+import logging
 import pandas as pd
 import numpy as np
 
 # The `ta` library imports per-category
 from ta import momentum, trend, volatility, volume
+
+_log = logging.getLogger(__name__)
 
 
 def compute_alpha_features(
@@ -114,7 +117,7 @@ def compute_alpha_features(
             out["alpha_ppo_signal"] = ppo.ppo_signal()
             out["alpha_ppo_hist"] = ppo.ppo_hist()
         except Exception as e:
-            print(f"[alpha_zoo] momentum indicators failed: {e}")
+            _log.warning("alpha_zoo: momentum indicators failed: %s", e)
 
     # === TREND ===
     if include_trend:
@@ -155,7 +158,7 @@ def compute_alpha_features(
             # KAMA (Kaufman Adaptive MA) — adaptive trend strength
             out["alpha_kama"] = momentum.KAMAIndicator(out["Close"], window=10, pow1=2, pow2=30).kama()
         except Exception as e:
-            print(f"[alpha_zoo] trend indicators failed: {e}")
+            _log.warning("alpha_zoo: trend indicators failed: %s", e)
 
     # === VOLATILITY ===
     if include_volatility:
@@ -185,7 +188,7 @@ def compute_alpha_features(
             drawdown = (out["Close"] - rolling_max) / rolling_max
             out["alpha_ulcer_index"] = np.sqrt((drawdown ** 2).rolling(window=14).mean())
         except Exception as e:
-            print(f"[alpha_zoo] volatility indicators failed: {e}")
+            _log.warning("alpha_zoo: volatility indicators failed: %s", e)
 
     # === VOLUME ===
     if include_volume and has_volume:
@@ -215,7 +218,7 @@ def compute_alpha_features(
                 / out["Volume"].rolling(window=20).sum()
             )
         except Exception as e:
-            print(f"[alpha_zoo] volume indicators failed: {e}")
+            _log.warning("alpha_zoo: volume indicators failed: %s", e)
 
     return out
 
