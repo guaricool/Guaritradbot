@@ -1897,17 +1897,33 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### ⚙️ Cockpit Controls")
 
+    # Sprint 43 M7 fix: the previous version declared these vars
+    # inside `with st.sidebar:` and read them in the main area
+    # (B026/B029 lesson learned — the old comment even says so).
+    # Streamlit's `with` block creates a scope, and the audit
+    # caught that 4 new variables had the same bug. Now we
+    # write to st.session_state, which is the proper way to
+    # share state between the sidebar and the main area in
+    # Streamlit.
     refresh_sec = st.selectbox(
         "Auto-refresh (live ticks)",
         options=[2, 5, 10, 15, 30, 60, 0],
         index=1,
         format_func=lambda x: "Off" if x == 0 else f"{x}s",
+        key="sidebar_refresh_sec",
         help="How often the dashboard refreshes. 5s default = real-time feel.",
     )
+    st.session_state["refresh_sec"] = refresh_sec
 
-    show_news_panel = st.checkbox("News slide-out panel", value=False)
-    show_signals = st.checkbox("Show raw signal JSON", value=False)
-    show_audit = st.checkbox("Show audit feed", value=True)
+    show_news_panel = st.checkbox("News slide-out panel",
+                                    value=False, key="sidebar_show_news_panel")
+    st.session_state["show_news_panel"] = show_news_panel
+    show_signals = st.checkbox("Show raw signal JSON",
+                                value=False, key="sidebar_show_signals")
+    st.session_state["show_signals"] = show_signals
+    show_audit = st.checkbox("Show audit feed",
+                              value=True, key="sidebar_show_audit")
+    st.session_state["show_audit"] = show_audit
 
     st.markdown("---")
     st.markdown("### 📊 Config")
@@ -2497,6 +2513,14 @@ if open_positions and _mandate_enabled:
 # tick (2s) for live streaming regardless of the user's selected refresh.
 # This is non-disruptive: the user's setting is honored once positions
 # close. Overrides the refresh_sec UI when at least one position is open.
+# Sprint 43 M7 fix: read from session_state (B026/B029 lesson)
+# instead of relying on a variable that was declared inside the
+# `with st.sidebar:` block. Defaults match the sidebar's defaults
+# so the first render (before any user interaction) still works.
+refresh_sec = st.session_state.get("refresh_sec", 5)
+show_news_panel = st.session_state.get("show_news_panel", False)
+show_signals = st.session_state.get("show_signals", False)
+show_audit = st.session_state.get("show_audit", True)
 if open_positions and refresh_sec > 2:
     effective_refresh_sec = 2
 else:

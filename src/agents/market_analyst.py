@@ -124,21 +124,48 @@ def _bollinger(df: pd.DataFrame, period: int = 20, std_dev: float = 2.0) -> tupl
     std = close.rolling(period).std()
     upper = middle + std_dev * std
     lower = middle - std_dev * std
-    return (upper.bfill(), middle.bfill(), lower.bfill())
+    # Sprint 43 L6 fix: don't bfill() the warmup-period NaNs.
+    # bfill retroactively fills the oldest historical bars with
+    # values from LATER bars — a form of look-ahead that biases
+    # any backtest running on this data. The decision-bar (the
+    # most recent bar) is unaffected, but the first `period`
+    # bars get contaminated. We leave the NaNs in place and let
+    # downstream consumers (which already handle NaN via the
+    # Sprint 43 C3 isfinite checks) deal with them. If a
+    # specific caller needs a value for those early bars, they
+    # can fill explicitly with a documented method (e.g. .ffill()
+    # for forward-only fill, or NaN to mean "warmup incomplete").
+    return (upper, middle, lower)
 
 
 def _support_resistance(df: pd.DataFrame, window: int = 50) -> tuple:
     """
     Soporte y resistencia dinámicos (rolling max/min). Inspirado en el Manual.
     Útil para identificar niveles clave donde el precio puede revertir.
+
+    Sprint 43 L6 fix: no bfill() — see the comment in _bollinger.
     """
     resistance = df["High"].rolling(window).max()
     support = df["Low"].rolling(window).min()
-    return (support.bfill(), resistance.bfill())
+    return (support, resistance)
 
 
 def _resample_ohlcv(df_60m: pd.DataFrame, rule: str) -> pd.DataFrame:
-    """Resample OHLCV 60m → 4h (o lo que sea)."""
+    """Resample OHLCV 60m → 4h (o lo que sea).
+
+    Sprint 43 H12 fix: drop the current in-progress bar from the
+    resampled output. Without this fix, a 60m bar at 14:30 was
+    being included in the 12:00-16:00 4h bucket that was only
+    2.5h old, making the 4h Open/High/Low/Close a mix of
+    historical + live-in-progress data. The 4h indicator derived
+    from that bar would change intra-bar as new 60m ticks
+    arrived, which is wrong for any "I want to act on a closed
+    4h bar" use case.
+    Now: we drop the last (in-progress) bucket. The historical
+    4h bars are still there; the current partial one is
+    excluded. If the caller wants the partial for display
+    purposes, they can ask explicitly.
+    """
     if df_60m.empty:
         return df_60m
     agg = {
@@ -148,11 +175,54 @@ def _resample_ohlcv(df_60m: pd.DataFrame, rule: str) -> pd.DataFrame:
         "Close": "last",
         "Volume": "sum",
     }
-    return (
+    resampled = (
         df_60m.resample(rule)
         .agg(agg)
         .dropna(subset=["Close"])
     )
+    if resampled.empty:
+        return resampled
+    # Drop the last (in-progress) bar. We detect "in-progress"
+    # by COUNTING how many source bars actually landed in the
+    # last bucket. A complete 4h bucket of 60m bars has 4
+    # source rows; a 3h-in-progress bucket has 3. The simple
+    # "is the bucket end in the future" check was wrong
+    # because a complete bucket [04:00, 08:00) with 60m bars
+    # at 04, 05, 06, 07 has end 08:00 and last 60m at 07:00
+    # — 08:00 > 07:00, but the bucket IS complete.
+    try:
+        last_bucket_start = resampled.index[-1]
+        rule_seconds = pd.Timedelta(_rule_to_timedelta(rule)).total_seconds()
+        # How many 60m bars are in the last bucket?
+        last_bucket_60m_bars = df_60m[
+            (df_60m.index >= last_bucket_start) &
+            (df_60m.index < last_bucket_start + pd.Timedelta(seconds=rule_seconds))
+        ]
+        # Expected number of 60m bars in a complete bucket.
+        # For rule "4h": rule_seconds=14400, expected=4 hourly bars.
+        # For rule "1h": rule_seconds=3600, expected=1.
+        # For rule "1d": rule_seconds=86400, expected=24.
+        expected_bars = int(rule_seconds // 3600) or 1  # floor of hours
+        if len(last_bucket_60m_bars) < expected_bars:
+            # In-progress — drop it
+            resampled = resampled.iloc[:-1]
+    except Exception:
+        # If we can't parse the rule (unusual), fall back to
+        # the old behavior (drop nothing). Better to show a
+        # partial bar than to drop everything.
+        pass
+    return resampled
+
+
+def _rule_to_timedelta(rule: str) -> str:
+    """Convert a pandas resample rule (e.g. '4h', '1D') to a
+    Timedelta-parseable string (e.g. '4h', '1D').
+    This is a pass-through — pandas accepts the same rule
+    format for Timedelta. The helper exists so the H12 fix
+    has a single point to extend if we ever need to handle
+    weird rules (e.g. '1M' for month-end).
+    """
+    return rule
 
 
 class MarketAnalystAgent(Component):

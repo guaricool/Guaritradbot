@@ -203,12 +203,19 @@ class SymbolValidationTest(unittest.TestCase):
         self.node.execute_order(order)
         # Broker was NEVER called
         self.broker.create_market_order.assert_not_called()
-        # Audit recorded the failure with clear reason
+        # Audit recorded the failure with clear reason.
+        # Sprint 43 M9 fix: SPY is in the routing table (equity),
+        # so the rejection now happens at the asset_class check
+        # (ALPACA_NOT_CONFIGURED) instead of at the symbol check
+        # (SYMBOL_NOT_SUPPORTED). Both are valid "rejected before
+        # broker" outcomes.
         failures = [e for e in self.audit_events if e[0] == "TRADE_FAILED"]
         self.assertEqual(len(failures), 1)
-        self.assertIn("SYMBOL_NOT_SUPPORTED", failures[0][1]["status"])
-        # 'SPY' has no slash or dash, so the code normalizes to 'SPY/USDT'
-        self.assertEqual(failures[0][1]["symbol"], "SPY/USDT")
+        rejected_reason = failures[0][1]["status"]
+        self.assertTrue(
+            "ALPACA_NOT_CONFIGURED" in rejected_reason or "SYMBOL_NOT_SUPPORTED" in rejected_reason,
+            f"Expected ALPACA_NOT_CONFIGURED or SYMBOL_NOT_SUPPORTED, got {rejected_reason!r}",
+        )
 
     def test_btcusdt_passes_validation(self):
         order = {

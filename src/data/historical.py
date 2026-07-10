@@ -1,65 +1,47 @@
-import ccxt
-import pandas as pd
-import datetime
-import time
+"""
+Sprint 43 M10 — DEPRECATED module.
 
-def fetch_historical_data(symbol: str, timeframe: str, since: str, limit: int = 1000) -> pd.DataFrame:
-    """
-    Downloads historical OHLCV data from Binance using CCXT.
-    
-    Args:
-        symbol: The trading pair (e.g., 'BTC/USDT')
-        timeframe: The timeframe (e.g., '1d', '1h', '15m')
-        since: The start date as a string (e.g., '2023-01-01T00:00:00Z')
-        limit: Number of candles per request (max 1000 for Binance)
-        
-    Returns:
-        pd.DataFrame: A DataFrame with OHLCV data.
-    """
-    exchange = ccxt.kraken({
-        'enableRateLimit': True,
-    })
-    
-    since_timestamp = exchange.parse8601(since)
-    all_ohlcv = []
-    
-    print(f"Descargando datos para {symbol} ({timeframe}) desde {since}...")
-    
-    while True:
-        try:
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, since_timestamp, limit)
-            if not len(ohlcv):
-                break
-                
-            all_ohlcv.extend(ohlcv)
-            since_timestamp = ohlcv[-1][0] + 1  # Get the next timestamp
-            
-            # Binance sometimes returns exactly limit, sometimes less if it's the end
-            if len(ohlcv) < limit:
-                break
-                
-            # Prevent hitting rate limits aggressively
-            time.sleep(0.1)
-            
-        except Exception as e:
-            print(f"Error descargando datos: {e}")
-            break
-            
-    if not all_ohlcv:
-        print("No se encontraron datos.")
-        return pd.DataFrame()
-        
-    df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df.set_index('timestamp', inplace=True)
-    
-    print(f"Descarga completada: {len(df)} velas descargadas.")
-    return df
+The docstring claimed "Binance via CCXT" but the code actually
+instantiates `ccxt.kraken(...)`. If anyone imported this and
+expected Binance data, they'd silently get Kraken data (which
+might support different pairs or have different rates).
 
-if __name__ == "__main__":
-    # Test the function
-    df = fetch_historical_data("BTC/USDT", "1d", "2023-01-01T00:00:00Z")
-    print(df.head())
-    print(df.tail())
-    df.to_csv("btc_usdt_1d.csv")
-    print("Guardado en btc_usdt_1d.csv")
+No one imports this file in production — the live historical
+fetcher is part of `market_analyst.fetch_and_analyze()`. Kept
+here only for reference, with the active code DISABLED so the
+Kraken/Binance mismatch can't be reintroduced by an
+unwitting `from src.data.historical import ...`.
+
+The `fetch_historical_data` function below is preserved for
+reference but raises NotImplementedError when called.
+"""
+# import ccxt
+# import pandas as pd
+# import datetime
+# import time
+
+
+def fetch_historical_data(symbol: str, timeframe: str, since: str, limit: int = 1000) -> "pd.DataFrame":
+    raise NotImplementedError(
+        "src/data/historical.py is deprecated AND BROKEN: the "
+        "docstring says Binance but the code uses ccxt.kraken. "
+        "Use src.agents.market_analyst for the live historical "
+        "fetch (which routes to the correct exchange per asset). "
+        "If you need raw historical data, use ccxt.binanceus or "
+        "ccxt.binance directly with explicit error handling."
+    )
+
+
+# Original code preserved below for reference. UNCOMMENT AT YOUR
+# OWN RISK — re-enabling reintroduces the Kraken/Binance
+# mismatch that the audit flagged as a latent bug.
+#
+# import ccxt
+# import pandas as pd
+# import datetime
+# import time
+#
+# def fetch_historical_data(symbol, timeframe, since, limit=1000):
+#     """DEPRECATED: docstring said Binance but used ccxt.kraken."""
+#     exchange = ccxt.kraken({'enableRateLimit': True})
+#     ... (deprecated, see market_analyst)

@@ -1,42 +1,50 @@
-import yfinance as yf
-import pandas as pd
-import os
+"""
+Sprint 43 M10 — DEPRECATED module.
+
+This file is no longer imported by the bot. The live path uses
+`market_analyst.safe_yf_download()` (in src/agents/market_analyst.py)
+which has retry + curl_cffi + the B015 bug fix.
+
+Kept here as a historical reference / standalone CLI for one-off
+downloads, but with the imports and `__main__` block DISABLED so
+that any future import attempt that accidentally brings this code
+into the live path doesn't reintroduce the B015 bug (no retry /
+backoff / curl_cffi). To run a one-off download, use:
+
+  python -c "from src.data import download; download.download_data(...)"
+
+(after un-commenting the import / main block).
+
+The `download_data` function below is preserved for reference
+but is no longer executed.
+"""
+# import yfinance as yf
+# import pandas as pd
+# import os
+
 
 def download_data(ticker, interval, start_date=None, end_date=None, period="60d"):
-    """
-    Downloads historical data from Yahoo Finance.
-    Intervals can be '15m', '1h', '4h', '1d', etc.
-    Yahoo Finance limits 15m to 60 days, 1h to 730 days.
-    """
-    print(f"Downloading {ticker} at {interval} interval...")
-    df = yf.download(ticker, interval=interval, period=period, start=start_date, end=end_date)
-    
-    if df.empty:
-        print(f"Warning: No data found for {ticker} at {interval}.")
-        return df
+    raise NotImplementedError(
+        "src/data/download.py is deprecated. "
+        "Use src.agents.market_analyst.safe_yf_download instead, "
+        "which has retry + curl_cffi + the B015 bug fix."
+    )
 
-    # Flatten multi-index columns if present
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [col[0] for col in df.columns]
-        
-    df.reset_index(inplace=True)
-    df.rename(columns={'index': 'Datetime', 'Date': 'Datetime'}, inplace=True)
-    
-    # Save to CSV
-    os.makedirs('data_store', exist_ok=True)
-    file_path = f"data_store/{ticker}_{interval}.csv"
-    df.to_csv(file_path, index=False)
-    print(f"Saved {ticker} data to {file_path}")
-    return df
 
-if __name__ == "__main__":
-    # Test downloading the required assets
-    assets = {
-        'SPY': '15m',
-        'QQQ': '15m',
-        'BTC-USD': '1h',
-        'GLD': '1d', # Yahoo API limits 4h? Actually '1h' can be resampled to 4h, or '1d'. Let's use 1h for now and resample later if needed. '1h' works for 730 days. '1d' works max.
-        'USO': '1d'
-    }
-    for symbol, tf in assets.items():
-        download_data(symbol, interval=tf, period="60d")
+# Original code preserved below for reference. UNCOMMENT AT YOUR
+# OWN RISK — re-enabling the imports + the __main__ block
+# reintroduces the B015 bug (no retry, no curl_cffi, raw yf.download).
+#
+# import yfinance as yf
+# import pandas as pd
+# import os
+#
+# def download_data(ticker, interval, start_date=None, end_date=None, period="60d"):
+#     """
+#     Downloads historical data from Yahoo Finance.
+#     ... (deprecated)
+#     """
+#     ... (deprecated, see safe_yf_download)
+#
+# if __name__ == "__main__":
+#     ... (deprecated)
