@@ -367,6 +367,11 @@ def main():
     # Monkey-patch el scheduler.job para correr el monitor antes
     original_job = scheduler.job
 
+    # Sprint 34: per-position P&L update scheduler (hourly Telegram updates).
+    # Initialized lazily on the first job_with_monitor tick so the
+    # config["notifications"] block is available at construction time.
+    _pupdate_scheduler = None
+
     def job_with_monitor():
         # 1. Monitor: cierra stops/TPs antes que la nueva ronda
         try:
@@ -434,6 +439,50 @@ def main():
                             print(f"  [Equity] persist falló: {_persist_err}")
                     except Exception as eqe:
                         print(f"  [Equity] tracker update falló: {eqe}")
+
+                    # Sprint 34: hourly P&L update scheduler. Emits
+                    # POSITION_UPDATE events at the configured cadence
+                    # (default 60 min) per position. Skips silently if no
+                    # open positions or no prices available. The
+                    # NotificationAgent subscribed to POSITION_UPDATE
+                    # sends the actual Telegram message.
+                    try:
+                        from src.notifications.position_update_scheduler import (
+                            PositionUpdateScheduler,
+                        )
+                        nonlocal _pupdate_scheduler
+                        if _pupdate_scheduler is None:
+                            _pupdate_interval = int(
+                                config.get("notifications", {}).get(
+                                    "position_update_minutes", 60
+                                )
+                            )
+                            _pupdate_min_pnl = float(
+                                config.get("notifications", {}).get(
+                                    "position_update_min_pnl_usd", 0.0
+                                )
+                            )
+                            _pupdate_scheduler = PositionUpdateScheduler(
+                                position_repo=position_repo,
+                                event_bus=event_bus,
+                                interval_minutes=_pupdate_interval,
+                                min_pnl_usd=_pupdate_min_pnl,
+                            )
+                            print(
+                                f"  [PosUpdate] scheduler armed: "
+                                f"interval={_pupdate_interval}m, "
+                                f"min_pnl=${_pupdate_min_pnl:.2f}"
+                            )
+                        n_emitted = _pupdate_scheduler.tick(prices)
+                        if n_emitted:
+                            print(f"  [PosUpdate] emitted {n_emitted} update(s)")
+                        # Drop any closed positions from the cadence map
+                        open_ids = {p.position_id for p in position_repo.open()}
+                        for pid in list(_pupdate_scheduler._last_update.keys()):
+                            if pid not in open_ids:
+                                _pupdate_scheduler.clear_position(pid)
+                    except Exception as _pue:
+                        print(f"  [PosUpdate] scheduler falló: {_pue}")
         except Exception as e:
             print(f"[PositionMonitor] check falló: {e}")
 

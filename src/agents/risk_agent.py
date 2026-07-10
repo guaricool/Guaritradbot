@@ -318,6 +318,25 @@ class RiskManagerAgent:
                         "POSITION_OPENED",
                         {"position_id": pos.position_id, "asset": pos.asset, "qty": pos.qty, "notional_usd": pos.notional_usd},
                     )
+                # Sprint 34: emit TRADE_OPENED for the NotificationAgent to
+                # forward to Telegram. This is the canonical "position was
+                # actually added to the local repo" event — happens AFTER
+                # the broker fill (or after a paper trade is approved),
+                # so subscribers see consistent state.
+                if self.event_bus is not None:
+                    self.event_bus.publish("TRADE_OPENED", {
+                        "position_id": pos.position_id,
+                        "asset": pos.asset,
+                        "direction": pos.direction,
+                        "entry_price": pos.entry_price,
+                        "qty": pos.qty,
+                        "stop_loss": pos.stop_loss,
+                        "take_profit": pos.take_profit,
+                        "risk_usd": pos.risk_usd,
+                        "notional_usd": pos.notional_usd,
+                        "strategy": pos.strategy,
+                        "entry_ts": pos.entry_ts,
+                    })
 
             print(
                 f"  ✅ {trade['asset']:8} {direction:5} @ ${entry_price:>9.2f} | "

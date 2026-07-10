@@ -40,6 +40,15 @@ schedule:
 notifications:
   enabled: true
   provider: "telegram"
+  # Sprint 34: only notify when in live trading (mandate.enabled=true).
+  # Set to false if you want notifications in paper mode too (e.g. for testing).
+  live_only: true
+  # Cadence for the "hourly" P&L update while a position is open.
+  # 60 = once per hour per position. 0 = disable updates (entry/close only).
+  position_update_minutes: 60
+  # Skip P&L updates if unrealized P&L is below this USD (avoid noise on
+  # dust-sized positions). Set to 0 to always send.
+  position_update_min_pnl_usd: 0.0
 
 # === Sprint 0 (preview sin enforcement real; Sprint 1 lo enchufa) ===
 mandate:
