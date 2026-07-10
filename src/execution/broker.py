@@ -41,31 +41,49 @@ class BrokerClient:
         Obtiene el balance disponible. binance global usa USDT,
         binance.us usa USD. Aceptamos ambos.
 
-        Si falla o estamos en modo offline, retorna 100 por defecto.
+        Sprint 43 H1 fix: on any error, RAISE the exception instead
+        of silently returning 100.0. The audit flagged the old
+        "fallback to 100" behavior as a fail-open vulnerability:
+        if the broker call fails (network timeout, wrong API keys,
+        exchange down, etc.), the caller would size orders based
+        on imaginary money. A user with a $0 real balance could
+        see orders sized as if they had $100.
+
+        Callers that want a simulated fallback (e.g. for paper
+        mode or local dev) should catch the exception and decide
+        based on `GUARICO_ALLOW_SIMULATED_BALANCE`:
+          - True  → return a simulated value (caller's choice)
+          - False → re-raise or return None (production safe)
+
+        A genuine balance of $0 is returned as `0.0` (not raised)
+        — that's a valid state, not an error.
+
+        Returns:
+            float: the free USD-equivalent balance. May be 0.0 if
+                the account has no USD/USDT/BUSD/USDC free.
+        Raises:
+            ccxt.NetworkError, ccxt.ExchangeError, or any
+            underlying broker error.
         """
-        try:
-            balance = self.exchange.fetch_balance()
-            for sym in ("USD", "USDT", "BUSD", "USDC"):
-                if sym in balance:
-                    info = balance[sym]
-                    free = info.get("free") if isinstance(info, dict) else None
-                    if free is not None and float(free) > 0:
-                        return float(free)
-                    total = info.get("total") if isinstance(info, dict) else None
-                    if total is not None and float(total) > 0:
-                        return float(total)
-            # Try raw structure (some exchanges nest balances differently)
-            raw = balance.get("info", {}).get("balances", []) if isinstance(balance.get("info"), dict) else []
-            for entry in raw:
-                asset = entry.get("asset", "").upper()
-                if asset in ("USD", "USDT", "BUSD", "USDC"):
-                    free = float(entry.get("free", 0) or 0)
-                    if free > 0:
-                        return free
-            return 0.0
-        except Exception as e:
-            print(f"[BrokerClient] -> Error obteniendo balance: {e}. Usando balance simulado de 100.00")
-            return 100.0
+        balance = self.exchange.fetch_balance()
+        for sym in ("USD", "USDT", "BUSD", "USDC"):
+            if sym in balance:
+                info = balance[sym]
+                free = info.get("free") if isinstance(info, dict) else None
+                if free is not None and float(free) > 0:
+                    return float(free)
+                total = info.get("total") if isinstance(info, dict) else None
+                if total is not None and float(total) > 0:
+                    return float(total)
+        # Try raw structure (some exchanges nest balances differently)
+        raw = balance.get("info", {}).get("balances", []) if isinstance(balance.get("info"), dict) else []
+        for entry in raw:
+            asset = entry.get("asset", "").upper()
+            if asset in ("USD", "USDT", "BUSD", "USDC"):
+                free = float(entry.get("free", 0) or 0)
+                if free > 0:
+                    return free
+        return 0.0
             
     def create_market_order(self, symbol: str, side: str, amount: float):
         """

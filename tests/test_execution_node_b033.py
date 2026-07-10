@@ -94,6 +94,7 @@ class PaperModeGateTest(unittest.TestCase):
         self.node = ExecutionNode(
             self.bus,
             execution_mode="auto",
+            brokers_config={"crypto": {"symbols": ["BTC-USD"]}, "equity": {"symbols": []}},  # M9
             broker_client=self.broker,
             kill_switch=None,
             audit=self.audit,
@@ -184,6 +185,10 @@ class SymbolValidationTest(unittest.TestCase):
         self.node = ExecutionNode(
             self.bus,
             execution_mode="auto",
+            brokers_config={  # M9: routing table for tests
+                "crypto": {"symbols": ["BTC-USD", "BTC-USDT"]},
+                "equity": {"symbols": ["GLD", "SPY"]},
+            },
             broker_client=self.broker,
             kill_switch=None,
             audit=self.audit,
@@ -242,6 +247,7 @@ class NoBrokerTest(unittest.TestCase):
         audit.append.side_effect = lambda et, p: audit_events.append((et, p))
         node = ExecutionNode(
             bus, execution_mode="auto", broker_client=None,
+            brokers_config={"crypto": {"symbols": ["BTC-USD"]}, "equity": {"symbols": []}},  # M9
             kill_switch=None, audit=audit, mode_override_path=path,
         )
         order = {
@@ -269,6 +275,7 @@ class KillSwitchStillWorksTest(unittest.TestCase):
         broker = _make_broker(["BTC/USD"])
         node = ExecutionNode(
             bus, execution_mode="auto", broker_client=broker,
+            brokers_config={"crypto": {"symbols": ["BTC-USD"]}, "equity": {"symbols": []}},  # M9
             kill_switch=kill_switch, audit=audit, mode_override_path=path,
         )
         order = {
