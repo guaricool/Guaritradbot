@@ -1,6 +1,13 @@
 import ccxt
 import os
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    # Sprint 31 hardening: dotenv missing shouldn't crash the bot at startup.
+    # Fall back to a no-op loader so the bot can still try to read env vars
+    # already exported in the container (Coolify env_file).
+    def load_dotenv(*args, **kwargs):
+        return False
 
 class BrokerClient:
     """
