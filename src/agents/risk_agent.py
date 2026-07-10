@@ -328,44 +328,23 @@ class RiskManagerAgent:
                 )
 
             # --- Sprint 2: registrar posición abierta ---
-            if self.position_repo is not None:
-                import time
-                pos = Position(
-                    asset=trade["asset"],
-                    direction=direction,
-                    entry_price=entry_price,
-                    stop_loss=stop_loss,
-                    take_profit=take_profit,
-                    qty=float(quantity),
-                    risk_usd=risk_amount_usd_eff,
-                    entry_ts=time.time(),
-                    strategy=h.get("strategy", ""),
-                )
-                self.position_repo.add_open(pos)
-                if self.audit:
-                    self.audit.append(
-                        "POSITION_OPENED",
-                        {"position_id": pos.position_id, "asset": pos.asset, "qty": pos.qty, "notional_usd": pos.notional_usd},
-                    )
-                # Sprint 34: emit TRADE_OPENED for the NotificationAgent to
-                # forward to Telegram. This is the canonical "position was
-                # actually added to the local repo" event — happens AFTER
-                # the broker fill (or after a paper trade is approved),
-                # so subscribers see consistent state.
-                if self.event_bus is not None:
-                    self.event_bus.publish("TRADE_OPENED", {
-                        "position_id": pos.position_id,
-                        "asset": pos.asset,
-                        "direction": pos.direction,
-                        "entry_price": pos.entry_price,
-                        "qty": pos.qty,
-                        "stop_loss": pos.stop_loss,
-                        "take_profit": pos.take_profit,
-                        "risk_usd": pos.risk_usd,
-                        "notional_usd": pos.notional_usd,
-                        "strategy": pos.strategy,
-                        "entry_ts": pos.entry_ts,
-                    })
+            # Sprint 43 C5 fix: removed `position_repo.add_open()` +
+            # `audit.append(POSITION_OPENED)` + `event_bus.publish(TRADE_OPENED)`.
+            # These used to run here (in the `risk_evaluation` step), but
+            # the actual broker call happens in `execute_trades` AFTER
+            # risk_evaluation. If the broker call failed (timeout,
+            # ALPACA_NOT_CONFIGURED, SYMBOL_NOT_TRADEABLE, insufficient
+            # balance, etc.), we were leaving a "ghost" position in the
+            # repo that didn't exist on the broker — counting toward
+            # max_open_trades, toward mandate exposure, and getting
+            # watched by PositionMonitor for a non-existent SL/TP.
+            #
+            # The old comment claimed this happened "AFTER the broker
+            # fill" but that was a lie — the workflow has risk_evaluation
+            # BEFORE execute_trades. The persistence now happens in
+            # `ExecutionNode._persist_filled_position()` on the success
+            # path of the broker call. If the broker fails, the position
+            # is never added to the repo. No more ghosts.
 
             print(
                 f"  ✅ {trade['asset']:8} {direction:5} @ ${entry_price:>9.2f} | "

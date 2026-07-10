@@ -30,6 +30,9 @@ Sprint 36 (multi-broker) añade:
 """
 import json
 import os
+import time
+
+from src.data_store.positions import Position
 
 
 def _is_mandate_enabled(override_path: str = "audit/mode_override.json") -> bool:
@@ -68,6 +71,7 @@ class ExecutionNode:
         kill_switch=None,
         audit=None,
         mode_override_path="audit/mode_override.json",
+        position_repo=None,
     ):
         self.event_bus = event_bus
         self.execution_mode = execution_mode
@@ -77,6 +81,14 @@ class ExecutionNode:
         self.kill_switch = kill_switch
         self.audit = audit
         self.mode_override_path = mode_override_path
+        # Sprint 43 C5 fix: ExecutionNode now owns the position persistence
+        # (was previously owned by RiskManagerAgent). Adding a position
+        # to the repo is the LAST step of a successful fill, not part of
+        # the risk-evaluation phase. This eliminates "ghost positions" —
+        # entries that existed in the repo but never on the broker
+        # (because the broker call failed after risk_eval but before
+        # we had a chance to roll back).
+        self.position_repo = position_repo
         # Cached list of supported symbols on the broker (populated lazily
         # so we don't hammer the exchange API at construction time).
         self._supported_symbols_cache: list | None = None
@@ -89,6 +101,92 @@ class ExecutionNode:
             for sym in cfg.get("symbols", []) or []:
                 self._asset_to_class[sym] = asset_class
         self.event_bus.subscribe("ORDER_APPROVED", self.on_order_approved)
+
+    # ----------------------------------------------------------------------
+    # Sprint 43 C5 fix: position persistence on successful fill.
+    # ----------------------------------------------------------------------
+    def _persist_filled_position(self, order_data: dict, status: str):
+        """
+        Register a position in the repo AFTER the broker (or paper-mode
+        simulation) confirms the fill. Emits POSITION_OPENED audit and
+        TRADE_OPENED event for downstream consumers (NotificationAgent
+        → Telegram, PositionMonitor → SL/TP tracking).
+
+        CRITICAL: this is the ONLY place positions are added to the
+        repo. The previous design added them in `RiskManagerAgent`
+        (in the `risk_evaluation` step, BEFORE the broker call), which
+        created ghost positions when the broker call failed. Now the
+        repo is only updated when we have a confirmed fill (real or
+        simulated), so exposure / max_open_trades / mandate caps
+        always reflect ground truth.
+        """
+        if self.position_repo is None:
+            # Repos weren't injected (e.g. unit tests that only exercise
+            # the execution node's order routing). Skip persistence
+            # silently; tests that need persistence inject their own repo.
+            return
+        try:
+            qty = float(order_data.get("position_size", 0) or 0)
+            risk_usd = float(order_data.get("risk_usd", 0) or 0)
+            entry_price = float(order_data.get("entry_price", 0) or 0)
+            stop_loss = float(order_data.get("stop_loss", 0) or 0)
+            take_profit = float(order_data.get("take_profit", 0) or 0)
+            pos = Position(
+                asset=order_data.get("asset", "?"),
+                direction=order_data.get("direction", "long"),
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                qty=qty,
+                risk_usd=risk_usd,
+                entry_ts=time.time(),
+                strategy=order_data.get("strategy", ""),
+            )
+            self.position_repo.add_open(pos)
+            if self.audit:
+                self.audit.append(
+                    "POSITION_OPENED",
+                    {
+                        "position_id": pos.position_id,
+                        "asset": pos.asset,
+                        "qty": pos.qty,
+                        "notional_usd": pos.notional_usd,
+                        "status": status,
+                    },
+                )
+            if self.event_bus is not None:
+                self.event_bus.publish(
+                    "TRADE_OPENED",
+                    {
+                        "position_id": pos.position_id,
+                        "asset": pos.asset,
+                        "direction": pos.direction,
+                        "entry_price": pos.entry_price,
+                        "qty": pos.qty,
+                        "stop_loss": pos.stop_loss,
+                        "take_profit": pos.take_profit,
+                        "risk_usd": pos.risk_usd,
+                        "notional_usd": pos.notional_usd,
+                        "strategy": pos.strategy,
+                        "entry_ts": pos.entry_ts,
+                    },
+                )
+        except Exception as e:
+            # Persistence failure must NOT take down the broker path —
+            # the order has been filled, the position is real on the
+            # exchange. Log to audit and continue.
+            print(f"[ExecutionNode] ⚠️ _persist_filled_position failed: {e}")
+            if self.audit:
+                self.audit.append(
+                    "POSITION_PERSIST_FAILED",
+                    {
+                        "asset": order_data.get("asset"),
+                        "direction": order_data.get("direction"),
+                        "qty": order_data.get("position_size"),
+                        "status": status,
+                        "error": str(e),
+                    },
+                )
 
     def _resolve_broker(self, asset: str) -> tuple:
         """Return ``(broker, asset_class, broker_cfg)`` for the given asset.
@@ -256,6 +354,8 @@ class ExecutionNode:
                         "asset_class": asset_class,
                     },
                 )
+            # Sprint 43 C5: persist position only after confirmed fill.
+            self._persist_filled_position(order_data, status)
             return
 
         # === B033 fix: Paper-mode gate ===
@@ -294,6 +394,8 @@ class ExecutionNode:
                         "asset_class": asset_class,
                     },
                 )
+            # Sprint 43 C5: persist position only after confirmed fill.
+            self._persist_filled_position(order_data, status)
             return
 
         # === Dispatch to the right broker ===
@@ -380,6 +482,12 @@ class ExecutionNode:
                 "ORDER_EXECUTED",
                 {"status": status, "order": order_data, "asset_class": "crypto"},
             )
+        # Sprint 43 C5: only persist the position if the broker
+        # confirmed a fill. On FAILED status, no Position is added
+        # to the repo, so the exposure / max_open_trades / mandate
+        # caps remain consistent with ground truth.
+        if status.startswith("FILLED"):
+            self._persist_filled_position(order_data, status)
 
     def _execute_equity_order(self, order_data: dict, broker):
         """Route an equity/ETF order to the Alpaca broker.
@@ -467,3 +575,9 @@ class ExecutionNode:
                     "broker": "alpaca",
                 },
             )
+        # Sprint 43 C5: only persist the position if the broker
+        # confirmed a fill. On FAILED status, no Position is added
+        # to the repo, so the exposure / max_open_trades / mandate
+        # caps remain consistent with ground truth.
+        if status.startswith("FILLED"):
+            self._persist_filled_position(order_data, status)

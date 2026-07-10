@@ -341,6 +341,7 @@ def main():
         kill_switch=kill_switch,
         audit=audit,
         mode_override_path=override_path,  # B033: paper-mode gate
+        position_repo=position_repo,         # Sprint 43 C5: persist on confirmed fill
     )
     position_monitor = PositionMonitor(
         repo=position_repo,
