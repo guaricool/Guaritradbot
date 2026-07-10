@@ -534,6 +534,42 @@ class RiskManagerAgent:
                 f"no current price available; will retry next cycle"
             )
             return False
+
+        # Sprint 43 C4 fix: send the broker order FIRST. If the broker
+        # rejects/throws, the position stays open in the repo (it will
+        # be retried next cycle). Previously, `close_position` ran
+        # first and the broker failure was a silent no-op — the repo
+        # thought the position was closed and stopped watching it,
+        # while the exchange had no idea we wanted to close.
+        if self.broker is not None:
+            try:
+                side = "sell" if worst_pos.direction == "long" else "buy"
+                symbol = worst_pos.asset.replace("-", "/") if "-" in worst_pos.asset else worst_pos.asset
+                broker_order = self.broker.create_market_order(symbol, side, worst_pos.qty)
+                if isinstance(broker_order, dict) and broker_order.get("status") == "failed":
+                    raise RuntimeError(
+                        f"broker_rejected:{broker_order.get('error', 'unknown')}"
+                    )
+            except Exception as e:
+                msg = (f"[RiskManagerAgent] ⚠️ Broker FAILED cerrando {worst_pos.asset} "
+                       f"para replacement: {e}. Replacement aborted; position stays open.")
+                print(msg)
+                if self.audit:
+                    self.audit.append("REPLACEMENT_FAILED", {
+                        "worst_asset": worst_pos.asset,
+                        "new_asset": new_trade["asset"],
+                        "broker_error": str(e),
+                        "action": "worst_position_remains_open",
+                    })
+                if self.event_bus is not None:
+                    self.event_bus.publish("SYSTEM_ERROR", {
+                        "kind": "REPLACEMENT_FAILED",
+                        "worst_asset": worst_pos.asset,
+                        "new_asset": new_trade["asset"],
+                        "broker_error": str(e),
+                    })
+                return False  # do NOT close in repo, do NOT claim success
+
         closed = self.position_repo.close_position(
             worst_pos.position_id,
             close_price=close_price,
@@ -558,15 +594,6 @@ class RiskManagerAgent:
                 "delta_score": round(new_score - worst_score, 3),
                 "threshold": threshold,
             })
-
-        # Send a broker order for the close
-        if self.broker is not None:
-            try:
-                side = "sell" if closed.direction == "long" else "buy"
-                symbol = closed.asset.replace("-", "/") if "-" in closed.asset else closed.asset
-                self.broker.create_market_order(symbol, side, closed.qty)
-            except Exception as e:
-                print(f"[RiskManagerAgent] Error cerrando {closed.asset} para replacement: {e}")
 
         print(
             f"  🔄 REPLACED {closed.asset:8} {closed.direction:5} "

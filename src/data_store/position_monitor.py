@@ -165,17 +165,64 @@ class PositionMonitor:
         return closes
 
     def _execute_close(self, pos: Position, price: float, reason: str):
-        """Ejecuta cierre en broker + repo + audit/event_bus."""
-        # Si tenemos broker real, enviar orden opuesta
+        """Ejecuta cierre en broker + repo + audit/event_bus.
+
+        Sprint 43 C4 fix: the broker call now happens BEFORE the repo
+        mutation. If the broker rejects/throws, we DO NOT close the
+        position locally — leaving it open for the next monitoring
+        cycle to retry. The previous behavior marked the position
+        closed in the repo regardless of broker outcome, which meant
+        PositionMonitor would stop watching the SL/TP and the mandate
+        would stop counting it toward exposure, while the position
+        was still live on the exchange (or never opened in the first
+        place after a failed close attempt).
+
+        For paper mode (no broker), the existing behavior is preserved
+        (close_position is called directly) because there is no real
+        exchange to talk to.
+        """
+        # If we have a real broker, try to close on the exchange first.
         if self.broker is not None:
             try:
                 side = "sell" if pos.direction == "long" else "buy"
                 symbol = pos.asset.replace("-", "/") if "-" in pos.asset else pos.asset
-                self.broker.create_market_order(symbol, side, pos.qty)
+                broker_order = self.broker.create_market_order(symbol, side, pos.qty)
+                # Some broker adapters return a dict with a status;
+                # if it explicitly says "failed", treat as failure.
+                if isinstance(broker_order, dict) and broker_order.get("status") == "failed":
+                    raise RuntimeError(
+                        f"broker_rejected:{broker_order.get('error', 'unknown')}"
+                    )
             except Exception as e:
-                print(f"[PositionMonitor] Error cerrando {pos.asset} en broker: {e}")
-                # Aún así marcamos como cerrada localmente
-                pass
+                msg = f"[PositionMonitor] ⚠️ Broker FAILED cerrando {pos.asset} ({reason}): {e}. " \
+                      f"Position {pos.position_id} stays open in repo — will retry next cycle."
+                print(msg)
+                if self.audit is not None:
+                    self.audit.append(
+                        "CLOSE_FAILED",
+                        {
+                            "position_id": pos.position_id,
+                            "asset": pos.asset,
+                            "reason_attempted": reason,
+                            "broker_error": str(e),
+                            "action": "position_remains_open",
+                        },
+                    )
+                if self.event_bus is not None:
+                    # CLOSE_FAILED is a critical state — emit SYSTEM_ERROR
+                    # so NotificationAgent alerts via Telegram regardless
+                    # of paper/live mode.
+                    self.event_bus.publish(
+                        "SYSTEM_ERROR",
+                        {
+                            "kind": "CLOSE_FAILED",
+                            "position_id": pos.position_id,
+                            "asset": pos.asset,
+                            "reason_attempted": reason,
+                            "broker_error": str(e),
+                        },
+                    )
+                return None  # DO NOT close in repo
 
         closed = self.repo.close_position(pos.position_id, price, reason)
         if closed and self.audit is not None:
