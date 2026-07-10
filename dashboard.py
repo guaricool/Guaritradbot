@@ -352,6 +352,38 @@ CUSTOM_CSS = """
     display: none;
   }
 
+  /* B024 (2026-07-09): Carlos reported dark flash on Risk Settings sliders.
+     st.slider uses native HTML range inputs via baseweb. When you click
+     or drag the thumb, the browser applies a focus ring + track color
+     change that briefly darkens the slider. Fix: remove the focus outline,
+     prevent track color change on active, and ensure the container doesn't
+     dim. */
+  /* Container — no background change */
+  div[data-testid="stSlider"] {
+    background: transparent !important;
+  }
+  div[data-testid="stSlider"] > div {
+    background: transparent !important;
+  }
+  /* Thumb — keep our brand color, no focus darkening */
+  div[data-testid="stSlider"] [role="slider"] {
+    background-color: #4cc9f0 !important;
+    border: none !important;
+    box-shadow: 0 0 0 4px rgba(76, 201, 240, 0.15) !important;
+    outline: none !important;
+  }
+  div[data-testid="stSlider"] [role="slider"]:hover,
+  div[data-testid="stSlider"] [role="slider"]:focus,
+  div[data-testid="stSlider"] [role="slider"]:active {
+    background-color: #4cc9f0 !important;
+    box-shadow: 0 0 0 6px rgba(76, 201, 240, 0.25) !important;
+    outline: none !important;
+  }
+  /* Track — keep gradient, no darkening on active */
+  div[data-testid="stSlider"] [data-baseweb="slider"] > div {
+    background: transparent !important;
+  }
+
   /* ---------- signal cards ---------- */
   .signal-card {
     background: #1a1f3a;

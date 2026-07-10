@@ -1,6 +1,6 @@
 # Bugs Index
 
-23 bugs encontrados y corregidos. Severidad: 🔴 crítico (rompía runtime) | 🟠 medio | 🟡 menor
+24 bugs encontrados y corregidos. Severidad: 🔴 crítico (rompía runtime) | 🟠 medio | 🟡 menor
 
 | ID | Sev | Sprint | Bug | Fix |
 |----|-----|--------|-----|-----|
@@ -27,14 +27,15 @@
 | [[Bugs/B021_phantom_pnl_replacement]] | 🔴 | 18 patch | `_try_replace_position` usaba `entry_price` como fallback cuando no había precio fresco → cerraba a breakeven falso, audit corrupto | Abortar el replacement si no hay precio fresco; dejar que PositionMonitor cierre después |
 | [[Bugs/B022_smart_take_dead_code]] | 🔴 | 18 patch | `StrategyAgent` nunca emitía eventos `HYPOTHESIS_GENERATED` al audit → `check_with_signals` siempre recibía `signals=[]` → SMART_PROFIT_TAKE nunca se activaba | StrategyAgent ahora acepta `audit` y emite eventos con strength derivado |
 | [[Bugs/B023_dashboard_filter_button_flash]] | 🟡 | 18 patch | 5 botones `st.button()` separados para los filtros de Smart Signals causaban un dark flash nativo de Streamlit al hacer click | Reemplazados por `st.radio` horizontal con CSS custom para verse como chips |
+| [[Bugs/B024_dashboard_slider_dark_flash]] | 🟡 | 22 patch | Click/arrastre en los 6 sliders de Risk Settings causaba un dark flash del browser/Streamlit (focus ring + track color change) | CSS neutraliza `:focus` y `:active` states, mantiene thumb con brand color y box-shadow |
 
 ## Stats
 
 - 🔴 Críticos: **13** (B001, B002, B003, B006, B013, B017, B018, B019, B020, B021, B022; el B015 era operacional pero mataba la portabilidad)
 - 🟠 Medios (estrategia/métricas incorrectas): **8**
-- 🟡 Menores: **2** (B016 uuid colisión, B023 dashboard flash)
+- 🟡 Menores: **3** (B016 uuid colisión, B023 filter flash, B024 slider flash)
 
-**Total: 23 bugs cerrados en 11 sprints.**
+**Total: 24 bugs cerrados en 12 sprints.**
 
 Sprint 18 cerró:
 - **3 bugs del audit team** (B017/B018/B019) — encontrados por análisis externo
