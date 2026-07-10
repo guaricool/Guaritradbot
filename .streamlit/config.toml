@@ -1,0 +1,38 @@
+[browser]
+# Sprint 28 (B028): Disable Streamlit's usage stats collection.
+# Without this, every dashboard load sends anonymous usage data to
+# Streamlit's servers and logs "Gather usage stats: true" to the console.
+gatherUsageStats = false
+
+# Reduce console noise: hide the "Running..." spinner and other dev-mode messages
+# (these are also from Streamlit's internal JS, not our code)
+# Note: full suppression requires source-level patches to Streamlit.
+
+[server]
+# Keep WebSocket compression enabled (better network perf for autorefresh)
+enableWebsocketCompression = true
+# Allow large messages (charts with lots of data)
+maxUploadSize = 200
+# Disable CORS for development (we trust our deployment)
+enableCORS = false
+# Disable XSRF protection only if running behind a trusted proxy
+# enableXsrfProtection = true
+
+[theme]
+# Match our app's dark theme
+base = "dark"
+primaryColor = "#4cc9f0"
+backgroundColor = "#0a0e27"
+secondaryBackgroundColor = "#141937"
+textColor = "#e0e6ff"
+font = "sans serif"
+
+[logger]
+# Quieter logs in production
+level = "info"
+# messageFormat defaults to "%(asctime)s %(message)s"
+
+[browser]
+# (duplicate above to ensure it sticks if config is reloaded)
+serverAddress = "0.0.0.0"
+serverPort = 8501

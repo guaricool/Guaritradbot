@@ -1,6 +1,6 @@
 # Bugs Index
 
-28 bugs encontrados y corregidos. Severidad: 🔴 crítico (rompía runtime) | 🟠 medio | 🟡 menor
+29 bugs encontrados y corregidos. Severidad: 🔴 crítico (rompía runtime) | 🟠 medio | 🟡 menor
 
 | ID | Sev | Sprint | Bug | Fix |
 |----|-----|--------|-----|-----|
@@ -32,6 +32,7 @@
 | [[Bugs/B025_dashboard_silent_paper_positions]] | 🔴 | 25 | Carlos: "cuando cambio a live no me dice nada de las entradas en paper". El checklist de Sprint 22 no corría porque `mode_override` solo cambiaba `mandate_enabled` pero no `use_testnet` → checklist se saltaba. Dashboard no mostraba las paper positions. | Sprint 25 fix: dashboard muestra banner prominent con paper positions + botón "Clean Paper Positions" en sidebar; bot loguea paper positions al startup; checklist corre cuando hay paper positions + mandate enabled (no solo live); override se actualiza si el checklist aborta |
 | [[Bugs/B026_dashboard_positions_nameerror]] | 🟠 | 26 patch | El botón "Clean Paper Positions" en el sidebar referenciaba `positions` que se carga DESPUÉS del sidebar → `NameError: name 'positions' is not defined` al abrir el dashboard | Cargar positions desde JSON directamente en variable local `_sidebar_pp` dentro del bloque del sidebar |
 | [[Bugs/B027_dashboard_accessibility_csp_warnings]] | 🟡 | 27 | Browser DevTools mostraba 4 categorías de warnings: CSP bloquea `eval`, form field sin id/name, autocomplete vacío, sin label asociado. Algunos son limitaciones de Streamlit 1.36. | Inyectar `<meta>` tags via `st.components.v1.html` con CSP permisivo (`unsafe-eval` para Streamlit, `unsafe-inline` para CSS) + meta tags de accessibility (`theme-color`, `color-scheme`, `format-detection`) + CSS para `autocomplete=off` |
+| [[Bugs/B028_streamlit_console_warnings]] | 🟡 | 28 | Console mostraba 9+ warnings: "Gather usage stats: true" + 8 "Unrecognized feature" (ambient-light-sensor, battery, document-domain, layout-animations, etc.) + iframe sandbox warning del streamlit_autorefresh component. Todos vienen del bundle JS compilado de Streamlit 1.36. | `gatherUsageStats = false` en `.streamlit/config.toml` elimina el telemetry warning. Los 8 "Unrecognized feature" + iframe sandbox son limitaciones de Streamlit 1.36 (no se pueden parchear sin upgrade). |
 
 ## Stats
 
