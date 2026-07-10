@@ -46,7 +46,7 @@ def _audit_path(config: dict) -> str:
     return os.path.join(audit_dir, "audit.jsonl")
 
 
-def _build_mandate(config: dict, audit, position_repo=None) -> tuple:
+def _build_mandate(config: dict, audit, position_repo=None, event_bus=None) -> tuple:
     cfg = config.get("mandate", {})
     if not cfg.get("enabled", False):
         return (None, None)
@@ -57,7 +57,7 @@ def _build_mandate(config: dict, audit, position_repo=None) -> tuple:
         max_daily_loss_usd=float(cfg.get("max_daily_loss_usd", 5.0)),
         max_total_exposure_usd=float(cfg.get("max_total_exposure_usd", 100.0)),
     )
-    return (MandateGate(mc, audit_ledger=audit, position_repo=position_repo), mc)
+    return (MandateGate(mc, audit_ledger=audit, position_repo=position_repo, event_bus=event_bus), mc)
 
 
 def main():
@@ -309,10 +309,25 @@ def main():
         else:
             print(f"\n✅ Pre-flight passed. Live mode is GO.")
 
-    mandate_gate, mandate_cfg = _build_mandate(config, audit, position_repo=position_repo)
+    mandate_gate, mandate_cfg = _build_mandate(config, audit, position_repo=position_repo, event_bus=event_bus)
 
     if kill_switch.is_triggered():
         audit.append("BOT_START_BLOCKED_KILLSWITCH", {"reason": "kill_file_present"})
+        # Sprint 43 C6 fix: the bot is refusing to start because someone
+        # (probably Carlos) dropped a kill file. This is a critical state
+        # that needs to be visible — if the bot dies silently Carlos may
+        # not know it's been killed. Publish SYSTEM_ERROR.
+        if event_bus is not None:
+            try:
+                event_bus.publish("SYSTEM_ERROR", {
+                    "kind": "BOT_START_BLOCKED_KILLSWITCH",
+                    "kill_switch_file": config.get("mandate", {}).get(
+                        "kill_switch_file", "/tmp/GUARITRADBOT_KILL"
+                    ),
+                    "error": "⛔ Bot startup BLOQUEADO por kill-switch (kill file presente)",
+                })
+            except Exception as e:
+                print(f"[Main] ⚠️ No se pudo publicar SYSTEM_ERROR en startup: {e}")
         print("⛔ Kill switch armado al startup — bot no arranca.")
         return
 

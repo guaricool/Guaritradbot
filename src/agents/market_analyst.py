@@ -321,6 +321,22 @@ class MarketAnalystAgent(Component):
             self.degrade(f"{fail_count} feeds failed but workflow continues")
         elif fail_count >= len(assets) * len(timeframes):
             self.fault(f"all {fail_count} feeds failed")
+            # Sprint 43 C6 fix: total data-feed failure is a critical
+            # state — the bot has no market context. Without this
+            # alert Carlos would only know if he happened to look at
+            # the dashboard. SYSTEM_ERROR → NotificationAgent →
+            # Telegram, regardless of paper/live.
+            if self.event_bus is not None:
+                try:
+                    self.event_bus.publish("SYSTEM_ERROR", {
+                        "kind": "MARKET_DATA_TOTAL_FAILURE",
+                        "fail_count": fail_count,
+                        "assets_requested": len(assets) * len(timeframes),
+                        "error": (f"📉 Market data: TODOS los {fail_count} feeds fallaron. "
+                                  f"Bot operando a ciegas."),
+                    })
+                except Exception as e:
+                    print(f"[MarketAnalyst] ⚠️ No se pudo publicar SYSTEM_ERROR: {e}")
         else:
             self.recover()
 

@@ -255,11 +255,30 @@ class NotificationAgent:
         self.send_telegram_message(msg)
 
     def handle_error(self, event_data: dict):
-        """Critical error notification. Always fires, even in paper mode."""
+        """Critical error notification. Always fires, even in paper mode.
+
+        Sprint 43 C6 fix: handle two payload shapes gracefully:
+          1. The legacy shape: `{"error": "human-readable message"}`
+          2. The new shape from C4/C5/C6 publishers:
+             `{"kind": "MANDATE_DAILY_LOSS_CAP", "error": "...", ...}`
+             We prefer the `error` key but fall back to rendering
+             `kind` + the full payload as a JSON dump if no error key
+             was provided. This way the audit's C6 requirement is met
+             even for old publishers that only send structured data.
+        """
         if not self.enabled:
             return
 
-        error_msg = event_data.get("error", "Error desconocido")
+        error_msg = event_data.get("error")
+        if not error_msg:
+            kind = event_data.get("kind", "UNKNOWN")
+            import json
+            try:
+                # Filter out the kind we already used as title
+                detail = {k: v for k, v in event_data.items() if k != "kind"}
+                error_msg = f"{kind}\n<code>{json.dumps(detail, default=str, indent=2)[:1000]}</code>"
+            except Exception:
+                error_msg = f"{kind}: (no se pudo serializar payload)"
         msg = f"⚠️ <b>Alerta de Error Crítico</b>\n\n{error_msg}"
         self.send_telegram_message(msg)
 

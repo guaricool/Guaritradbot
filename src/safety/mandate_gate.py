@@ -49,16 +49,20 @@ class MandateVerdict:
 
 
 class MandateGate:
-    def __init__(self, config: MandateConfig, audit_ledger=None, position_repo=None):
+    def __init__(self, config: MandateConfig, audit_ledger=None, position_repo=None, event_bus=None):
         """
         Args:
             config: Mandate limits
             audit_ledger: optional, used as fallback if position_repo missing
             position_repo: preferred source of truth for exposure + realized PnL
+            event_bus: optional, used to publish SYSTEM_ERROR (Sprint 43 C6)
+                       so NotificationAgent alerts when the mandate
+                       blocks a trade (daily-loss cap, exposure cap, etc.)
         """
         self.config = config
         self.audit = audit_ledger
         self.position_repo = position_repo
+        self.event_bus = event_bus
 
     def _daily_loss_usd(self, now_ts: float | None = None) -> float:
         """
@@ -165,29 +169,61 @@ class MandateGate:
 
         # 2. Per-trade size
         if notional > self.config.max_position_usd:
-            return MandateVerdict(
+            verdict = MandateVerdict(
                 ok=False,
                 reason=f"notional_exceeds_max:${notional:.2f}>${self.config.max_position_usd:.2f}",
             )
+            self._publish_system_error("MANDATE_NOTIONAL_EXCEEDED", {
+                "asset": asset,
+                "notional_usd": notional,
+                "max_position_usd": self.config.max_position_usd,
+                "error": f"🚫 Mandate reject: {asset} notional ${notional:.2f} > max ${self.config.max_position_usd:.2f}",
+            })
+            return verdict
 
         # 3. Daily loss rolling 24h (REALIZED P&L — Sprint 18 fix)
         daily_loss = self._daily_loss_usd()
         if daily_loss + risk > self.config.max_daily_loss_usd:
-            return MandateVerdict(
+            verdict = MandateVerdict(
                 ok=False,
                 reason=f"daily_loss_cap:${daily_loss + risk:.2f}>${self.config.max_daily_loss_usd:.2f}",
                 daily_loss_so_far_usd=daily_loss,
             )
+            # Sprint 43 C6 fix: daily_loss_cap is a critical state —
+            # the bot is killing itself until losses roll off. Carlos
+            # must know. SYSTEM_ERROR bypasses the live gate so it
+            # reaches Telegram even in paper mode.
+            self._publish_system_error("MANDATE_DAILY_LOSS_CAP", {
+                "asset": asset,
+                "daily_loss_usd": daily_loss,
+                "trade_risk_usd": risk,
+                "max_daily_loss_usd": self.config.max_daily_loss_usd,
+                "error": (f"🛑 Daily loss cap: {asset} blocked. "
+                          f"Daily ${daily_loss:.2f} + risk ${risk:.2f} > "
+                          f"max ${self.config.max_daily_loss_usd:.2f}"),
+            })
+            return verdict
 
         # 4. Total exposure (open positions + este trade) — REAL exposure (Sprint 18 fix)
         open_exp = self._open_exposure_usd()
         projected = open_exp + notional
         if projected > self.config.max_total_exposure_usd:
-            return MandateVerdict(
+            verdict = MandateVerdict(
                 ok=False,
                 reason=f"exposure_cap:${projected:.2f}>${self.config.max_total_exposure_usd:.2f}",
                 open_exposure_usd=open_exp,
             )
+            self._publish_system_error("MANDATE_EXPOSURE_CAP", {
+                "asset": asset,
+                "open_exposure_usd": open_exp,
+                "trade_notional_usd": notional,
+                "projected_exposure_usd": projected,
+                "max_total_exposure_usd": self.config.max_total_exposure_usd,
+                "error": (f"📊 Exposure cap: {asset} blocked. "
+                          f"Projected ${projected:.2f} > max "
+                          f"${self.config.max_total_exposure_usd:.2f}"),
+            })
+            return verdict
 
         return MandateVerdict(
             ok=True,
@@ -195,3 +231,23 @@ class MandateGate:
             daily_loss_so_far_usd=daily_loss,
             open_exposure_usd=open_exp,
         )
+
+    def _publish_system_error(self, kind: str, payload: dict):
+        """
+        Sprint 43 C6 helper: emit a SYSTEM_ERROR event so NotificationAgent
+        alerts via Telegram when the mandate blocks a trade. The kind
+        discriminator + the human-readable `error` string are both sent
+        so the notification agent can render a clean message regardless
+        of how it formats the payload.
+        """
+        if self.event_bus is not None:
+            try:
+                self.event_bus.publish("SYSTEM_ERROR", {"kind": kind, **payload})
+            except Exception as e:
+                # Event bus failure must NOT break the trade-validation
+                # path. The mandate verdict is still authoritative.
+                if self.audit is not None:
+                    self.audit.append("SYSTEM_ERROR_PUBLISH_FAILED", {
+                        "kind": kind,
+                        "error": str(e),
+                    })
