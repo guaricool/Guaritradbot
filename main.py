@@ -14,6 +14,9 @@ generar nuevas señales, take profit ATR-based, max_open_trades
 respetado por RiskAgent.
 """
 import os
+import sys
+import time
+import json
 import argparse
 
 import yaml
@@ -99,10 +102,14 @@ def main():
     # Sprint 12: mode_override.json takes precedence over config.yaml.
     # The dashboard writes here when the user toggles PAPER/LIVE.
     # This lets you flip modes WITHOUT editing config.yaml or restarting manually.
-    override_path = os.path.join(audit.path_dir, "mode_override.json") if hasattr(audit, "path_dir") else "audit/mode_override.json"
+    #
+    # B031 fix: `audit.path_dir` was a phantom attribute (AuditLedger only
+    # exposes `path` as a `Path` object). The hasattr check hid the dead
+    # branch but the code was misleading. Now we derive the dir from
+    # `audit.path.parent` — same source of truth as where the ledger lives.
+    override_path = str(audit.path.parent / "mode_override.json")
     if os.path.exists(override_path):
         try:
-            import json
             with open(override_path, "r", encoding="utf-8") as f:
                 mode_override = json.load(f)
             if "mandate_enabled" in mode_override:
@@ -125,11 +132,15 @@ def main():
     # Sprint 25 fix: ALWAYS show paper position count at startup.
     # Carlos: "cuando cambio a live no me dice nada de las entradas en paper"
     # → The bot was silent about open paper positions. Now it always prints.
+    #
+    # B031 fix: previous expression was inverted — it called
+    # `len(_open_paper) if isinstance(_open_paper, int)`, but
+    # `count_open()` returns int, so the call became `len(5)` → TypeError.
+    # Now we just use the int directly (count_open() always returns int).
     _open_paper = position_repo.count_open()
     if _open_paper > 0:
         print(
-            f"\n⚠️  {len(_open_paper) if isinstance(_open_paper, int) else _open_paper} "
-            f"paper position(s) detected in repo:"
+            f"\n⚠️  {_open_paper} paper position(s) detected in repo:"
         )
         for _p in position_repo.open():
             print(

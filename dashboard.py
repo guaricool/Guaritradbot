@@ -1799,11 +1799,28 @@ with st.sidebar:
             st.rerun()
 
     with col_b:
+        # B031 fix: when paper positions are open, the old "🟢 LIVE" toggle
+        # bypasses the pre-flight checklist and would let Carlos go live
+        # with ghost positions in `data_store/positions.json`. We disable
+        # the toggle and point the user to the proper "🚀 Start Live
+        # Trading" button below (which auto-cleans via the preflight).
+        _block_live_toggle = is_paper and _open_paper_positions_count > 0
+        _live_toggle_label = (
+            f"⛔ Clean {int(_open_paper_positions_count)} paper first" if _block_live_toggle
+            else "🟢 LIVE" if is_paper else "✓ Stay LIVE"
+        )
         if st.button(
-            "🟢 LIVE" if is_paper else "✓ Stay LIVE",
+            _live_toggle_label,
             use_container_width=True,
-            disabled=is_live,
-            help="⚠️ Switch to live trading — real orders on binance.us",
+            disabled=is_live or _block_live_toggle,
+            help=(
+                f"⚠️ {_open_paper_positions_count} open paper position(s) detected. "
+                "Use the '🛡️ Pre-flight Check → 🧹 Clean Paper Positions' button "
+                "below OR the '🚀 Start Live Trading' button (auto-cleans). "
+                "The old direct toggle is intentionally disabled to prevent ghost positions."
+            ) if _block_live_toggle else (
+                "⚠️ Switch to live trading — real orders on binance.us"
+            ),
             key="toggle_live",
         ):
             # Write override + trigger bot restart
@@ -1975,8 +1992,13 @@ with st.sidebar:
     _audit_ok = False
     _audit_msg = "❌ audit/audit.jsonl not writable"
     try:
-        _audit_path = _audit_path_for(config) if hasattr(_audit_path_for := __import__("__main__"), "_audit_path_for") else "audit/audit.jsonl"
-        # Just check the directory is writable
+        # B031 fix: previous version had a walrus-operator hack
+        # (`_audit_path_for := __import__("__main__")`) that computed a
+        # local `_audit_path` variable which was never read. The actual
+        # check below uses the hardcoded `audit/` dir. Simplified to a
+        # single existence+writability check — the bot's AuditLedger
+        # class also touches the file on append, so a real failure
+        # surfaces there too.
         if os.path.isdir("audit") and os.access("audit", os.W_OK):
             _audit_ok = True
             _audit_msg = "✅ audit/ directory is writable"
@@ -2137,17 +2159,22 @@ with st.sidebar:
             help=f"Close {_open_paper_positions_count} open paper positions at entry_price (P&L=0). "
                  f"Use this BEFORE going live to avoid ghost positions.",
         ):
-            # Mutate positions.json in-place: close all open at entry_price
+            # Mutate positions.json in-place: close all open at entry_price.
+            # B031 fix: count the closed positions ourselves — the previous
+            # code referenced an undefined `open_count_now` variable which
+            # raised NameError after the cleanup, masking success feedback.
             _pp_path = "data_store/positions.json"
             if os.path.exists(_pp_path):
                 _pp = _load_json(_pp_path)
                 if _pp and "positions" in _pp:
                     import time as _t
+                    _closed_now = 0
                     for p in _pp["positions"]:
                         if p.get("closed_ts") is None:
                             p["closed_ts"] = _t.time()
                             p["closed_price"] = p.get("entry_price", 0)
                             p["close_reason"] = "MANUAL_CLEAN_PAPER"
+                            _closed_now += 1
                             # P&L stays 0 (closed at entry)
                     with open(_pp_path, "w", encoding="utf-8") as f:
                         json.dump(_pp, f, indent=2, default=str)
@@ -2156,7 +2183,7 @@ with st.sidebar:
                     if os.path.exists(_audit_pp_path):
                         with open(_audit_pp_path, "w", encoding="utf-8") as f:
                             json.dump(_pp, f, indent=2, default=str)
-                    st.success(f"✅ Closed {open_count_now} paper positions at entry_price. Reload to see changes.")
+                    st.success(f"✅ Closed {_closed_now} paper position(s) at entry_price. Reload to see changes.")
                     st.rerun()
 
     if st.button("💾 Save Quick Risk", use_container_width=True, key="sidebar_save"):
