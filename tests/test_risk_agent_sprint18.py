@@ -164,6 +164,7 @@ class PositionReplacementTest(unittest.TestCase):
         self.repo.add_open(self.pos_b)
 
     def test_replace_worst_when_new_score_much_higher(self):
+        from src.data.asset_allocation import AllocationPolicy
         agent = RiskManagerAgent(
             broker_client=self.broker,
             risk_per_trade_pct=1.0,
@@ -180,6 +181,12 @@ class PositionReplacementTest(unittest.TestCase):
             # worst_position_closure), NOT the sector concentration gate.
             # Default cap (60%) would block ETH/BTC crypto in this 2-pos book.
             asset_concentration_check=False,
+            # Sprint 44B: also disable the allocation policy gate. The
+            # default policy (crypto target 40%, drift 10% → cap 50%) would
+            # block the BTC add in this 2-crypto-pos book. Same rationale
+            # as the concentration check — this test is for replacement,
+            # not allocation enforcement.
+            allocation_policy=AllocationPolicy(enabled=False),
             current_prices={
                 "ETH-USD": 2900.0,   # pos_a is -1.66% below entry (loser)
                 "GLD": 182.0,        # pos_b is +1.1% above entry (winner but stale)
@@ -223,6 +230,7 @@ class PositionReplacementTest(unittest.TestCase):
 
     def test_no_replacement_when_new_score_not_better_enough(self):
         """If new signal is not better than worst + threshold, don't replace."""
+        from src.data.asset_allocation import AllocationPolicy
         agent = RiskManagerAgent(
             broker_client=self.broker,
             risk_per_trade_pct=1.0,
@@ -237,6 +245,8 @@ class PositionReplacementTest(unittest.TestCase):
             # Sprint 44A: disable the concentration check (see comment in
             # test_replace_worst_when_new_score_much_higher).
             asset_concentration_check=False,
+            # Sprint 44B: disable allocation policy (same rationale).
+            allocation_policy=AllocationPolicy(enabled=False),
             current_prices={
                 "ETH-USD": 2970.0,   # pos_a slightly down (small negative score)
                 "GLD": 181.0,        # pos_b slightly up (small positive score)
@@ -333,6 +343,7 @@ class B020OneReplacementPerCycleTest(unittest.TestCase):
         ))
 
     def test_at_most_one_replacement_per_cycle(self):
+        from src.data.asset_allocation import AllocationPolicy
         agent = RiskManagerAgent(
             broker_client=self.broker,
             risk_per_trade_pct=1.0,
@@ -347,6 +358,8 @@ class B020OneReplacementPerCycleTest(unittest.TestCase):
             # Sprint 44A: disable the concentration check (see comment in
             # test_replace_worst_when_new_score_much_higher).
             asset_concentration_check=False,
+            # Sprint 44B: disable allocation policy (same rationale).
+            allocation_policy=AllocationPolicy(enabled=False),
             current_prices={
                 "ETH-USD": 2900,  # losing
                 "GLD": 184,        # winning

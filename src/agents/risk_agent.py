@@ -22,6 +22,11 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from src.data_store.positions import Position, PositionRepository
 from src.data.asset_class import get_asset_class, AssetClass
+from src.data.asset_allocation import (
+    AllocationPolicy,
+    DEFAULT_POLICY,
+    check_trade_against_policy,
+)
 
 
 class RiskManagerAgent:
@@ -45,6 +50,8 @@ class RiskManagerAgent:
         # Sprint 44A: asset-class concentration gate (Bridgewater risk)
         asset_concentration_check: bool = True,
         max_asset_class_concentration_pct: float = 60.0,
+        # Sprint 44B: allocation policy drift gate (BlackRock #1)
+        allocation_policy: Optional[AllocationPolicy] = None,
     ):
         self.broker = broker_client
         self.risk_per_trade_pct = risk_per_trade_pct
@@ -69,6 +76,10 @@ class RiskManagerAgent:
         # 80%) to allow a more concentrated high-conviction book.
         self.asset_concentration_check = asset_concentration_check
         self.max_asset_class_concentration_pct = max_asset_class_concentration_pct
+        # Sprint 44B: allocation policy drift gate. None → use the
+        # default policy (or the policy disabled if explicitly set).
+        # Pass `AllocationPolicy(enabled=False)` to disable.
+        self.allocation_policy = allocation_policy if allocation_policy is not None else DEFAULT_POLICY
 
     def get_account_balance(self) -> tuple:
         if self.broker is None:
@@ -284,6 +295,29 @@ class RiskManagerAgent:
                 if self.audit:
                     self.audit.append("MANDATE_OK", {"asset": trade["asset"], "notional": trade["notional_usd"], "risk": trade["risk_usd"]})
 
+            # --- Sprint 44B: allocation policy drift gate (BlackRock #1) ---
+            # Stricter than the 44A concentration cap. Rejects if this trade
+            # would push a class above its target + drift_tolerance. Runs
+            # BEFORE the 44A backstop so the policy is the primary signal.
+            if self.position_repo is not None:
+                policy_ok, policy_reason = self._check_allocation(
+                    asset=h["asset"],
+                    proposed_notional_usd=trade["notional_usd"],
+                )
+                if not policy_ok:
+                    rejected.append({"trade": trade, "reason": policy_reason})
+                    if self.audit:
+                        self.audit.append("ALLOCATION_POLICY_BLOCKED", {
+                            "asset": trade["asset"],
+                            "reason": policy_reason,
+                            "proposed_notional_usd": trade["notional_usd"],
+                        })
+                    print(
+                        f"  📊 {trade['asset']:8} {direction:5} — "
+                        f"blocked by allocation policy: {policy_reason}"
+                    )
+                    continue
+
             # --- Sprint 44A: asset-class concentration check (Bridgewater risk) ---
             # Without this, the bot can fill `max_open_trades=5` slots with
             # BTC + ETH + SOL + SPY + QQQ and call it "diversified" when it's
@@ -478,6 +512,30 @@ class RiskManagerAgent:
                 f"exceeds_{self.max_asset_class_concentration_pct:.0f}pct_cap"
             )
         return True, "concentration_ok"
+
+    def _check_allocation(
+        self,
+        asset: str,
+        proposed_notional_usd: float,
+    ) -> Tuple[bool, str]:
+        """Sprint 44B: pre-trade check against the allocation policy.
+
+        Returns (ok, reason). `ok=False` means the trade would push
+        the portfolio outside its target + drift_tolerance for the
+        trade's asset class.
+
+        This is the formal, drift-aware version of the 44A
+        concentration cap. If the policy is disabled, the 44A cap
+        still runs as a backstop.
+        """
+        if self.position_repo is None or self.allocation_policy is None:
+            return True, "no_position_repo_or_policy"
+        return check_trade_against_policy(
+            asset=asset,
+            proposed_notional_usd=proposed_notional_usd,
+            current_positions=self.position_repo.open(),
+            policy=self.allocation_policy,
+        )
 
     def score_position(self, pos: Position, current_price: Optional[float] = None) -> float:
         """

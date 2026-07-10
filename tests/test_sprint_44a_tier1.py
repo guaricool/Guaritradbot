@@ -579,12 +579,14 @@ class ConcentrationGateIntegrationTest(unittest.TestCase):
         crypto over the cap is rejected, even if the new signal is so
         strong it would normally trigger a replacement.
 
-        This is the behavior the B020/B021 replacement tests rely on when
-        they explicitly disable the concentration check via
-        `asset_concentration_check=False`. We document the priority here.
+        Sprint 44B: the allocation policy runs even earlier. To isolate
+        the concentration gate here, we pass an explicitly DISABLED
+        allocation policy (so the test measures the 44A gate in
+        isolation, not the priority order of the two gates).
         """
         from src.data_store.positions import Position
         from src.agents.risk_agent import RiskManagerAgent
+        from src.data.asset_allocation import AllocationPolicy
         import time
         import tempfile, os
 
@@ -613,6 +615,7 @@ class ConcentrationGateIntegrationTest(unittest.TestCase):
             risk_per_trade_pct=1.0,
             asset_concentration_check=True,
             max_asset_class_concentration_pct=80.0,  # permissive
+            allocation_policy=AllocationPolicy(enabled=False),  # isolate 44A
             enable_position_replacement=True,
             replacement_score_threshold=0.20,
             current_prices={"ETH-USD": 2900, "BTC-USD": 49000},
