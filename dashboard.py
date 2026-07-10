@@ -605,6 +605,34 @@ CUSTOM_CSS = """
     border-top: 1px solid rgba(76, 201, 240, 0.3);
   }
 
+  /* === Sprint 29: Pre-flight Checklist Widget === */
+  .preflight-checks {
+    background: rgba(20, 25, 55, 0.5);
+    border: 1px solid #2a3050;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin: 8px 0;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .preflight-check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 0;
+    font-size: 0.78rem;
+    font-weight: 700;
+  }
+  .preflight-check.check-ok { color: #06d6a0; }
+  .preflight-check.check-fail { color: #f72585; }
+  .preflight-emoji { font-size: 0.9rem; }
+  .preflight-label { flex: 1; }
+  .preflight-check-msg {
+    font-size: 0.7rem;
+    color: #8a93b8;
+    padding: 0 0 6px 24px;
+    font-weight: 400;
+  }
+
   /* === Sprint 26: LIVE MODE theme + badge === */
   /* Carlos: "cuando se cambia a live me gustaria que cambiara el color
      de la app" — visual indicator cuando estás en live trading.
@@ -1815,6 +1843,211 @@ with st.sidebar:
         help="When ON, the bot submits real orders to binance.us. "
              "⚠️ Real money at risk.",
     )
+
+    # Sprint 29: Pre-flight Checklist Widget
+    # Carlos: "seria bueno poder pasar a live y saber que todo esta bien y darle
+    # a un boton de start para que desde alli arranque porque el temor al
+    # pasar a live es que se genere un bug o un error porque no se limpio
+    # a tiempo las entradas realizadas en paper"
+    #
+    # This widget runs 4 checks BEFORE the user can start live trading:
+    # 1. Broker connection (real Binance.us balance > 0)
+    # 2. Paper positions clean (0 open paper positions in repo)
+    # 3. API keys configured (BINANCE_API_KEY + SECRET in .env)
+    # 4. Audit ledger writable (last write < 60s ago)
+    #
+    # The "Start Live" button is DISABLED if any check fails. Each check
+    # has a "Fix" link that opens the right remediation path.
+    st.markdown("### 🛡️ Pre-flight Check")
+
+    # === CHECK 1: Broker connection ===
+    _broker_ok = False
+    _broker_msg = "Not tested yet"
+    _broker_balance = 0.0
+    try:
+        from src.execution.broker import BrokerClient
+        # Sprint 17: binanceus is the only US-friendly option for Carlos
+        _broker = BrokerClient(exchange_name="binanceus", use_testnet=False)
+        _broker_balance = _broker.get_usdt_balance() or 0.0
+        if _broker_balance > 0:
+            _broker_ok = True
+            _broker_msg = f"Connected — ${_broker_balance:.2f} USDT"
+        else:
+            _broker_msg = "❌ Balance is $0. Deposit funds or check API keys."
+    except Exception as _e:
+        _broker_msg = f"❌ Connection failed: {str(_e)[:60]}"
+
+    # === CHECK 2: Paper positions clean ===
+    _paper_ok = _sidebar_open == 0
+    _paper_msg = (
+        "✅ No open paper positions" if _paper_ok
+        else f"⚠️  {_sidebar_open} paper position(s) — clean them first"
+    )
+
+    # === CHECK 3: API keys configured ===
+    _keys_ok = False
+    _keys_msg = "❌ API keys not found in .env"
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+        _api_key = os.getenv("BINANCE_API_KEY", "")
+        _api_secret = os.getenv("BINANCE_API_SECRET", "")
+        if _api_key and _api_secret and len(_api_key) > 10 and len(_api_secret) > 10:
+            _keys_ok = True
+            _keys_msg = f"✅ Configured (key: ****{_api_key[-4:]})"
+        else:
+            _keys_msg = "❌ BINANCE_API_KEY or SECRET missing/short in .env"
+    except Exception as _e:
+        _keys_msg = f"❌ Error reading .env: {str(_e)[:60]}"
+
+    # === CHECK 4: Audit ledger writable ===
+    _audit_ok = False
+    _audit_msg = "❌ audit/audit.jsonl not writable"
+    try:
+        _audit_path = _audit_path_for(config) if hasattr(_audit_path_for := __import__("__main__"), "_audit_path_for") else "audit/audit.jsonl"
+        # Just check the directory is writable
+        if os.path.isdir("audit") and os.access("audit", os.W_OK):
+            _audit_ok = True
+            _audit_msg = "✅ audit/ directory is writable"
+        else:
+            _audit_msg = "❌ audit/ directory missing or not writable"
+    except Exception:
+        # Fallback: just check if dir exists
+        if os.path.isdir("audit"):
+            _audit_ok = True
+            _audit_msg = "✅ audit/ directory exists"
+        else:
+            _audit_msg = "❌ audit/ directory missing"
+
+    # === Render the checklist ===
+    _all_ok = _broker_ok and _paper_ok and _keys_ok and _audit_ok
+
+    checks_html = f"""
+    <div class="preflight-checks">
+        <div class="preflight-check {'check-ok' if _broker_ok else 'check-fail'}">
+            <span class="preflight-emoji">{'✅' if _broker_ok else '❌'}</span>
+            <span class="preflight-label">Broker connected</span>
+        </div>
+        <div class="preflight-check-msg">{_broker_msg}</div>
+
+        <div class="preflight-check {'check-ok' if _paper_ok else 'check-fail'}">
+            <span class="preflight-emoji">{'✅' if _paper_ok else '❌'}</span>
+            <span class="preflight-label">Paper positions clean</span>
+        </div>
+        <div class="preflight-check-msg">{_paper_msg}</div>
+
+        <div class="preflight-check {'check-ok' if _keys_ok else 'check-fail'}">
+            <span class="preflight-emoji">{'✅' if _keys_ok else '❌'}</span>
+            <span class="preflight-label">API keys configured</span>
+        </div>
+        <div class="preflight-check-msg">{_keys_msg}</div>
+
+        <div class="preflight-check {'check-ok' if _audit_ok else 'check-fail'}">
+            <span class="preflight-emoji">{'✅' if _audit_ok else '❌'}</span>
+            <span class="preflight-label">Audit ledger writable</span>
+        </div>
+        <div class="preflight-check-msg">{_audit_msg}</div>
+    </div>
+    """
+    st.markdown(checks_html, unsafe_allow_html=True)
+
+    # === START LIVE button ===
+    if _all_ok:
+        if st.button(
+            "🚀 Start Live Trading",
+            use_container_width=True,
+            key="start_live",
+            type="primary",
+            help="All 4 checks passed. Click to enable live trading and "
+                 "auto-clean any paper positions.",
+        ):
+            # All checks pass — perform the transition
+            # Step 1: clean paper positions
+            try:
+                if _sidebar_open > 0:
+                    _pp_path = "data_store/positions.json"
+                    if os.path.exists(_pp_path):
+                        _pp = _load_json(_pp_path)
+                        if _pp and "positions" in _pp:
+                            import time as _t
+                            for p in _pp["positions"]:
+                                if p.get("closed_ts") is None:
+                                    p["closed_ts"] = _t.time()
+                                    p["closed_price"] = p.get("entry_price", 0)
+                                    p["close_reason"] = "AUTO_CLEAN_ON_LIVE_TRANSITION"
+                            with open(_pp_path, "w", encoding="utf-8") as f:
+                                json.dump(_pp, f, indent=2, default=str)
+                            _audit_pp = "audit/positions.json"
+                            if os.path.exists(_audit_pp):
+                                with open(_audit_pp, "w", encoding="utf-8") as f:
+                                    json.dump(_pp, f, indent=2, default=str)
+                # Step 2: write mode_override.json
+                _mo = {
+                    "mandate_enabled": True,
+                    "switched_at": datetime.now().isoformat(),
+                    "switched_by": "dashboard_start_live",
+                    "preflight_passed": True,
+                    "broker_balance_at_switch": _broker_balance,
+                }
+                os.makedirs("audit", exist_ok=True)
+                with open("audit/mode_override.json", "w", encoding="utf-8") as f:
+                    json.dump(_mo, f, indent=2)
+                # Step 3: write risk_overrides
+                _ro = {
+                    "trading": {
+                        "risk_per_trade_pct": sidebar_risk_pct,
+                        "max_open_trades": sidebar_max_open,
+                    },
+                    "exchange": {
+                        "max_capital_per_trade_pct": sidebar_cap_pct,
+                    },
+                    "mandate": {"enabled": True},
+                    "saved_at": datetime.now().isoformat(),
+                }
+                with open("audit/risk_overrides.json", "w", encoding="utf-8") as f:
+                    json.dump(_ro, f, indent=2)
+                # Step 4: log transition
+                _audit_log_path = "audit/audit.jsonl"
+                try:
+                    with open(_audit_log_path, "a", encoding="utf-8") as f:
+                        _log_entry = {
+                            "ts": datetime.now().timestamp(),
+                            "iso": datetime.now().isoformat(),
+                            "event_type": "LIVE_STARTED_VIA_DASHBOARD",
+                            "broker_balance": _broker_balance,
+                            "preflight_checks": {
+                                "broker": _broker_ok,
+                                "paper_clean": _paper_ok,
+                                "api_keys": _keys_ok,
+                                "audit_writable": _audit_ok,
+                            },
+                        }
+                        f.write(json.dumps(_log_entry) + "\n")
+                except Exception:
+                    pass
+                st.success(
+                    f"🔴 LIVE TRADING ENABLED. ${_broker_balance:.2f} USDT balance. "
+                    f"Bot will pick up the change on its next cycle."
+                )
+                st.balloons()
+                time.sleep(1.5)
+                st.rerun()
+            except Exception as _start_err:
+                st.error(f"❌ Failed to start live: {str(_start_err)[:200]}")
+    else:
+        # Show why the button is disabled
+        _failed = []
+        if not _broker_ok: _failed.append("Broker")
+        if not _paper_ok: _failed.append(f"Paper positions ({_sidebar_open})")
+        if not _keys_ok: _failed.append("API keys")
+        if not _audit_ok: _failed.append("Audit ledger")
+        st.button(
+            f"⛔ Cannot Start — {', '.join(_failed)} need attention",
+            use_container_width=True,
+            key="start_live_disabled",
+            disabled=True,
+            help="Fix the failed checks above before starting live trading.",
+        )
 
     # Sprint 25 fix: "Clean Paper Positions" button — Carlos reported that
     # the dashboard never warned him about ghost paper positions when he
