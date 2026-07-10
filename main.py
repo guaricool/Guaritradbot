@@ -122,25 +122,51 @@ def main():
     kill_switch = KillSwitch(config.get("mandate", {}).get("kill_switch_file", "/tmp/GUARITRADBOT_KILL"))
     position_repo = PositionRepository("data_store/positions.json")
 
-    # Sprint 22: Paper→Live Transition Safety Check
-    # If mandate is being enabled AND exchange.use_testnet is false, we're
-    # switching to live trading. Run the pre-flight checklist to ensure:
-    # 1. Broker API keys work end-to-end
-    # 2. No ghost paper positions remain in the repo
-    # 3. A dry-run validation order succeeds
-    # If the checklist refuses, force mandate.enabled back to False so we
-    # don't accidentally enable live trading without safeguards.
+    # Sprint 25 fix: ALWAYS show paper position count at startup.
+    # Carlos: "cuando cambio a live no me dice nada de las entradas en paper"
+    # → The bot was silent about open paper positions. Now it always prints.
+    _open_paper = position_repo.count_open()
+    if _open_paper > 0:
+        print(
+            f"\n⚠️  {len(_open_paper) if isinstance(_open_paper, int) else _open_paper} "
+            f"paper position(s) detected in repo:"
+        )
+        for _p in position_repo.open():
+            print(
+                f"   • {_p.asset} {_p.direction.upper()} qty={_p.qty} @ ${_p.entry_price:.2f} "
+                f"({_p.position_id[:24]})"
+            )
+        print(
+            "   These exist in the LOCAL REPO only — they do NOT exist on the live exchange.\n"
+            "   Run 'Clean Paper Positions' from the dashboard sidebar, or wait for the\n"
+            "   pre-flight checklist (Sprint 22) to handle them automatically.\n"
+        )
+
+    # Sprint 22 + 25 fix: Paper→Live Transition Safety Check
+    # Triggered when EITHER:
+    #   (a) mandate.enabled=true AND exchange.use_testnet=false (canonical live)
+    #   (b) mandate.enabled=true AND there are open paper positions
+    #     (even if use_testnet=true, ghost positions are a problem)
     mandate_being_enabled = bool(config.get("mandate", {}).get("enabled", False))
     exchange_use_testnet = bool(config.get("exchange", {}).get("use_testnet", True))
-    is_live_attempt = mandate_being_enabled and not exchange_use_testnet
+    has_paper_positions = position_repo.count_open() > 0
+    is_live_attempt = mandate_being_enabled and (
+        not exchange_use_testnet or has_paper_positions
+    )
 
     if is_live_attempt:
         from src.safety.paper_to_live import PaperToLiveChecklist
         interactive = sys.stdin.isatty() if hasattr(sys, "stdin") else False
-        print(
-            "\n🚀 Live mode detected (mandate.enabled=true, use_testnet=false).\n"
-            "   Running pre-flight checklist...\n"
-        )
+        if not exchange_use_testnet:
+            print(
+                "\n🚀 Live mode detected (mandate.enabled=true, use_testnet=false).\n"
+                "   Running pre-flight checklist...\n"
+            )
+        elif has_paper_positions:
+            print(
+                f"\n⚠️  {position_repo.count_open()} paper position(s) detected with mandate.enabled=true.\n"
+                "   Running pre-flight checklist to handle them safely...\n"
+            )
         checklist = PaperToLiveChecklist(
             position_repo=position_repo,
             audit=audit,
@@ -153,14 +179,28 @@ def main():
         print(f"\n[Pre-flight] Decision: {decision}")
         if not decision.proceed:
             print(
-                f"\n⛔ Live transition BLOCKED by pre-flight check: {decision.reason}\n"
-                "   Forcing back to paper mode (mandate.enabled=false) for safety.\n"
+                f"\n⛔ Pre-flight check BLOCKED the transition: {decision.reason}\n"
+                "   Forcing mandate.enabled=false for safety.\n"
+                "   Clean paper positions from the dashboard, then re-enable.\n"
             )
             audit.append("LIVE_TRANSITION_BLOCKED", {
                 "reason": decision.reason,
                 "forced_back_to_paper": True,
+                "had_paper_positions": has_paper_positions,
             })
             config["mandate"]["enabled"] = False
+            # Also write the override so the dashboard reflects it
+            try:
+                _override_path = "audit/mode_override.json"
+                if os.path.exists(_override_path):
+                    with open(_override_path, "r", encoding="utf-8") as _of:
+                        _ov = json.load(_of)
+                    _ov["mandate_enabled"] = False
+                    _ov["forced_back_at"] = time.time()
+                    with open(_override_path, "w", encoding="utf-8") as _of:
+                        json.dump(_ov, _of, indent=2)
+            except Exception as _ov_err:
+                print(f"[Pre-flight] Could not update mode_override.json: {_ov_err}")
         else:
             print(f"\n✅ Pre-flight passed. Live mode is GO.")
 

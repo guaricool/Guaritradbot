@@ -469,6 +469,54 @@ CUSTOM_CSS = """
     font-family: 'JetBrains Mono', monospace;
   }
 
+  /* === Sprint 25 fix: Paper Positions Warning Banner === */
+  /* Carlos: "cuando cambio a live no me dice nada de las entradas en paper" */
+  .paper-positions-warning {
+    background: linear-gradient(90deg, rgba(255, 159, 28, 0.15), rgba(247, 37, 133, 0.10));
+    border: 1px solid #ff9f1c;
+    border-left: 4px solid #ff9f1c;
+    border-radius: 8px;
+    padding: 12px 18px;
+    margin-bottom: 16px;
+    animation: pulse-warning 2s ease-in-out infinite;
+  }
+  @keyframes pulse-warning {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(255, 159, 28, 0.4); }
+    50% { box-shadow: 0 0 0 6px rgba(255, 159, 28, 0); }
+  }
+  .paper-warning-header {
+    font-size: 1.05rem;
+    font-weight: 800;
+    color: #ff9f1c;
+    margin-bottom: 6px;
+  }
+  .paper-warning-body {
+    font-size: 0.88rem;
+    color: #e0e6ff;
+    margin-bottom: 8px;
+    line-height: 1.4;
+  }
+  .paper-warning-list {
+    font-size: 0.78rem;
+    color: #8a93b8;
+    margin: 6px 0 8px 0;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .paper-warning-list ul {
+    margin: 4px 0 0 20px;
+    padding: 0;
+  }
+  .paper-warning-list li {
+    margin: 2px 0;
+  }
+  .paper-warning-action {
+    font-size: 0.85rem;
+    color: #4cc9f0;
+    font-weight: 700;
+    padding-top: 6px;
+    border-top: 1px solid rgba(76, 201, 240, 0.3);
+  }
+
   /* ---------- signal cards ---------- */
   .signal-card {
     background: #1a1f3a;
@@ -1605,6 +1653,41 @@ with st.sidebar:
              "⚠️ Real money at risk.",
     )
 
+    # Sprint 25 fix: "Clean Paper Positions" button — Carlos reported that
+    # the dashboard never warned him about ghost paper positions when he
+    # toggled to live. This button gives him a one-click way to close them
+    # safely (simulated close at entry_price, P&L=0) before going live.
+    open_count_now = len([p for p in positions if p.get("closed_ts") is None])
+    if open_count_now > 0:
+        if st.button(
+            f"🧹 Clean Paper Positions ({open_count_now})",
+            use_container_width=True,
+            key="clean_paper",
+            help=f"Close {open_count_now} open paper positions at entry_price (P&L=0). "
+                 f"Use this BEFORE going live to avoid ghost positions.",
+        ):
+            # Mutate positions.json in-place: close all open at entry_price
+            _pp_path = "data_store/positions.json"
+            if os.path.exists(_pp_path):
+                _pp = _load_json(_pp_path)
+                if _pp and "positions" in _pp:
+                    import time as _t
+                    for p in _pp["positions"]:
+                        if p.get("closed_ts") is None:
+                            p["closed_ts"] = _t.time()
+                            p["closed_price"] = p.get("entry_price", 0)
+                            p["close_reason"] = "MANUAL_CLEAN_PAPER"
+                            # P&L stays 0 (closed at entry)
+                    with open(_pp_path, "w", encoding="utf-8") as f:
+                        json.dump(_pp, f, indent=2, default=str)
+                    # Also mirror to audit/positions.json for dashboard
+                    _audit_pp_path = "audit/positions.json"
+                    if os.path.exists(_audit_pp_path):
+                        with open(_audit_pp_path, "w", encoding="utf-8") as f:
+                            json.dump(_pp, f, indent=2, default=str)
+                    st.success(f"✅ Closed {open_count_now} paper positions at entry_price. Reload to see changes.")
+                    st.rerun()
+
     if st.button("💾 Save Quick Risk", use_container_width=True, key="sidebar_save"):
         overrides = {
             "trading": {
@@ -1715,6 +1798,42 @@ audit_events = _load_audit_cached(n=50)
 open_positions = [p for p in positions if p.get("closed_ts") is None]
 closed_positions = [p for p in positions if p.get("closed_ts") is not None]
 realized_pnl = sum((p.get("realized_pnl") or 0.0) for p in positions)
+
+# Sprint 25 fix: BANNER prominent cuando hay paper positions y mandate
+# está enabled. Carlos reportó: "cuando cambio a live no me dice nada de las
+# entradas en paper. y siguen alli." → El dashboard no mostraba nada.
+# Este banner aparece arriba del todo y le da al usuario acción inmediata.
+import json as _json_banner
+_mode_override = _load_json("audit/mode_override.json") or {}
+_mandate_enabled = bool(_mode_override.get("mandate_enabled", False))
+if open_positions and _mandate_enabled:
+    # Build a list of paper positions to show
+    paper_summary = []
+    for p in open_positions:
+        paper_summary.append(
+            f"<li><b>{p['asset']}</b> {p['direction'].upper()} "
+            f"qty={p.get('qty', 0):.6f} @ ${p.get('entry_price', 0):.2f} "
+            f"<span style='color:#8a93b8;'>({p.get('position_id', '?')[:20]})</span></li>"
+        )
+    st.markdown(
+        f"""
+        <div class="paper-positions-warning">
+            <div class="paper-warning-header">⚠️ PAPER POSITIONS OPEN — Live trading is enabled</div>
+            <div class="paper-warning-body">
+                You have <b>{len(open_positions)} open paper position(s)</b> tracked in the local repo.
+                These <b>do NOT exist on the live exchange</b>. The bot may try to close them via the
+                live broker (which will fail or worse — sell assets you don't own).
+            </div>
+            <div class="paper-warning-list">
+                <ul>{"".join(paper_summary)}</ul>
+            </div>
+            <div class="paper-warning-action">
+                👇 Use the <b>"Clean Paper Positions"</b> button in the sidebar (below) to close them safely.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # Sprint 15: adaptive refresh — if positions are open, force a faster
 # tick (2s) for live streaming regardless of the user's selected refresh.
