@@ -152,6 +152,13 @@ components.html(
         //    want the browser to autofill credentials or form history).
         //    Runs on initial load AND on every MutationObserver tick so
         //    newly rendered widgets (after a streamlit rerun) are patched too.
+        //
+        //    B030 patch: this script runs inside an about:srcdoc iframe
+        //    (st.components.v1.html), where `document.body` can be null until
+        //    the iframe's DOM is parsed. The original code unconditionally
+        //    called `observe(document.body, ...)` and threw a TypeError.
+        //    Now we defensively wait for body via DOMContentLoaded + a
+        //    polling fallback, and only attach the observer once.
         function fixAutocomplete() {
           var nodes = document.querySelectorAll(
             'input[autocomplete=""], textarea[autocomplete=""]'
@@ -160,16 +167,21 @@ components.html(
             nodes[i].setAttribute('autocomplete', 'off');
           }
         }
-        if (document.readyState === 'loading') {
-          document.addEventListener('DOMContentLoaded', fixAutocomplete);
-        } else {
+        function attachAutocompleteObserver() {
+          if (!document.body || document.body.nodeType !== 1) {
+            // Body not parsed yet (about:srcdoc iframe race). Retry shortly.
+            setTimeout(attachAutocompleteObserver, 50);
+            return;
+          }
           fixAutocomplete();
+          var observer = new MutationObserver(fixAutocomplete);
+          observer.observe(document.body, { childList: true, subtree: true });
         }
-        var autocompleteObserver = new MutationObserver(fixAutocomplete);
-        autocompleteObserver.observe(document.body, {
-          childList: true,
-          subtree: true,
-        });
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', attachAutocompleteObserver);
+        } else {
+          attachAutocompleteObserver();
+        }
       })();
     </script>
     """,
