@@ -1,6 +1,6 @@
 # Bugs Index
 
-26 bugs encontrados y corregidos. Severidad: 🔴 crítico (rompía runtime) | 🟠 medio | 🟡 menor
+27 bugs encontrados y corregidos. Severidad: 🔴 crítico (rompía runtime) | 🟠 medio | 🟡 menor
 
 | ID | Sev | Sprint | Bug | Fix |
 |----|-----|--------|-----|-----|
@@ -30,11 +30,12 @@
 | [[Bugs/B024_dashboard_slider_dark_flash]] | 🟡 | 22 patch | Click/arrastre en los 6 sliders de Risk Settings causaba un dark flash del browser/Streamlit (focus ring + track color change) | CSS neutraliza `:focus` y `:active` states, mantiene thumb con brand color y box-shadow |
 | [[Bugs/B024b_dashboard_universal_dark_flash]] | 🟡 | 22 patch | B024 solo atacaba sliders pero el flash oscuro seguía en `st.button` (Save Settings) y `st.checkbox` (Mandate gate toggle) | CSS universal: `button:focus-visible`, `[role="button"]`, todo `stButton` y `stCheckbox` con brand color sutil |
 | [[Bugs/B025_dashboard_silent_paper_positions]] | 🔴 | 25 | Carlos: "cuando cambio a live no me dice nada de las entradas en paper". El checklist de Sprint 22 no corría porque `mode_override` solo cambiaba `mandate_enabled` pero no `use_testnet` → checklist se saltaba. Dashboard no mostraba las paper positions. | Sprint 25 fix: dashboard muestra banner prominent con paper positions + botón "Clean Paper Positions" en sidebar; bot loguea paper positions al startup; checklist corre cuando hay paper positions + mandate enabled (no solo live); override se actualiza si el checklist aborta |
+| [[Bugs/B026_dashboard_positions_nameerror]] | 🟠 | 26 patch | El botón "Clean Paper Positions" en el sidebar referenciaba `positions` que se carga DESPUÉS del sidebar → `NameError: name 'positions' is not defined` al abrir el dashboard | Cargar positions desde JSON directamente en variable local `_sidebar_pp` dentro del bloque del sidebar |
 
 ## Stats
 
 - 🔴 Críticos: **13** (B001, B002, B003, B006, B013, B017, B018, B019, B020, B021, B022; el B015 era operacional pero mataba la portabilidad)
-- 🟠 Medios (estrategia/métricas incorrectas): **9** (incluyendo B015)
+- 🟠 Medios (estrategia/métricas incorrectas): **10** (incluyendo B015, B026)
 - 🟡 Menores: **3** (B016 uuid colisión, B023 filter flash, B024b universal dark flash)
 
 **Total: 25 bugs cerrados en 13 sprints.**

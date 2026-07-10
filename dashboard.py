@@ -1732,13 +1732,20 @@ with st.sidebar:
     # the dashboard never warned him about ghost paper positions when he
     # toggled to live. This button gives him a one-click way to close them
     # safely (simulated close at entry_price, P&L=0) before going live.
-    open_count_now = len([p for p in positions if p.get("closed_ts") is None])
-    if open_count_now > 0:
+    # B026 fix: load positions from disk directly to avoid NameError
+    # when `positions` variable hasn't been declared yet (this sidebar
+    # block runs BEFORE the main render).
+    _sidebar_pp = _load_json("data_store/positions.json")
+    _sidebar_open = (
+        len([p for p in _sidebar_pp.get("positions", []) if p.get("closed_ts") is None])
+        if _sidebar_pp else 0
+    )
+    if _sidebar_open > 0:
         if st.button(
-            f"🧹 Clean Paper Positions ({open_count_now})",
+            f"🧹 Clean Paper Positions ({_sidebar_open})",
             use_container_width=True,
             key="clean_paper",
-            help=f"Close {open_count_now} open paper positions at entry_price (P&L=0). "
+            help=f"Close {_sidebar_open} open paper positions at entry_price (P&L=0). "
                  f"Use this BEFORE going live to avoid ghost positions.",
         ):
             # Mutate positions.json in-place: close all open at entry_price
