@@ -195,16 +195,38 @@ class ModelTrainer:
 
     @staticmethod
     def load(path: str) -> "ModelTrainer":
-        """Load a persisted trainer from disk."""
-        with open(path, "rb") as f:
-            data = pickle.load(f)
-        trainer = ModelTrainer(model_type=data["model_type"])
-        trainer.model = data["model"]
-        trainer.scaler = data["scaler"]
-        trainer.feature_names = data["feature_names"]
-        trainer.trained_at = data["trained_at"]
-        trainer.train_metrics = data["train_metrics"]
-        return trainer
+        """Load a persisted trainer from disk.
+
+        Sprint 43 L8 fix: wrap the pickle.load + reconstruction
+        in try/except. A truncated or corrupted artifact (e.g.
+        a process killed mid-save) would otherwise raise and
+        take down the caller. Now we return None on failure
+        and log the error so the operator can decide whether
+        to retrain.
+
+        Note: pickle.load is unsafe by nature if the artifact
+        came from an untrusted source. The bot's models are
+        always trained in-house and saved to a known path, so
+        the trust model is fine — but the audit recommended
+        moving to a safer format (joblib + signature, or
+        onnx) in a future sprint.
+        """
+        try:
+            with open(path, "rb") as f:
+                data = pickle.load(f)
+            trainer = ModelTrainer(model_type=data["model_type"])
+            trainer.model = data["model"]
+            trainer.scaler = data["scaler"]
+            trainer.feature_names = data["feature_names"]
+            trainer.trained_at = data["trained_at"]
+            trainer.train_metrics = data["train_metrics"]
+            return trainer
+        except (FileNotFoundError, EOFError, pickle.UnpicklingError, KeyError, AttributeError) as e:
+            print(
+                f"[ModelTrainer] ⚠️ load({path}) failed: {e!r}. "
+                f"Returning None. Caller must handle the missing model."
+            )
+            return None
 
 
 class Predictor:
