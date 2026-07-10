@@ -1,6 +1,6 @@
 # Bugs Index
 
-30 bugs encontrados y corregidos. Severidad: 🔴 crítico (rompía runtime) | 🟠 medio | 🟡 menor
+31 bugs encontrados y corregidos. Severidad: 🔴 crítico (rompía runtime) | 🟠 medio | 🟡 menor
 
 | ID | Sev | Sprint | Bug | Fix |
 |----|-----|--------|-----|-----|
@@ -34,14 +34,15 @@
 | [[Bugs/B027_dashboard_accessibility_csp_warnings]] | 🟡 | 27 | Browser DevTools mostraba 4 categorías de warnings: CSP bloquea `eval`, form field sin id/name, autocomplete vacío, sin label asociado. Algunos son limitaciones de Streamlit 1.36. | Inyectar `<meta>` tags via `st.components.v1.html` con CSP permisivo (`unsafe-eval` para Streamlit, `unsafe-inline` para CSS) + meta tags de accessibility (`theme-color`, `color-scheme`, `format-detection`) + CSS para `autocomplete=off` |
 | [[Bugs/B028_streamlit_console_warnings]] | 🟡 | 28 | Console mostraba 9+ warnings: "Gather usage stats: true" + 8 "Unrecognized feature" (ambient-light-sensor, battery, document-domain, layout-animations, etc.) + iframe sandbox warning del streamlit_autorefresh component. Todos vienen del bundle JS compilado de Streamlit 1.36. | `gatherUsageStats = false` en `.streamlit/config.toml` elimina el telemetry warning. Los 8 "Unrecognized feature" + iframe sandbox son limitaciones de Streamlit 1.36 (no se pueden parchear sin upgrade). |
 | [[Bugs/B028v2_coolify_dashboard_crashloop]] | 🔴 | 31 | Carlos: "en el coolify esta Exited (14x restarts)". El dashboard container estaba en crash loop (`Restarting (1)`), pero el bot engine estaba sano. Causa raíz: mi fix original de B028 (`e185d61`) duplicó la sección `[browser]` en `.streamlit/config.toml` — TOML no permite headers duplicados, el parser falla con `TomlDecodeError: What? browser already exists?` y streamlit nunca llega a bootear. Además, el deploy #334 falló con `network wyn2ah6rflg6ufwzpvzk436f declared as external, but could not be found` porque Coolify perdió la red per-recurso (estado inconsistente tras los containers removidos). | Consolidar en una sola sección `[browser]` con `gatherUsageStats`, `serverAddress`, `serverPort`. Crear la red manualmente con `docker network create --driver bridge <uuid>`. Forzar redeploy con un commit vacío (`git commit --allow-empty`). Commit `6aee4ff` (consolidación) + `d73924d` (redeploy trigger). Lección: cuando se agrega una config key a una sección existente, **siempre consolidar** — nunca duplicar headers TOML aunque parezca inofensivo. **Validar con `toml.loads()` antes de commitear**. |
+| [[Bugs/B029_dashboard_sidebar_scope_escape]] | 🔴 | 31 patch | Después de fix B028v2 el dashboard arrancó, pero al primer render Streamlit crasheó con `NameError: name '_sidebar_open' is not defined` at `dashboard.py:1881` (preflight checklist). El preflight widget referenciaba `_sidebar_open` en el MAIN area, pero esa variable solo se asignaba DENTRO del `with st.sidebar:` block (línea 2082). Streamlit ejecuta el sidebar antes pero las vars no salen del `with` context manager — son scope-locales al bloque del sidebar, no al módulo. B026 solo había arreglado el caso de `positions`, no previno el mismo patrón en código posterior. | Calcular `_open_paper_positions_count` a nivel de módulo (línea 1684, ANTES del `with st.sidebar:`), leer `data_store/positions.json` directamente con `try/except`. Reemplazar las 10 ocurrencias de `_sidebar_open` por `_open_paper_positions_count`. Patrón: **toda variable que se use tanto en sidebar como en main area debe calcularse a nivel de módulo**, nunca dentro de `with st.sidebar:`. Verificar con `py_compile` antes de pushear. Commit `cd9fc4b`. |
 
 ## Stats
 
-- 🔴 Críticos: **14** (B001, B002, B003, B006, B013, B017, B018, B019, B020, B021, B022, B028v2; el B015 era operacional pero mataba la portabilidad)
+- 🔴 Críticos: **15** (B001, B002, B003, B006, B013, B017, B018, B019, B020, B021, B022, B028v2, B029; el B015 era operacional pero mataba la portabilidad)
 - 🟠 Medios (estrategia/métricas incorrectas): **10** (incluyendo B015, B026)
 - 🟡 Menores: **4** (B016 uuid colisión, B023 filter flash, B024b universal dark flash, B028 streamlit console)
 
-**Total: 30 bugs cerrados en 16 sprints.**
+**Total: 31 bugs cerrados en 16 sprints.**
 
 Distribución por origen:
 - **Audit team externo** (Sprint 18): B017, B018, B019
