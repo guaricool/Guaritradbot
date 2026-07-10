@@ -270,6 +270,25 @@ def main():
         assets=("BTC-USD", "SPY", "GLD", "QQQ", "USO"),
     )
 
+    # Sprint 23: Live Equity Tracker
+    # Carlos wanted to see cents-level P&L in real time, especially with
+    # $10 balance. Tracker initializes with the broker's actual balance.
+    # Falls back to $10 (paper default) if broker is unreachable.
+    from src.safety.equity_tracker import EquityTracker
+    try:
+        _initial_balance = broker_client.get_usdt_balance() if broker_client else 10.0
+        if _initial_balance is None or _initial_balance <= 0:
+            _initial_balance = 10.0
+    except Exception:
+        _initial_balance = 10.0
+    equity_tracker = EquityTracker(
+        starting_balance=_initial_balance,
+        position_repo=position_repo,
+        audit=audit,
+        history_size=200,
+    )
+    print(f"[EquityTracker] initialized with ${_initial_balance:.4f}")
+
     # Monkey-patch el scheduler.job para correr el monitor antes
     original_job = scheduler.job
 
@@ -327,6 +346,14 @@ def main():
                             rm.current_prices = prices
                     except Exception:
                         pass
+
+                    # Sprint 23: update equity tracker with current prices
+                    try:
+                        snap = equity_tracker.update(prices)
+                        from src.safety.equity_tracker import format_equity_line
+                        print(f"  [Equity] {format_equity_line(snap, precision=4)}")
+                    except Exception as eqe:
+                        print(f"  [Equity] tracker update falló: {eqe}")
         except Exception as e:
             print(f"[PositionMonitor] check falló: {e}")
 

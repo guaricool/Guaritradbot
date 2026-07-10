@@ -1,0 +1,274 @@
+"""
+Sprint 23 tests — Live Equity Tracker.
+
+Run: python -m unittest tests.test_equity_tracker -v
+"""
+import os
+import sys
+import tempfile
+import time
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from src.safety.equity_tracker import (
+    EquityTracker, EquitySnapshot, format_equity_line,
+)
+from src.safety.audit_ledger import AuditLedger
+from src.data_store.positions import PositionRepository, Position
+
+
+class EquitySnapshotTest(unittest.TestCase):
+    def test_sub_dollar_precision(self):
+        """With $10 starting, small wins should show 4 decimals."""
+        snap = EquitySnapshot(
+            timestamp=0, iso="2026-07-09",
+            starting_balance=10.0,
+            realized_pnl=0.0123,
+            unrealized_pnl=0.0045,
+            total_equity=10.0168,
+            delta_usd=0.0168,
+            delta_pct=0.168,
+            open_positions=1,
+            closed_positions=0,
+            drawdown_usd=0.0,
+            drawdown_pct=0.0,
+        )
+        self.assertAlmostEqual(snap.total_equity, 10.0168, places=4)
+        self.assertAlmostEqual(snap.delta_usd, 0.0168, places=4)
+
+    def test_to_dict_roundtrip(self):
+        snap = EquitySnapshot(
+            timestamp=1000.0, iso="x",
+            starting_balance=10.0, realized_pnl=0.0, unrealized_pnl=0.0,
+            total_equity=10.0, delta_usd=0.0, delta_pct=0.0,
+            open_positions=0, closed_positions=0,
+            drawdown_usd=0.0, drawdown_pct=0.0,
+        )
+        d = snap.to_dict()
+        self.assertEqual(d["starting_balance"], 10.0)
+        self.assertEqual(d["total_equity"], 10.0)
+
+
+class EquityTrackerBasicTest(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.audit = AuditLedger(os.path.join(self.tmpdir, "audit.jsonl"))
+        self.repo = PositionRepository(os.path.join(self.tmpdir, "positions.json"))
+        self.tracker = EquityTracker(
+            starting_balance=10.0,
+            position_repo=self.repo,
+            audit=self.audit,
+        )
+
+    def test_initial_state_no_positions(self):
+        snap = self.tracker.update({})
+        self.assertEqual(snap.total_equity, 10.0)
+        self.assertEqual(snap.delta_usd, 0.0)
+        self.assertEqual(snap.delta_pct, 0.0)
+        self.assertEqual(snap.open_positions, 0)
+        self.assertEqual(snap.closed_positions, 0)
+
+    def test_profitable_position_increases_equity(self):
+        """A LONG position with price > entry should add to equity."""
+        self.repo.add_open(Position(
+            asset="BTC-USD", direction="long",
+            entry_price=50000.0, stop_loss=49000.0, take_profit=52000.0,
+            qty=0.001, risk_usd=1.0,
+            entry_ts=time.time(), strategy="test",
+        ))
+        # Price went up to 50100: +$0.10 unrealized PnL (0.001 × 100)
+        snap = self.tracker.update({"BTC-USD": 50100.0})
+        self.assertAlmostEqual(snap.unrealized_pnl, 0.1, places=4)
+        self.assertAlmostEqual(snap.total_equity, 10.1, places=4)
+        self.assertAlmostEqual(snap.delta_usd, 0.1, places=4)
+        self.assertAlmostEqual(snap.delta_pct, 1.0, places=4)
+
+    def test_losing_position_decreases_equity(self):
+        """A LONG position with price < entry should subtract from equity."""
+        self.repo.add_open(Position(
+            asset="BTC-USD", direction="long",
+            entry_price=50000.0, stop_loss=49000.0, take_profit=52000.0,
+            qty=0.001, risk_usd=1.0,
+            entry_ts=time.time(), strategy="test",
+        ))
+        # Price went down to 49900: -$0.10 unrealized PnL
+        snap = self.tracker.update({"BTC-USD": 49900.0})
+        self.assertAlmostEqual(snap.unrealized_pnl, -0.1, places=4)
+        self.assertAlmostEqual(snap.total_equity, 9.9, places=4)
+        self.assertAlmostEqual(snap.delta_usd, -0.1, places=4)
+
+    def test_realized_pnl_added_after_close(self):
+        """Closing a profitable position should add realized PnL."""
+        pos = Position(
+            asset="BTC-USD", direction="long",
+            entry_price=50000.0, stop_loss=49000.0, take_profit=52000.0,
+            qty=0.001, risk_usd=1.0,
+            entry_ts=time.time(), strategy="test",
+        )
+        self.repo.add_open(pos)
+        self.repo.close_position(pos.position_id, close_price=50500.0, reason="TP_HIT")
+        # Realized PnL = (50500 - 50000) × 0.001 = $0.50
+        snap = self.tracker.update({})
+        self.assertAlmostEqual(snap.realized_pnl, 0.5, places=4)
+        self.assertAlmostEqual(snap.total_equity, 10.5, places=4)
+        self.assertAlmostEqual(snap.delta_usd, 0.5, places=4)
+        self.assertEqual(snap.open_positions, 0)
+        self.assertEqual(snap.closed_positions, 1)
+
+    def test_combined_realized_and_unrealized(self):
+        """Mix of closed winners + open positions."""
+        # Closed winner: +$0.50
+        pos1 = Position(
+            asset="BTC-USD", direction="long",
+            entry_price=50000.0, stop_loss=49000.0, take_profit=52000.0,
+            qty=0.001, risk_usd=1.0,
+            entry_ts=time.time(), strategy="test",
+        )
+        self.repo.add_open(pos1)
+        self.repo.close_position(pos1.position_id, close_price=50500.0, reason="TP_HIT")
+        # Open position: +$0.10 unrealized
+        pos2 = Position(
+            asset="ETH-USD", direction="long",
+            entry_price=3000.0, stop_loss=2950.0, take_profit=3150.0,
+            qty=0.01, risk_usd=0.5,
+            entry_ts=time.time(), strategy="test",
+        )
+        self.repo.add_open(pos2)
+        snap = self.tracker.update({"ETH-USD": 3010.0})
+        # Realized: $0.50, Unrealized: $0.10, Total equity: $10.60
+        self.assertAlmostEqual(snap.realized_pnl, 0.5, places=4)
+        self.assertAlmostEqual(snap.unrealized_pnl, 0.1, places=4)
+        self.assertAlmostEqual(snap.total_equity, 10.6, places=4)
+
+
+class EquityTrackerHistoryTest(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.repo = PositionRepository(os.path.join(self.tmpdir, "positions.json"))
+        self.tracker = EquityTracker(
+            starting_balance=10.0,
+            position_repo=self.repo,
+            history_size=5,
+        )
+
+    def test_history_accumulates(self):
+        for i in range(3):
+            self.tracker.update({})
+        self.assertEqual(len(self.tracker.history), 4)  # 1 initial + 3 updates
+
+    def test_history_capped_at_maxlen(self):
+        for i in range(10):
+            self.tracker.update({})
+        self.assertEqual(len(self.tracker.history), 5)  # cap at history_size
+
+    def test_equity_series_for_sparklines(self):
+        # Simulate equity growing
+        pos = Position(
+            asset="BTC-USD", direction="long",
+            entry_price=50000.0, stop_loss=49000.0, take_profit=52000.0,
+            qty=0.001, risk_usd=1.0,
+            entry_ts=time.time(), strategy="test",
+        )
+        self.repo.add_open(pos)
+        prices = [50000, 50100, 50200, 50300]
+        for p in prices:
+            self.tracker.update({"BTC-USD": p})
+        series = self.tracker.equity_series()
+        self.assertEqual(len(series), 5)  # 1 initial + 4 updates
+        # Equity should grow
+        self.assertGreater(series[-1], series[0])
+
+
+class EquityTrackerDrawdownTest(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.repo = PositionRepository(os.path.join(self.tmpdir, "positions.json"))
+        self.tracker = EquityTracker(
+            starting_balance=10.0,
+            position_repo=self.repo,
+        )
+
+    def test_drawdown_tracks_peak(self):
+        pos = Position(
+            asset="BTC-USD", direction="long",
+            entry_price=50000.0, stop_loss=49000.0, take_profit=52000.0,
+            qty=0.001, risk_usd=1.0,
+            entry_ts=time.time(), strategy="test",
+        )
+        self.repo.add_open(pos)
+        # Peak: price at 50500 (+$0.50)
+        snap_peak = self.tracker.update({"BTC-USD": 50500.0})
+        self.assertEqual(snap_peak.drawdown_usd, 0.0)
+        # Then crash to 49500 (-$0.50 → total equity $9.50 → drawdown from $10.50 peak)
+        snap_dd = self.tracker.update({"BTC-USD": 49500.0})
+        self.assertLess(snap_dd.drawdown_usd, 0.0)
+        self.assertAlmostEqual(snap_dd.drawdown_usd, -1.0, places=4)
+
+
+class EquityTrackerAuditTest(unittest.TestCase):
+    def test_update_emits_audit_event(self):
+        tmpdir = tempfile.mkdtemp()
+        audit = AuditLedger(os.path.join(tmpdir, "audit.jsonl"))
+        repo = PositionRepository(os.path.join(tmpdir, "positions.json"))
+        tracker = EquityTracker(
+            starting_balance=10.0,
+            position_repo=repo,
+            audit=audit,
+        )
+        tracker.update({})
+        events = audit.read_all()
+        equity_events = [e for e in events if e.get("event_type") == "EQUITY_UPDATE"]
+        self.assertGreaterEqual(len(equity_events), 1)
+        # Most recent should have all fields
+        latest = equity_events[-1]
+        self.assertIn("total_equity", latest)
+        self.assertIn("delta_usd", latest)
+        self.assertIn("delta_pct", latest)
+
+
+class FormatEquityLineTest(unittest.TestCase):
+    def test_format_with_precision(self):
+        snap = EquitySnapshot(
+            timestamp=0, iso="2026-07-09",
+            starting_balance=10.0,
+            realized_pnl=0.0123, unrealized_pnl=0.0,
+            total_equity=10.0123, delta_usd=0.0123, delta_pct=0.123,
+            open_positions=0, closed_positions=1,
+            drawdown_usd=0.0, drawdown_pct=0.0,
+        )
+        line = format_equity_line(snap, precision=4)
+        self.assertIn("$10.0123", line)
+        self.assertIn("+$0.0123", line)
+        self.assertIn("+0.12%", line)
+        self.assertIn("🟢", line)
+
+    def test_format_negative_delta(self):
+        snap = EquitySnapshot(
+            timestamp=0, iso="2026-07-09",
+            starting_balance=10.0,
+            realized_pnl=-0.05, unrealized_pnl=0.0,
+            total_equity=9.95, delta_usd=-0.05, delta_pct=-0.5,
+            open_positions=0, closed_positions=1,
+            drawdown_usd=-0.05, drawdown_pct=-0.5,
+        )
+        line = format_equity_line(snap, precision=4)
+        self.assertIn("$9.9500", line)
+        self.assertIn("$-0.0500", line)
+        self.assertIn("🔴", line)
+
+
+class EquityTrackerValidationTest(unittest.TestCase):
+    def test_negative_starting_balance_rejected(self):
+        with self.assertRaises(ValueError):
+            EquityTracker(starting_balance=-1.0)
+
+    def test_zero_starting_balance_rejected(self):
+        with self.assertRaises(ValueError):
+            EquityTracker(starting_balance=0.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

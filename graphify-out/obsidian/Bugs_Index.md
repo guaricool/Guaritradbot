@@ -1,6 +1,6 @@
 # Bugs Index
 
-24 bugs encontrados y corregidos. Severidad: 🔴 crítico (rompía runtime) | 🟠 medio | 🟡 menor
+25 bugs encontrados y corregidos. Severidad: 🔴 crítico (rompía runtime) | 🟠 medio | 🟡 menor
 
 | ID | Sev | Sprint | Bug | Fix |
 |----|-----|--------|-----|-----|
@@ -33,14 +33,15 @@
 ## Stats
 
 - 🔴 Críticos: **13** (B001, B002, B003, B006, B013, B017, B018, B019, B020, B021, B022; el B015 era operacional pero mataba la portabilidad)
-- 🟠 Medios (estrategia/métricas incorrectas): **8**
-- 🟡 Menores: **3** (B016 uuid colisión, B023 filter flash, B024 slider flash)
+- 🟠 Medios (estrategia/métricas incorrectas): **9** (incluyendo B015)
+- 🟡 Menores: **3** (B016 uuid colisión, B023 filter flash, B024b universal dark flash)
 
-**Total: 24 bugs cerrados en 12 sprints.**
+**Total: 25 bugs cerrados en 13 sprints.**
 
-Sprint 18 cerró:
-- **3 bugs del audit team** (B017/B018/B019) — encontrados por análisis externo
-- **3 bugs del code review post-sprint** (B020/B021/B022) — encontrados en revisión interna
-- **1 bug UX** (B023) — reportado por Carlos al usar el dashboard
+Distribución por origen:
+- **Audit team externo** (Sprint 18): B017, B018, B019
+- **Code review post-sprint**: B020, B021, B022
+- **Reportados por Carlos**: B023, B024, B024b
+- **Encontrados durante construcción**: B001-B016
 
-Los 6 bugs rojos del Sprint 18 son particularmente insidiosos porque los tests unitarios pasaban (cada módulo se veía correcto en aislamiento), pero el sistema end-to-end no funcionaba. Lección: siempre hacer tests de integración, no solo unitarios.
+Lección principal: **los tests unitarios pasan pero el sistema end-to-end puede fallar** (B017-B022 son todos bugs de integración). Siempre hacer tests de integración + manuales.

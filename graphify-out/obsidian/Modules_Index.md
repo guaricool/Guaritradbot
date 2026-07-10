@@ -20,11 +20,13 @@ Módulos del sistema, ordenados por capa.
 - [[Modules/Component_State_Machine]] — FSM (Sprint 6)
 - [[Modules/Data_Validator]] — NaN/Inf fail-fast (Sprint 6)
 
-## Safety (Sprint 1)
+## Safety (Sprint 1 + Sprint 22 + Sprint 23)
 
 - [[Modules/AuditLedger]] — JSONL append-only
 - [[Modules/KillSwitch]] — filesystem kill
-- [[Modules/MandateGate]] — validaciones pre-trade
+- [[Modules/MandateGate]] — validaciones pre-trade (Sprint 18: source-of-truth fix)
+- [[Modules/EquityTracker]] — Sprint 23: live equity con precision sub-dólar + drawdown + history
+- Sprint 22: Paper→Live pre-flight checklist (`src/safety/paper_to_live.py`)
 
 ## Data store (Sprint 2 + Sprint 18)
 

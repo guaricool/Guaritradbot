@@ -31,7 +31,9 @@ Guaritradbot_Vault/
 │   ├── Sprint_7_PDF_Indicators.md
 │   ├── Sprint_18_Audit_Fixes_Portfolio_Management.md
 │   ├── Sprint_19_ML_Pipeline.md                  ← Sprint 19 (2026-07-09)
-│   └── Sprint_21_Alpha_Zoo.md                    ← Sprint 21 (2026-07-09)
+│   ├── Sprint_21_Alpha_Zoo.md                    ← Sprint 21 (2026-07-09)
+│   ├── Sprint_22_Paper_Live_Transition.md        ← Sprint 22 (2026-07-09)
+│   └── Sprint_23_Live_Equity_Tracker.md          ← Sprint 23 (2026-07-09)
 ├── Modules_Index.md             ← índice de los módulos
 ├── Modules/
 │   ├── MarketAnalystAgent.md
@@ -50,8 +52,9 @@ Guaritradbot_Vault/
 │   ├── PositionRepository.md    ← Sprint 2
 │   ├── WorkflowEngine.md
 │   ├── AlphaZoo.md              ← Sprint 21 (48 features)
-│   └── MLPipeline.md            ← Sprint 19 (FeatureExtractor + ModelTrainer + Predictor)
-├── Bugs_Index.md               ← lista maestra de bugs (23 total)
+│   ├── MLPipeline.md            ← Sprint 19 (FeatureExtractor + ModelTrainer + Predictor)
+│   └── EquityTracker.md         ← Sprint 23 (live equity sub-dólar)
+├── Bugs_Index.md               ← lista maestra de bugs (25 total)
 ├── Bugs/
 │   ├── B001_emit_vs_publish.md … B016_pos_id_uuid_collision.md
 │   ├── B017_micro_account_death_loop.md      ← Sprint 18
@@ -60,7 +63,9 @@ Guaritradbot_Vault/
 │   ├── B020_replacement_loop.md              ← Sprint 18 patch
 │   ├── B021_phantom_pnl_replacement.md       ← Sprint 18 patch
 │   ├── B022_smart_take_dead_code.md          ← Sprint 18 patch
-│   └── B023_dashboard_filter_button_flash.md  ← Sprint 18 patch
+│   ├── B023_dashboard_filter_button_flash.md  ← Sprint 18 patch
+│   ├── B024_dashboard_slider_dark_flash.md   ← Sprint 22 patch
+│   └── B024b_dashboard_universal_dark_flash.md ← Sprint 22 patch
 ├── Inspirations.md              ← 5 repos + NautilusTrader, de dónde viene cada idea
 └── Deployment.md                ← cómo subir a Coolify VPS
 ```
@@ -126,10 +131,12 @@ python -c "from src.safety.kill_switch import KillSwitch; ks=KillSwitch('/tmp/GU
 
 | | |
 |--|--|
-| Sprints | **9 cerrados** (0-7 + 18) |
-| Commits locales | **9** (en `main`, sin push) |
-| Archivos Python | **~26** (sin contar los external_repos, incluyendo tests/) |
-| Líneas de código añadidas | ~4,400 (incluyendo Sprint 18) |
-| Bugs encontrados | **19** (todos corregidos y testeados) |
-| Tests pasando | **18 unit tests Sprint 18** + scripts legacy /tmp/test_sprintN.py |
+| Sprints | **13 cerrados** (0-7 + 18, 19, 21, 22, 23) |
+| Commits en `main` | **20+** (todos pusheados a guaricool/Guaritradbot) |
+| Archivos Python | **~30** (sin contar los external_repos, incluyendo tests/) |
+| Líneas de código añadidas | ~5,500+ (incluyendo Sprints 18-23) |
+| Bugs encontrados | **25** (todos corregidos y testeados) |
+| Tests unitarios | **71/71 passing** (ver `python -m unittest discover tests -v`) |
+| Scripts legacy | /tmp/test_sprintN.py (Sprint 0-7) |
 | Inspiraciones externas | 6 (5 repos + NautilusTrader) |
+| Score de capacidad | **~82%** de paridad con el campo (vs 71% pre-Sprint 18) |
