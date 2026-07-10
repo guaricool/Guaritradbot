@@ -7,16 +7,18 @@ def sma_crossover_strategy(prices: pd.DataFrame, short_window: int = 10, long_wi
     Detecta 'bajadas' cuando la media corta cruza por debajo de la media larga (Señal -1: Venta/Short).
     
     Args:
-        prices: DataFrame con columna 'close'
+        prices: DataFrame con columna 'Close' (Sprint 43 L5 fix:
+            was 'close' lowercase, inconsistent with the rest of the
+            pipeline which uses 'Close')
         short_window: Periodo para la media móvil rápida
         long_window: Periodo para la media móvil lenta
-        
+
     Returns:
         pd.Series: Serie de señales (1, 0, -1)
     """
     # Calcular medias móviles
-    sma_short = prices['close'].rolling(window=short_window).mean()
-    sma_long = prices['close'].rolling(window=long_window).mean()
+    sma_short = prices['Close'].rolling(window=short_window).mean()
+    sma_long = prices['Close'].rolling(window=long_window).mean()
     
     # Crear serie de señales
     signals = pd.Series(0, index=prices.index)

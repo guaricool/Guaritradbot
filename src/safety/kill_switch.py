@@ -25,9 +25,12 @@ class KillSwitch:
         print(f"[KillSwitch] ARMED at {self.path}")
 
     def disarm(self) -> None:
-        if self.path.exists():
-            self.path.unlink()
-            print(f"[KillSwitch] DISARMED ({self.path} removed)")
+        # Sprint 43 L1 fix: use missing_ok=True so a TOCTOU race
+        # between two operators disarming at the same time doesn't
+        # raise FileNotFoundError. The audit flagged this as a
+        # low-severity race; the fix is one keyword.
+        self.path.unlink(missing_ok=True)
+        print(f"[KillSwitch] DISARMED ({self.path} removed)")
 
     def is_triggered(self) -> bool:
         triggered = self.path.exists()

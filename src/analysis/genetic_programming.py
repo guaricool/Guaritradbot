@@ -279,8 +279,23 @@ def fitness(
     prices: pd.DataFrame,
     direction: int = 1,
     parsimony_penalty: float = 0.05,
+    periods_per_year: int = 252,
 ) -> Dict[str, float]:
     """Score a strategy tree on the given price data.
+
+    Args:
+        tree: StrategyTree to evaluate.
+        prices: DataFrame with OHLCV data. Must have a 'Close' column.
+        direction: long (1) or short (-1) for the strategy's signal.
+        parsimony_penalty: weight of the parsimony term in the score.
+        periods_per_year: Sprint 43 L4 fix — was hardcoded to 252
+            (daily bars). For intraday data (1h, 4h), pass the
+            appropriate annualization factor:
+              - 1h  bars: 252 * 24 = 6048 (or 252 trading days * 24)
+              - 4h  bars: 252 * 6  = 1512
+              - 1d  bars: 252  (default, unchanged)
+            Default keeps backward compatibility with any caller
+            that doesn't know about the new param.
 
     Returns a dict with: sharpe, total_return, max_drawdown, n_trades,
     parsimony, score (the composite we maximize).
@@ -294,8 +309,9 @@ def fitness(
         if strat.std() == 0 or len(strat) < 2:
             return {"sharpe": 0.0, "total_return": 0.0, "max_drawdown": 0.0,
                     "n_trades": 0, "parsimony": 0.0, "score": 0.0}
-        ann_ret = float((1 + strat).prod() ** (252 / max(len(strat), 1)) - 1)
-        ann_vol = float(strat.std() * np.sqrt(252))
+        # Sprint 43 L4 fix: use periods_per_year instead of hardcoded 252
+        ann_ret = float((1 + strat).prod() ** (periods_per_year / max(len(strat), 1)) - 1)
+        ann_vol = float(strat.std() * np.sqrt(periods_per_year))
         sharpe = ann_ret / ann_vol if ann_vol > 0 else 0.0
         equity = (1 + strat).cumprod()
         peaks = equity.cummax()
@@ -346,6 +362,7 @@ def multi_symbol_fitness(
     prices_by_symbol: Dict[str, pd.DataFrame],
     direction: int = 1,
     min_symbols: int = 2,
+    periods_per_year: int = 252,
 ) -> Dict[str, float]:
     """Evaluate a tree on multiple symbols and return aggregate metrics.
 
@@ -358,7 +375,8 @@ def multi_symbol_fitness(
     """
     per_symbol = {}
     for sym, prices in prices_by_symbol.items():
-        f = fitness(tree, prices, direction)
+        # Sprint 43 L4: propagate periods_per_year to per-symbol fitness
+        f = fitness(tree, prices, direction, periods_per_year=periods_per_year)
         if f["n_trades"] >= 3:
             per_symbol[sym] = f
     if len(per_symbol) < min_symbols:
