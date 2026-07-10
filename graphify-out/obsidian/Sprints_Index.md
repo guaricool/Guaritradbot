@@ -1,6 +1,6 @@
 # Sprints Index
 
-13 sprints cerrados (0-7, 18, 19, 21, 22, 23).
+16 sprints cerrados (0-7, 18, 19, 21, 22, 23, 24, 26, 28, 29, 30, 31).
 
 | Sprint | Tema principal | Inspiración | Commit |
 |--------|---------------|-------------|--------|
@@ -17,7 +17,12 @@
 | [[Sprints/Sprint_21_Alpha_Zoo]] | 48+ alpha features via `ta` library (RSI/MACD/BB/ATR/ADX/Ichimoku/etc.) | TA-Lib (pure-Python fork) | `2847dff` |
 | [[Sprints/Sprint_22_Paper_Live_Transition]] | Pre-flight checklist: broker check + paper positions handling + dry-run validation | Carlos preguntó "¿qué pasa al ir a live?" | `d03cb2c` |
 | [[Sprints/Sprint_23_Live_Equity_Tracker]] | EquityTracker con precision sub-dólar + drawdown + history para sparklines | Carlos: "¿ centavos o dólares ganando/perdiendo?" | `4b46460` |
-| [[Sprints/Sprint_24_Dashboard_Equity_Widget]] | Persistencia crash-only + dashboard widget (big number + delta + sparkline) | Carlos pidió ver equity en vivo, Sprint 23 era logs only | (pending push) |
+| [[Sprints/Sprint_24_Dashboard_Equity_Widget]] | Persistencia crash-only + dashboard widget (big number + delta + sparkline) | Carlos pidió ver equity en vivo, Sprint 23 era logs only | (merged) |
+| [[Sprints/Sprint_26_LIVE_Theme_Auto_Clean_Paper]] | LIVE mode theme (dark/cyan) + auto-clean paper positions on toggle | Carlos pasó a live y pidió pulido visual | `b48f2eb` |
+| [[Sprints/Sprint_28_Streamlit_Console_Warnings]] | Disable `gatherUsageStats` + reduce noise | Carlos notó warnings de console | `e185d61` |
+| [[Sprints/Sprint_29_Pre_Flight_Start_Live]] | Pre-flight checklist widget + Start Live button | Carlos pidió botón "Start Live" | `02b735c` |
+| [[Sprints/Sprint_30_Kelly_Drawdown_From_QUANT]] | Kelly Criterion position sizing + Max Drawdown kill switch (con 19 tests) | Carlos shared "QUANT Claude Trading Skills" PDF | `0252773` |
+| [[Sprints/Sprint_31_Coolify_Crash_Recovery]] | B028v2 — consolidación de `[browser]` TOML section + red Docker recreada + redeploy manual | Carlos: "en el coolify esta Exited (14x restarts)" | `6aee4ff` + `d73924d` |
 
 ## Tests por sprint
 
@@ -35,4 +40,5 @@
 | 22 | `python -m unittest tests.test_paper_to_live -v` | **10/10 passing** |
 | 23 | `python -m unittest tests.test_equity_tracker -v` | **23/23 passing** (incluye persist) |
 | 24 | `python -m unittest tests.test_equity_widget -v` | **5/5 passing** |
-| **TOTAL** | `python -m unittest discover tests` | **83/83 passing** |
+| 30 | `python -m unittest tests.test_kelly_drawdown -v` | **19/19 passing** |
+| **TOTAL** | `python -m unittest discover tests` | **102/102 passing** |

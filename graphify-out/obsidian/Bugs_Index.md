@@ -1,6 +1,6 @@
 # Bugs Index
 
-29 bugs encontrados y corregidos. Severidad: 🔴 crítico (rompía runtime) | 🟠 medio | 🟡 menor
+30 bugs encontrados y corregidos. Severidad: 🔴 crítico (rompía runtime) | 🟠 medio | 🟡 menor
 
 | ID | Sev | Sprint | Bug | Fix |
 |----|-----|--------|-----|-----|
@@ -33,14 +33,15 @@
 | [[Bugs/B026_dashboard_positions_nameerror]] | 🟠 | 26 patch | El botón "Clean Paper Positions" en el sidebar referenciaba `positions` que se carga DESPUÉS del sidebar → `NameError: name 'positions' is not defined` al abrir el dashboard | Cargar positions desde JSON directamente en variable local `_sidebar_pp` dentro del bloque del sidebar |
 | [[Bugs/B027_dashboard_accessibility_csp_warnings]] | 🟡 | 27 | Browser DevTools mostraba 4 categorías de warnings: CSP bloquea `eval`, form field sin id/name, autocomplete vacío, sin label asociado. Algunos son limitaciones de Streamlit 1.36. | Inyectar `<meta>` tags via `st.components.v1.html` con CSP permisivo (`unsafe-eval` para Streamlit, `unsafe-inline` para CSS) + meta tags de accessibility (`theme-color`, `color-scheme`, `format-detection`) + CSS para `autocomplete=off` |
 | [[Bugs/B028_streamlit_console_warnings]] | 🟡 | 28 | Console mostraba 9+ warnings: "Gather usage stats: true" + 8 "Unrecognized feature" (ambient-light-sensor, battery, document-domain, layout-animations, etc.) + iframe sandbox warning del streamlit_autorefresh component. Todos vienen del bundle JS compilado de Streamlit 1.36. | `gatherUsageStats = false` en `.streamlit/config.toml` elimina el telemetry warning. Los 8 "Unrecognized feature" + iframe sandbox son limitaciones de Streamlit 1.36 (no se pueden parchear sin upgrade). |
+| [[Bugs/B028v2_coolify_dashboard_crashloop]] | 🔴 | 31 | Carlos: "en el coolify esta Exited (14x restarts)". El dashboard container estaba en crash loop (`Restarting (1)`), pero el bot engine estaba sano. Causa raíz: mi fix original de B028 (`e185d61`) duplicó la sección `[browser]` en `.streamlit/config.toml` — TOML no permite headers duplicados, el parser falla con `TomlDecodeError: What? browser already exists?` y streamlit nunca llega a bootear. Además, el deploy #334 falló con `network wyn2ah6rflg6ufwzpvzk436f declared as external, but could not be found` porque Coolify perdió la red per-recurso (estado inconsistente tras los containers removidos). | Consolidar en una sola sección `[browser]` con `gatherUsageStats`, `serverAddress`, `serverPort`. Crear la red manualmente con `docker network create --driver bridge <uuid>`. Forzar redeploy con un commit vacío (`git commit --allow-empty`). Commit `6aee4ff` (consolidación) + `d73924d` (redeploy trigger). Lección: cuando se agrega una config key a una sección existente, **siempre consolidar** — nunca duplicar headers TOML aunque parezca inofensivo. **Validar con `toml.loads()` antes de commitear**. |
 
 ## Stats
 
-- 🔴 Críticos: **13** (B001, B002, B003, B006, B013, B017, B018, B019, B020, B021, B022; el B015 era operacional pero mataba la portabilidad)
+- 🔴 Críticos: **14** (B001, B002, B003, B006, B013, B017, B018, B019, B020, B021, B022, B028v2; el B015 era operacional pero mataba la portabilidad)
 - 🟠 Medios (estrategia/métricas incorrectas): **10** (incluyendo B015, B026)
-- 🟡 Menores: **3** (B016 uuid colisión, B023 filter flash, B024b universal dark flash)
+- 🟡 Menores: **4** (B016 uuid colisión, B023 filter flash, B024b universal dark flash, B028 streamlit console)
 
-**Total: 25 bugs cerrados en 13 sprints.**
+**Total: 30 bugs cerrados en 16 sprints.**
 
 Distribución por origen:
 - **Audit team externo** (Sprint 18): B017, B018, B019
