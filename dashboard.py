@@ -1635,16 +1635,43 @@ def _live_tick(asset: str) -> dict | None:
 #  HELPERS
 # ============================================================
 
-def fmt_usd(x, decimals: int = 2) -> str:
+def fmt_usd(x, decimals: int = 2, signed: bool = False) -> str:
+    """Format a USD value.
+
+    Args:
+        x: the value (or None).
+        decimals: how many decimals to show.
+        signed: if True, prefix ``+`` for positive, ``-`` for negative,
+            no prefix for zero. If False (default), always show a sign
+            (``+`` for non-negative, nothing for negative) — legacy
+            behavior for cards that always want a directional indicator.
+
+    Use ``signed=False`` for balance (no gain/loss interpretation).
+    Use ``signed=True`` for P&L values where sign matters.
+    """
     if x is None:
         return "—"
+    if signed:
+        if x > 0:
+            return f"+$ {x:,.{decimals}f}".replace(" ", "")  # strip space
+        if x < 0:
+            return f"-$ {abs(x):,.{decimals}f}".replace(" ", "")
+        return f"$0.00" if decimals == 2 else f"${0:,.{decimals}f}"
+    # Legacy: + for non-negative (including 0), nothing for negative.
     sign = "+" if x >= 0 else ""
     return f"{sign}${x:,.{decimals}f}"
 
 
-def fmt_pct(x, decimals: int = 2) -> str:
+def fmt_pct(x, decimals: int = 2, signed: bool = False) -> str:
+    """Format a percentage. See fmt_usd for the `signed` semantics."""
     if x is None:
         return "—"
+    if signed:
+        if x > 0:
+            return f"+{x:.{decimals}f}%"
+        if x < 0:
+            return f"-{abs(x):.{decimals}f}%"
+        return f"0.00%" if decimals == 2 else f"0.{'0' * decimals}%"
     sign = "+" if x >= 0 else ""
     return f"{sign}{x:.{decimals}f}%"
 
@@ -2614,6 +2641,8 @@ with c1:
     # user knows the bot can't trade on tiny balances (binance.us requires
     # $10 minimum order, hence the minimum balance to trade is $20 with
     # the current 50% cap).
+    # Sprint 37+ fix: Balance is a raw value, NOT a gain/loss — don't
+    # prefix with "+". Color is always neutral (it's a balance, not P&L).
     balance_below_min = balance < 10.0  # binance.us hard minimum
     balance_delta_html = f"<span style='color:#4cc9f0;'>src: {balance_source}</span>"
     if balance_below_min:
@@ -2625,12 +2654,17 @@ with c1:
 
     st.markdown(
         kpi_with_spark(
-            "Balance", fmt_usd(balance),
+            "Balance", fmt_usd(balance, signed=False),  # no sign, neutral
             delta=balance_delta_html,
+            klass="neu",  # always neutral
         ),
         unsafe_allow_html=True,
     )
 with c2:
+    # Sprint 37+ fix: Equity is the actual current value, not a delta.
+    # Show absolute value (e.g. $21.43) — not "+$21.43" since "+$" implies
+    # a gain from a baseline. The DELTA under the number is what shows
+    # the gain/loss (with proper sign + color).
     eq_spark = []
     # synthesize equity curve over recent closed trades + unrealized (simplified)
     sorted_closes = sorted(
@@ -2644,13 +2678,21 @@ with c2:
         series.append(eq_running)
     if unrealized_pnl:
         series.append(eq_running + unrealized_pnl)
+    # Equity delta = (equity - balance). The actual EQUITY number
+    # is shown as the value (no sign). The DELTA below shows the
+    # gain/loss in dollars + percent with proper sign + color.
+    equity_delta = equity - balance
+    equity_delta_str = (
+        f"{fmt_usd(equity_delta, signed=True)} ({fmt_pct((equity_delta / balance * 100) if balance else 0, signed=True)}) all-time"
+    )
     st.markdown(
         kpi_with_spark(
-            "Equity", fmt_usd(equity),
+            "Equity", fmt_usd(equity, signed=False),  # absolute, no sign
             spark_values=series[-20:],
+            # sparkline color follows the gain/loss trend
             spark_color="#06d6a0" if equity >= balance else "#f72585",
-            delta=f"{fmt_pct(drawdown_pct)} all-time",
-            klass=color_class(equity - balance),
+            delta=equity_delta_str,
+            klass=color_class(equity_delta),  # green/red/neutral
         ),
         unsafe_allow_html=True,
     )
@@ -2748,32 +2790,51 @@ with c3:
     # Sprint 16: show Open PnL + total invested for clarity on small
     # balances. With $10 starting, seeing "+$0.15" is meaningless
     # without knowing that the position is $5 → 3% return.
+    # Sprint 37+ fix: use signed=True so the value shows the actual
+    # sign ($0.43 gain vs $0.43 loss) and color the value accordingly.
     open_invested = sum(
         abs((p.get("entry_price") or 0) * (p.get("qty") or 0))
         for p in open_positions
     )
-    open_pnl_delta = (
-        f"<span style='color:#06d6a0;'>on ${open_invested:.2f} invested</span>"
-        if unrealized_pnl >= 0
-        else f"<span style='color:#f72585;'>on ${open_invested:.2f} invested</span>"
-    )
+    # Delta line: color follows the actual sign of unrealized_pnl
+    if unrealized_pnl > 0:
+        delta_color = "#06d6a0"  # green = gain
+        delta_text = f"<span style='color:{delta_color};'>+${unrealized_pnl:,.4f} on ${open_invested:,.2f} invested</span>"
+    elif unrealized_pnl < 0:
+        delta_color = "#f72585"  # red = loss
+        delta_text = f"<span style='color:{delta_color};'>${unrealized_pnl:,.4f} on ${open_invested:,.2f} invested</span>"
+    else:
+        delta_color = "#6b7390"  # neutral gray
+        delta_text = f"<span style='color:{delta_color};'>$0.00 on ${open_invested:,.2f} invested</span>"
     st.markdown(
         kpi_with_spark(
-            "Open PnL", fmt_usd(unrealized_pnl),
+            "Open PnL", fmt_usd(unrealized_pnl, signed=True, decimals=4),
             spark_values=[(p.get('entry_price') or 0) for p in open_positions],
             spark_color="#06d6a0" if unrealized_pnl >= 0 else "#f72585",
-            delta=open_pnl_delta,
+            delta=delta_text,
             klass=color_class(unrealized_pnl),
         ),
         unsafe_allow_html=True,
     )
 with c4:
+    # Sprint 37+ fix: realized PnL uses signed format so a negative
+    # realized value (loss on a closed trade) shows as red, not green.
+    if realized_pnl > 0:
+        delta_color = "#06d6a0"
+    elif realized_pnl < 0:
+        delta_color = "#f72585"
+    else:
+        delta_color = "#6b7390"
+    delta_text = (
+        f"<span style='color:{delta_color};'>{fmt_usd(realized_pnl, signed=True)} "
+        f"from {len(closed_positions)} closed</span>"
+    )
     st.markdown(
         kpi_with_spark(
-            "Realized", fmt_usd(realized_pnl),
+            "Realized", fmt_usd(realized_pnl, signed=True, decimals=4),
             spark_values=[p.get('realized_pnl') or 0 for p in closed_positions[-20:]],
             spark_color="#06d6a0" if realized_pnl >= 0 else "#f72585",
-            delta=f"{len(closed_positions)} closed",
+            delta=delta_text,
             klass=color_class(realized_pnl),
         ),
         unsafe_allow_html=True,
