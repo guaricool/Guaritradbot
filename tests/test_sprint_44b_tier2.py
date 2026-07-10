@@ -649,13 +649,16 @@ class AllocationGateIntegrationTest(unittest.TestCase):
             risk_per_trade_pct=1.0,
             asset_concentration_check=False,  # isolate the new gate
             allocation_policy=policy,
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
 
     def test_default_policy_used_when_none_passed(self):
         """Constructor with no policy should use DEFAULT_POLICY (enabled)."""
         from src.agents.risk_agent import RiskManagerAgent
         from src.data.asset_allocation import DEFAULT_POLICY
-        agent = RiskManagerAgent(position_repo=None)
+        agent = RiskManagerAgent(position_repo=None, correlation_check_enabled=False, tail_risk_check_enabled=False)
         self.assertIsNotNone(agent.allocation_policy)
         self.assertTrue(agent.allocation_policy.enabled)
 
@@ -733,7 +736,10 @@ class AllocationGateIntegrationTest(unittest.TestCase):
             asset_concentration_check=True,
             max_asset_class_concentration_pct=80.0,  # permissive
             allocation_policy=policy,
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
         # Adding SOL $5 (more crypto): 65/95 = 68%. Over 35% cap → reject.
         ok_alloc, reason_alloc = agent._check_allocation("SOL-USD", proposed_notional_usd=5.0)
         ok_conc, reason_conc = agent._check_concentration("SOL-USD", proposed_notional_usd=5.0)

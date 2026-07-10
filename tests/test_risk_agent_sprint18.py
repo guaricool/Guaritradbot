@@ -67,7 +67,10 @@ class RiskAgentBugAFixTest(unittest.TestCase):
             min_order_usd=10.0,
             audit=self.audit,
             position_repo=self.repo,
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
         # ATR = 4% of entry → stop_distance = 8% of entry → 1% risk / 8% = 12.5%
         # → notional = $20 * 12.5% = $2.50 < $10
         # But that's below balance too. Use a slightly different setup:
@@ -105,7 +108,10 @@ class RiskAgentBugAFixTest(unittest.TestCase):
             min_order_usd=10.0,
             audit=self.audit,
             position_repo=self.repo,
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
         hypothesis = {
             "asset": "BTC-USD",
             "strategy": "RSI_MeanReversion",
@@ -191,7 +197,10 @@ class PositionReplacementTest(unittest.TestCase):
                 "ETH-USD": 2900.0,   # pos_a is -1.66% below entry (loser)
                 "GLD": 182.0,        # pos_b is +1.1% above entry (winner but stale)
             },
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
 
         # New hypothesis: BTC with high expected move + good R:R
         # Should score very high and replace pos_a (the loser)
@@ -251,7 +260,10 @@ class PositionReplacementTest(unittest.TestCase):
                 "ETH-USD": 2970.0,   # pos_a slightly down (small negative score)
                 "GLD": 181.0,        # pos_b slightly up (small positive score)
             },
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
 
         # New hypothesis: NEGATIVE expected move + noisy ATR → very low score
         new_hyp = {
@@ -304,8 +316,11 @@ class PositionScoringTest(unittest.TestCase):
         repo.positions = [loser, winner]
         agent = RiskManagerAgent(
             position_repo=repo,
-            current_prices={"X": 96, "Y": 108},  # loser down, winner up
-        )
+            current_prices={"X": 96, "Y": 108},  # loser down, winner up,
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
         loser_score = agent.score_position(loser, current_price=96)
         winner_score = agent.score_position(winner, current_price=108)
         self.assertLess(loser_score, winner_score)
@@ -364,7 +379,10 @@ class B020OneReplacementPerCycleTest(unittest.TestCase):
                 "ETH-USD": 2900,  # losing
                 "GLD": 184,        # winning
             },
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
 
         # 5 strong hypotheses that would each trigger a replacement
         hyps = []
@@ -436,7 +454,10 @@ class B021NoPriceAbortTest(unittest.TestCase):
             replacement_score_threshold=0.10,
             # NOTE: current_prices is EMPTY — no fresh price for ETH-USD
             current_prices={},
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
 
         # Strong new hypothesis that would normally trigger replacement
         new_hyp = {
@@ -499,7 +520,10 @@ class RiskAgentC3FixTest(unittest.TestCase):
             broker_client=self.broker,
             audit=self.audit,
             position_repo=self.repo,
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
 
     def _run(self, hyp_overrides):
         hyp = {
@@ -546,7 +570,10 @@ class RiskAgentC3FixTest(unittest.TestCase):
             broker_client=_NaNBroker(),
             audit=self.audit,
             position_repo=self.repo,
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
         bal, source = agent.get_account_balance()
         self.assertEqual(bal, 100.0)
         self.assertEqual(source, "testnet_sim")
@@ -559,7 +586,10 @@ class RiskAgentC3FixTest(unittest.TestCase):
             broker_client=_InfBroker(),
             audit=self.audit,
             position_repo=self.repo,
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
         bal, source = agent.get_account_balance()
         self.assertEqual(bal, 100.0)
         self.assertEqual(source, "testnet_sim")

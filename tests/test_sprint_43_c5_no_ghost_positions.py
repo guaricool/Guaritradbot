@@ -85,7 +85,10 @@ class RiskAgentNoLongerPersistsTest(unittest.TestCase):
             audit=self.audit,
             position_repo=self.repo,
             event_bus=self.event_bus,
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
 
     def test_approved_trade_does_NOT_add_to_repo(self):
         """

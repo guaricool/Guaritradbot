@@ -27,6 +27,17 @@ from src.data.asset_allocation import (
     DEFAULT_POLICY,
     check_trade_against_policy,
 )
+# Sprint 45: wire the Sprint 44 portfolio-risk analytics (correlation,
+# recession stress test, CVaR) into real pre-trade gates. Previously
+# these were fully built and tested but never consulted by any live
+# decision — the second audit flagged this as "shelf-ware". All three
+# are best-effort: a data outage or unexpected exception ALLOWS the
+# trade (with the specific reason logged) rather than blocking
+# trading entirely on an infra hiccup. Only a CONFIRMED bad signal
+# (high correlation, breached stress drawdown, breached CVaR) rejects.
+from src.analysis.asset_correlation import analyze_assets
+from src.analysis.stress_test import stress_portfolio_all_scenarios, worst_case_drawdown
+from src.analysis.tail_risk import compute_portfolio_tail_risk
 
 
 class RiskManagerAgent:
@@ -52,6 +63,22 @@ class RiskManagerAgent:
         max_asset_class_concentration_pct: float = 60.0,
         # Sprint 44B: allocation policy drift gate (BlackRock #1)
         allocation_policy: Optional[AllocationPolicy] = None,
+        # Sprint 45: portfolio-risk gates (previously-unwired Sprint 44
+        # analytics). All default ON; each degrades to "allow" on
+        # missing data/errors rather than blocking trading.
+        portfolio_stress_check: bool = True,
+        # Sprint 45 default chosen so a single concentrated crypto
+        # position (BTC/ETH alone can show ~-64% under the 2022 rate-
+        # hike scenario) doesn't get rejected outright -- that's
+        # normal, expected volatility for this bot's asset mix, not
+        # a portfolio-wipeout risk. 70% still catches genuinely
+        # extreme concentration (e.g. all-in on commodity_energy,
+        # -78% under 2008 GFC).
+        max_stress_drawdown_pct: float = 70.0,
+        correlation_check_enabled: bool = True,
+        max_avg_correlation_pct: float = 75.0,
+        tail_risk_check_enabled: bool = True,
+        max_cvar_95_pct: float = 20.0,
     ):
         self.broker = broker_client
         self.risk_per_trade_pct = risk_per_trade_pct
@@ -80,6 +107,13 @@ class RiskManagerAgent:
         # default policy (or the policy disabled if explicitly set).
         # Pass `AllocationPolicy(enabled=False)` to disable.
         self.allocation_policy = allocation_policy if allocation_policy is not None else DEFAULT_POLICY
+        # Sprint 45: portfolio-risk gates.
+        self.portfolio_stress_check = portfolio_stress_check
+        self.max_stress_drawdown_pct = max_stress_drawdown_pct
+        self.correlation_check_enabled = correlation_check_enabled
+        self.max_avg_correlation_pct = max_avg_correlation_pct
+        self.tail_risk_check_enabled = tail_risk_check_enabled
+        self.max_cvar_95_pct = max_cvar_95_pct
 
     def get_account_balance(self) -> tuple:
         if self.broker is None:
@@ -347,6 +381,84 @@ class RiskManagerAgent:
                     )
                     continue
 
+            # --- Sprint 45 (N4): portfolio-risk gates ---
+            # Wires the previously-unused Sprint 44 analytics
+            # (asset_correlation.py, stress_test.py, tail_risk.py) into
+            # real pre-trade gates. Philosophy for all three: missing
+            # data or an internal error ALWAYS allows the trade (never
+            # halt trading because a data provider is flaky) — only a
+            # *confirmed* breach rejects it. See N5 fix in
+            # asset_correlation.py for why `well_diversified` had to
+            # become Optional[bool] first.
+            if self.portfolio_stress_check and self.position_repo is not None:
+                stress_ok, stress_reason = self._check_portfolio_stress(
+                    asset=h["asset"],
+                    proposed_notional_usd=trade["notional_usd"],
+                )
+                if not stress_ok:
+                    rejected.append({"trade": trade, "reason": stress_reason})
+                    if self.audit:
+                        self.audit.append(
+                            "STRESS_TEST_BLOCKED",
+                            {
+                                "asset": trade["asset"],
+                                "reason": stress_reason,
+                                "proposed_notional_usd": trade["notional_usd"],
+                                "max_stress_drawdown_pct": self.max_stress_drawdown_pct,
+                            },
+                        )
+                    print(
+                        f"  📉 {trade['asset']:8} {direction:5} — "
+                        f"blocked by stress test: {stress_reason}"
+                    )
+                    continue
+
+            if self.correlation_check_enabled and self.position_repo is not None:
+                corr_ok, corr_reason = self._check_portfolio_correlation(
+                    asset=h["asset"],
+                    proposed_notional_usd=trade["notional_usd"],
+                )
+                if not corr_ok:
+                    rejected.append({"trade": trade, "reason": corr_reason})
+                    if self.audit:
+                        self.audit.append(
+                            "CORRELATION_BLOCKED",
+                            {
+                                "asset": trade["asset"],
+                                "reason": corr_reason,
+                                "proposed_notional_usd": trade["notional_usd"],
+                                "max_avg_correlation_pct": self.max_avg_correlation_pct,
+                            },
+                        )
+                    print(
+                        f"  🔗 {trade['asset']:8} {direction:5} — "
+                        f"blocked by correlation: {corr_reason}"
+                    )
+                    continue
+
+            if self.tail_risk_check_enabled and self.position_repo is not None:
+                cvar_ok, cvar_reason = self._check_portfolio_tail_risk(
+                    asset=h["asset"],
+                    proposed_notional_usd=trade["notional_usd"],
+                )
+                if not cvar_ok:
+                    rejected.append({"trade": trade, "reason": cvar_reason})
+                    if self.audit:
+                        self.audit.append(
+                            "TAIL_RISK_BLOCKED",
+                            {
+                                "asset": trade["asset"],
+                                "reason": cvar_reason,
+                                "proposed_notional_usd": trade["notional_usd"],
+                                "max_cvar_95_pct": self.max_cvar_95_pct,
+                            },
+                        )
+                    print(
+                        f"  ⚠️  {trade['asset']:8} {direction:5} — "
+                        f"blocked by tail risk: {cvar_reason}"
+                    )
+                    continue
+
             # --- Sprint 2: max_open_trades ---
             if slots_left <= 0:
                 # Sprint 18: try position replacement before outright rejection.
@@ -512,6 +624,130 @@ class RiskManagerAgent:
                 f"exceeds_{self.max_asset_class_concentration_pct:.0f}pct_cap"
             )
         return True, "concentration_ok"
+
+    # ----------------------------------------------------------------------
+    # Sprint 45: portfolio-risk gates (wiring the Sprint 44 analytics
+    # that the second audit found unused: asset_correlation.py,
+    # stress_test.py, tail_risk.py).
+    # ----------------------------------------------------------------------
+
+    def _projected_positions(self, asset: str, proposed_notional_usd: float):
+        """Current open positions + a synthetic candidate position for
+        `asset`, as a list of lightweight objects exposing `.asset` and
+        `.notional_usd` — the duck-typed shape `stress_test.py` expects.
+        Does not touch the real repo."""
+        import types
+        positions = list(self.position_repo.open()) if self.position_repo is not None else []
+        positions.append(types.SimpleNamespace(asset=asset, notional_usd=proposed_notional_usd))
+        return positions
+
+    def _check_portfolio_stress(
+        self,
+        asset: str,
+        proposed_notional_usd: float,
+    ) -> Tuple[bool, str]:
+        """Reject a trade if it would push the WORST-CASE historical
+        stress scenario (2008 GFC / 2020 COVID / 2022 rate hikes)
+        beyond `max_stress_drawdown_pct`. Purely local computation
+        (notional * historical shock table) — no network dependency,
+        so this can run every cycle without any fail-open concern.
+        """
+        if not self.portfolio_stress_check or proposed_notional_usd <= 0:
+            return True, "stress_check_disabled_or_zero_notional"
+        try:
+            positions = self._projected_positions(asset, proposed_notional_usd)
+            results = stress_portfolio_all_scenarios(positions)
+            worst = worst_case_drawdown(results)
+        except Exception as e:
+            # Never block a trade because the stress-test code itself
+            # errored — that's a bug to fix, not a reason to halt
+            # trading. Log it so it's visible.
+            return True, f"stress_check_error:{str(e)[:100]}"
+        worst_pct = abs(worst.drawdown_pct) * 100.0
+        if worst_pct > self.max_stress_drawdown_pct:
+            return False, (
+                f"stress_test_{worst.scenario_name}_{worst_pct:.1f}pct_drawdown_"
+                f"exceeds_{self.max_stress_drawdown_pct:.0f}pct_cap"
+            )
+        return True, f"stress_ok_worst_{worst.scenario_name}_{worst_pct:.1f}pct"
+
+    def _check_portfolio_correlation(
+        self,
+        asset: str,
+        proposed_notional_usd: float,
+    ) -> Tuple[bool, str]:
+        """Reject a trade if the projected book (existing + candidate)
+        is confirmed highly correlated (avg pairwise correlation above
+        `max_avg_correlation_pct`) — the "5 positions but 2 real bets"
+        problem `asset_correlation.py` was built to detect.
+
+        Needs live yfinance data (network). Sprint 45 fix (N5):
+        `well_diversified` is now Optional[bool] — None means "not
+        enough data to judge", which this gate treats as ALLOW (best
+        effort), never as a rejection. Any exception also allows the
+        trade rather than blocking trading on a data-provider outage.
+        """
+        if not self.correlation_check_enabled or proposed_notional_usd <= 0:
+            return True, "correlation_check_disabled_or_zero_notional"
+        if self.position_repo is None:
+            return True, "no_position_repo"
+        open_assets = {p.asset for p in self.position_repo.open()}
+        open_assets.add(asset)
+        if len(open_assets) < 3:
+            # Correlation across 1-2 assets isn't a meaningful "am I
+            # actually diversified" signal yet.
+            return True, "too_few_assets_for_correlation_check"
+        try:
+            result = analyze_assets(sorted(open_assets))
+        except Exception as e:
+            return True, f"correlation_check_error:{str(e)[:100]}"
+        if result.well_diversified is None:
+            return True, "correlation_check_no_data"
+        if result.well_diversified:
+            return True, f"correlation_ok_avg_{result.avg_correlation:.2f}"
+        avg_pct = result.avg_correlation * 100.0
+        if avg_pct > self.max_avg_correlation_pct:
+            return False, (
+                f"correlation_avg_{avg_pct:.1f}pct_exceeds_"
+                f"{self.max_avg_correlation_pct:.0f}pct_cap"
+            )
+        # well_diversified=False but under our (looser) hard cap —
+        # informational only, doesn't block.
+        return True, f"correlation_below_hard_cap_avg_{avg_pct:.1f}pct"
+
+    def _check_portfolio_tail_risk(
+        self,
+        asset: str,
+        proposed_notional_usd: float,
+    ) -> Tuple[bool, str]:
+        """Reject a trade if the projected portfolio's daily CVaR 95%
+        (expected loss in the worst 5% of days) breaches
+        `max_cvar_95_pct`. Needs live yfinance data — same best-effort
+        philosophy as the correlation gate: missing data or errors
+        ALLOW the trade, only a confirmed breach rejects it.
+        """
+        if not self.tail_risk_check_enabled or proposed_notional_usd <= 0:
+            return True, "tail_risk_check_disabled_or_zero_notional"
+        if self.position_repo is None:
+            return True, "no_position_repo"
+        weights: Dict[str, float] = {}
+        for p in self.position_repo.open():
+            weights[p.asset] = weights.get(p.asset, 0.0) + p.notional_usd
+        weights[asset] = weights.get(asset, 0.0) + proposed_notional_usd
+        if len(weights) < 2:
+            return True, "too_few_assets_for_tail_risk_check"
+        try:
+            result = compute_portfolio_tail_risk(weights)
+        except Exception as e:
+            return True, f"tail_risk_check_error:{str(e)[:100]}"
+        if result.n_observations == 0:
+            return True, "tail_risk_check_no_data"
+        cvar_95_pct = abs(result.cvar_95) * 100.0
+        if cvar_95_pct > self.max_cvar_95_pct:
+            return False, (
+                f"cvar95_{cvar_95_pct:.1f}pct_exceeds_{self.max_cvar_95_pct:.0f}pct_cap"
+            )
+        return True, f"tail_risk_ok_cvar95_{cvar_95_pct:.1f}pct"
 
     def _check_allocation(
         self,

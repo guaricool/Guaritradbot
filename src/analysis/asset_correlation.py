@@ -62,7 +62,14 @@ class AssetCorrelationResult:
     assets: List[str]
     matrix: List[List[float]]
     avg_correlation: float
-    well_diversified: bool
+    # Sprint 45 fix (N5): was `bool`, defaulting to True whenever data
+    # couldn't be fetched — silently claiming "well diversified" for a
+    # data OUTAGE, the opposite of what a risk signal should do on
+    # missing data. Now Optional[bool]: True/False when we actually
+    # have enough data to judge, None when we don't (network failure,
+    # too few overlapping dates, etc.). Callers MUST treat None as
+    # "unknown, don't block on it" — never as either True or False.
+    well_diversified: Optional[bool]
     window_days: int
     per_asset_class: Dict[str, List[str]] = field(default_factory=dict)
     threshold: float = DEFAULT_WELL_DIVERSIFIED_THRESHOLD
@@ -252,11 +259,12 @@ def analyze_assets(
     """
     returns = fetch_returns(symbols, window_days=window_days, interval=interval)
     if not returns:
+        # Sprint 45 fix (N5): unknown, not "confirmed diversified".
         return AssetCorrelationResult(
             assets=[],
             matrix=[],
             avg_correlation=0.0,
-            well_diversified=True,
+            well_diversified=None,
             window_days=window_days,
             per_asset_class=group_by_asset_class(symbols),
             threshold=threshold,

@@ -324,7 +324,14 @@ class AnalyzeAssetsTest(unittest.TestCase):
         self.assertEqual(result.assets, [])
         self.assertEqual(result.matrix, [])
         self.assertEqual(result.avg_correlation, 0.0)
-        self.assertTrue(result.well_diversified)  # no signal = no warning
+        # Sprint 45 fix (N5): missing data means UNKNOWN, not "confirmed
+        # diversified". The original test asserted well_diversified was
+        # truthy here ("no signal = no warning") — but that's exactly
+        # the fail-open bug the second audit flagged: a network outage
+        # silently looked identical to "portfolio is fine". Now it's
+        # explicitly None so callers can't mistake "we don't know" for
+        # "we checked and it's fine".
+        self.assertIsNone(result.well_diversified)
 
     @patch("src.analysis.asset_correlation.safe_yf_download")
     def test_analyze_threshold_configurable(self, mock_yf):
@@ -380,7 +387,10 @@ class ConcentrationGateTest(unittest.TestCase):
             position_repo=repo,
             asset_concentration_check=enabled,
             max_asset_class_concentration_pct=max_pct,
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
 
     def test_first_trade_no_concentration(self):
         """Empty book → first trade always allowed."""
@@ -512,7 +522,10 @@ class ConcentrationGateIntegrationTest(unittest.TestCase):
             max_open_trades=5,
             max_capital_per_trade_pct=50,
             risk_per_trade_pct=1.0,
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
 
     def test_concentration_blocked_in_validate_and_size(self):
         """A new trade that would push crypto over the cap gets rejected
@@ -619,7 +632,10 @@ class ConcentrationGateIntegrationTest(unittest.TestCase):
             enable_position_replacement=True,
             replacement_score_threshold=0.20,
             current_prices={"ETH-USD": 2900, "BTC-USD": 49000},
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
         # New SOL-USD: another crypto, but with permissive 80% cap → should pass.
         new_hyp = {
             "asset": "SOL-USD", "strategy": "momentum", "direction": "long",

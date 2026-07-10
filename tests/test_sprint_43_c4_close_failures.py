@@ -271,7 +271,10 @@ class RiskAgentReplacementFailureTest(unittest.TestCase):
             enable_position_replacement=True,
             replacement_score_threshold=0.20,
             current_prices={"ETH-USD": 2900.0, "GLD": 182.0},
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
         # Patch score methods so the replacement is triggered
         agent.score_position = MagicMock(side_effect=lambda p, current_price=None: 0.10 if p.asset == "ETH-USD" else 0.50)
         result = agent._try_replace_position(
@@ -301,7 +304,10 @@ class RiskAgentReplacementFailureTest(unittest.TestCase):
             enable_position_replacement=True,
             replacement_score_threshold=0.20,
             current_prices={"ETH-USD": 2900.0, "GLD": 182.0},
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
         agent.score_position = MagicMock(side_effect=lambda p, current_price=None: 0.10 if p.asset == "ETH-USD" else 0.50)
         agent._try_replace_position(
             new_hyp=self._new_hyp(),
@@ -327,7 +333,10 @@ class RiskAgentReplacementFailureTest(unittest.TestCase):
             enable_position_replacement=True,
             replacement_score_threshold=0.20,
             current_prices={"ETH-USD": 2900.0, "GLD": 182.0},
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
         agent.score_position = MagicMock(side_effect=lambda p, current_price=None: 0.10 if p.asset == "ETH-USD" else 0.50)
         agent._try_replace_position(
             new_hyp=self._new_hyp(),
@@ -352,7 +361,10 @@ class RiskAgentReplacementFailureTest(unittest.TestCase):
             enable_position_replacement=True,
             replacement_score_threshold=0.20,
             current_prices={"ETH-USD": 2900.0, "GLD": 182.0},
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
         agent.score_position = MagicMock(side_effect=lambda p, current_price=None: 0.10 if p.asset == "ETH-USD" else 0.50)
         result = agent._try_replace_position(
             new_hyp=self._new_hyp(),
@@ -377,7 +389,10 @@ class RiskAgentReplacementFailureTest(unittest.TestCase):
             enable_position_replacement=True,
             replacement_score_threshold=0.20,
             current_prices={"ETH-USD": 2900.0, "GLD": 182.0},
-        )
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
         agent.score_position = MagicMock(side_effect=lambda p, current_price=None: 0.10 if p.asset == "ETH-USD" else 0.50)
         result = agent._try_replace_position(
             new_hyp=self._new_hyp(),

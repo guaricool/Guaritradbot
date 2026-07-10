@@ -140,7 +140,7 @@ class RiskAgentBalanceFallbackTest(unittest.TestCase):
         """Dev mode: env var = '1' → fall back to $100."""
         from unittest.mock import patch
         with patch.dict(os.environ, {"GUARICO_ALLOW_SIMULATED_BALANCE": "1"}):
-            agent = RiskManagerAgent(broker_client=_FakeBrokerRaises())
+            agent = RiskManagerAgent(broker_client=_FakeBrokerRaises(), correlation_check_enabled=False, tail_risk_check_enabled=False)
             bal, source = agent.get_account_balance()
             self.assertEqual(bal, 100.0)
             self.assertEqual(source, "testnet_sim")
@@ -149,14 +149,14 @@ class RiskAgentBalanceFallbackTest(unittest.TestCase):
         """Production-safe: env var = '0' → raise, do not fake balance."""
         from unittest.mock import patch
         with patch.dict(os.environ, {"GUARICO_ALLOW_SIMULATED_BALANCE": "0"}):
-            agent = RiskManagerAgent(broker_client=_FakeBrokerRaises())
+            agent = RiskManagerAgent(broker_client=_FakeBrokerRaises(), correlation_check_enabled=False, tail_risk_check_enabled=False)
             with self.assertRaises(RuntimeError) as ctx:
                 agent.get_account_balance()
             self.assertIn("Balance no disponible", str(ctx.exception))
 
     def test_no_broker_returns_simulated(self):
         """No broker at all → $100 sim, no env var needed."""
-        agent = RiskManagerAgent(broker_client=None)
+        agent = RiskManagerAgent(broker_client=None, correlation_check_enabled=False, tail_risk_check_enabled=False)
         bal, source = agent.get_account_balance()
         self.assertEqual(bal, 100.0)
         self.assertEqual(source, "no_broker_sim")
