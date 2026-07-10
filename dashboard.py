@@ -1669,6 +1669,28 @@ def sparkline(values: list, color: str = "#4cc9f0", height: int = 32, width: int
 #  SIDEBAR
 # ============================================================
 
+# B029 fix: Calculate open paper positions count BEFORE the sidebar block.
+# Previous version declared `_sidebar_open` inside `with st.sidebar:` (Streamlit
+# renders that block first) but referenced it in the MAIN area (preflight
+# checklist at line 1881). Streamlit's `with st.sidebar:` context manager
+# creates a scope boundary — variables assigned inside it are NOT accessible
+# outside, even though execution order is sidebar-then-main. This caused:
+#   NameError: name '_sidebar_open' is not defined
+# at dashboard.py:1881 → dashboard container crash loop.
+#
+# Fix: compute the count at module level (before any `with st.sidebar:`) so
+# it's available to BOTH the sidebar UI (button label/help) AND the main area
+# (preflight checks). Same pattern as B026 (load JSON directly, not via `positions`).
+_open_paper_positions_count = 0
+try:
+    _pp = _load_json("data_store/positions.json")
+    if _pp and isinstance(_pp.get("positions"), list):
+        _open_paper_positions_count = sum(
+            1 for p in _pp["positions"] if p.get("closed_ts") is None
+        )
+except Exception:
+    pass  # default to 0 if positions.json missing/malformed
+
 with st.sidebar:
     # ==========================================================
     # ⚡ MODE TOGGLE — PAPER / LIVE (Sprint 12)
@@ -1878,10 +1900,10 @@ with st.sidebar:
         _broker_msg = f"❌ Connection failed: {str(_e)[:60]}"
 
     # === CHECK 2: Paper positions clean ===
-    _paper_ok = _sidebar_open == 0
+    _paper_ok = _open_paper_positions_count == 0
     _paper_msg = (
         "✅ No open paper positions" if _paper_ok
-        else f"⚠️  {_sidebar_open} paper position(s) — clean them first"
+        else f"⚠️  {_open_paper_positions_count} paper position(s) — clean them first"
     )
 
     # === CHECK 3: API keys configured ===
@@ -1961,10 +1983,10 @@ with st.sidebar:
             help="All 4 checks passed. Click to enable live trading and "
                  "auto-clean any paper positions.",
         ):
-            # All checks pass — perform the transition
+# All checks pass — perform the transition
             # Step 1: clean paper positions
             try:
-                if _sidebar_open > 0:
+                if _open_paper_positions_count > 0:
                     _pp_path = "data_store/positions.json"
                     if os.path.exists(_pp_path):
                         _pp = _load_json(_pp_path)
@@ -2038,7 +2060,7 @@ with st.sidebar:
         # Show why the button is disabled
         _failed = []
         if not _broker_ok: _failed.append("Broker")
-        if not _paper_ok: _failed.append(f"Paper positions ({_sidebar_open})")
+        if not _paper_ok: _failed.append(f"Paper positions ({_open_paper_positions_count})")
         if not _keys_ok: _failed.append("API keys")
         if not _audit_ok: _failed.append("Audit ledger")
         st.button(
@@ -2053,20 +2075,17 @@ with st.sidebar:
     # the dashboard never warned him about ghost paper positions when he
     # toggled to live. This button gives him a one-click way to close them
     # safely (simulated close at entry_price, P&L=0) before going live.
-    # B026 fix: load positions from disk directly to avoid NameError
-    # when `positions` variable hasn't been declared yet (this sidebar
-    # block runs BEFORE the main render).
-    _sidebar_pp = _load_json("data_store/positions.json")
-    _sidebar_open = (
-        len([p for p in _sidebar_pp.get("positions", []) if p.get("closed_ts") is None])
-        if _sidebar_pp else 0
-    )
-    if _sidebar_open > 0:
+    # B029 fix: _open_paper_positions_count is computed at module level
+    # (line ~1678) BEFORE the sidebar block, so it's available here AND
+    # in the main area (preflight checklist). The previous local variable
+    # `_sidebar_open` was unreachable from the main area due to Streamlit's
+    # `with st.sidebar:` scope boundary.
+    if _open_paper_positions_count > 0:
         if st.button(
-            f"🧹 Clean Paper Positions ({_sidebar_open})",
+            f"🧹 Clean Paper Positions ({_open_paper_positions_count})",
             use_container_width=True,
             key="clean_paper",
-            help=f"Close {_sidebar_open} open paper positions at entry_price (P&L=0). "
+            help=f"Close {_open_paper_positions_count} open paper positions at entry_price (P&L=0). "
                  f"Use this BEFORE going live to avoid ghost positions.",
         ):
             # Mutate positions.json in-place: close all open at entry_price
