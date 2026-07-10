@@ -43,6 +43,11 @@ services:
       dockerfile: Dockerfile.dashboard
     container_name: guaritradbot_dashboard
     restart: unless-stopped
+    # Sprint 45 fix (H8): the dashboard needs DASHBOARD_PASSWORD from
+    # .env now that it requires a login (previously had zero auth).
+    # The bot service already had this; the dashboard service didn't.
+    env_file:
+      - .env
     ports:
       - "8501:8501"
     volumes:

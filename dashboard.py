@@ -82,6 +82,62 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ============================================================
+#  Sprint 45 fix (H8): minimal password gate
+# ============================================================
+# The audit flagged that this dashboard had ZERO authentication —
+# docker-compose.yml maps port 8501 directly to the host, and
+# anyone who could reach it could flip the LIVE/PAPER trading mode
+# with one click, no login required. This is NOT a substitute for
+# proper network-level protection (a reverse proxy / VPN / Coolify
+# access rule is still the right long-term answer — see the second
+# audit report), but it closes the most direct hole immediately:
+# nobody sees anything past a login form without the password.
+#
+# Fails CLOSED: if DASHBOARD_PASSWORD isn't set at all, the
+# dashboard refuses to render anything rather than silently staying
+# wide open — forces the operator to explicitly opt in to a
+# password instead of forgetting to set one.
+_DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD")
+
+
+def _check_auth() -> None:
+    if not _DASHBOARD_PASSWORD:
+        st.error(
+            "⛔ DASHBOARD_PASSWORD no está configurado.\n\n"
+            "Por seguridad, el dashboard NO se muestra sin una "
+            "contraseña definida. Agrega `DASHBOARD_PASSWORD` a tu "
+            "`.env` (ver `.env.example`) y reinicia el contenedor."
+        )
+        st.stop()
+
+    if st.session_state.get("_authenticated", False):
+        return
+
+    st.markdown(
+        "<div style='max-width:420px;margin:15vh auto;text-align:center;'>"
+        "<h2>🔒 Guaritradbot</h2>"
+        "<p style='opacity:0.7;'>Acceso restringido — ingresa la contraseña.</p>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    _, mid, _ = st.columns([1, 2, 1])
+    with mid:
+        with st.form("login_form"):
+            pw = st.text_input("Contraseña", type="password", label_visibility="collapsed",
+                                placeholder="Contraseña")
+            submitted = st.form_submit_button("Entrar", use_container_width=True)
+        if submitted:
+            if pw == _DASHBOARD_PASSWORD:
+                st.session_state["_authenticated"] = True
+                st.rerun()
+            else:
+                st.error("Contraseña incorrecta.")
+    st.stop()
+
+
+_check_auth()
+
 # Sprint 27: B027 — Fix accessibility & CSP warnings from browser DevTools.
 # Issues reported:
 #   1. Content Security Policy blocks 'eval' (Streamlit uses it internally for component init)
