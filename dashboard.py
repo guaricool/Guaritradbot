@@ -1367,6 +1367,41 @@ def _load_audit(path: str = "audit/audit.jsonl", n: int = 30) -> list:
         return []
 
 
+def _write_mode_override(
+    mandate_enabled: bool,
+    switched_by: str = "dashboard",
+    **extra,
+) -> None:
+    """Write ``audit/mode_override.json`` with the new mode.
+
+    Sprint 36.1: this is the SINGLE place that writes the file. It
+    always sets BOTH ``mandate_enabled`` and ``alpaca_paper`` in
+    lockstep, so the dashboard's Paper/Live toggle can never leave
+    the bot's two runtime flags out of sync.
+
+    Default coupling (overridable via ``alpaca_paper=<bool>`` in extra):
+      - mandate_enabled=False → alpaca_paper=True   (paper mode, paper endpoint)
+      - mandate_enabled=True  → alpaca_paper=False  (live mode, live endpoint)
+
+    Any keyword args in ``extra`` are merged into the payload — used
+    by callers to record metadata like ``preflight_passed``,
+    ``broker_balance_at_switch``, or ``previous_value``.
+    """
+    payload = {
+        "mandate_enabled": bool(mandate_enabled),
+        # Default: coupled to mandate_enabled. Power users can pass
+        # alpaca_paper=<bool> in extra to decouple (e.g. test live
+        # logic with paper keys).
+        "alpaca_paper": bool(extra.pop("alpaca_paper", not mandate_enabled)),
+        "switched_at": datetime.now().isoformat(),
+        "switched_by": switched_by,
+    }
+    payload.update(extra)
+    os.makedirs("audit", exist_ok=True)
+    with open("audit/mode_override.json", "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+
 @st.cache_data(ttl=5)
 def _load_state_cached():
     """Load latest bot state.
@@ -1786,13 +1821,10 @@ with st.sidebar:
             key="toggle_paper",
         ):
             # Write override + trigger bot restart
-            os.makedirs("audit", exist_ok=True)
-            with open("audit/mode_override.json", "w", encoding="utf-8") as f:
-                json.dump({
-                    "mandate_enabled": False,
-                    "switched_at": datetime.now().isoformat(),
-                    "switched_by": "dashboard",
-                }, f, indent=2)
+            # Sprint 36.1: _write_mode_override sets BOTH mandate_enabled
+            # and alpaca_paper atomically — no chance of leaving them out
+            # of sync.
+            _write_mode_override(mandate_enabled=False, switched_by="dashboard")
             st.success("✓ Switched to PAPER. Bot restart triggered.")
             st.info("ℹ️ Restarting bot in 3s...")
             time.sleep(2)
@@ -1824,13 +1856,10 @@ with st.sidebar:
             key="toggle_live",
         ):
             # Write override + trigger bot restart
-            os.makedirs("audit", exist_ok=True)
-            with open("audit/mode_override.json", "w", encoding="utf-8") as f:
-                json.dump({
-                    "mandate_enabled": True,
-                    "switched_at": datetime.now().isoformat(),
-                    "switched_by": "dashboard",
-                }, f, indent=2)
+            # Sprint 36.1: _write_mode_override sets BOTH mandate_enabled
+            # and alpaca_paper atomically — no chance of leaving them out
+            # of sync.
+            _write_mode_override(mandate_enabled=True, switched_by="dashboard")
             st.warning("⚠️ Switching to LIVE — real money will be at risk.")
             st.info("ℹ️ Restarting bot in 3s...")
             time.sleep(2)
@@ -2075,16 +2104,14 @@ with st.sidebar:
                                 with open(_audit_pp, "w", encoding="utf-8") as f:
                                     json.dump(_pp, f, indent=2, default=str)
                 # Step 2: write mode_override.json
-                _mo = {
-                    "mandate_enabled": True,
-                    "switched_at": datetime.now().isoformat(),
-                    "switched_by": "dashboard_start_live",
-                    "preflight_passed": True,
-                    "broker_balance_at_switch": _broker_balance,
-                }
-                os.makedirs("audit", exist_ok=True)
-                with open("audit/mode_override.json", "w", encoding="utf-8") as f:
-                    json.dump(_mo, f, indent=2)
+                # Sprint 36.1: helper writes both mandate_enabled + alpaca_paper
+                # atomically so the live toggle is consistent.
+                _write_mode_override(
+                    mandate_enabled=True,
+                    switched_by="dashboard_start_live",
+                    preflight_passed=True,
+                    broker_balance_at_switch=_broker_balance,
+                )
                 # Step 3: write risk_overrides
                 _ro = {
                     "trading": {
@@ -2211,14 +2238,14 @@ with st.sidebar:
 
         # Sprint 26: also write mode_override.json so the bot sees the
         # live toggle immediately on next run.
-        mode_override = {
-            "mandate_enabled": sidebar_mandate,
-            "switched_at": datetime.now().isoformat(),
-            "switched_by": "dashboard_sidebar",
-            "previous_value": _was_live,
-        }
-        with open("audit/mode_override.json", "w", encoding="utf-8") as f:
-            json.dump(mode_override, f, indent=2)
+        # Sprint 36.1: helper writes both mandate_enabled + alpaca_paper
+        # atomically. Derives alpaca_paper from sidebar_mandate by default;
+        # if sidebar_mandate=True we go to live endpoint.
+        _write_mode_override(
+            mandate_enabled=sidebar_mandate,
+            switched_by="dashboard_sidebar",
+            previous_value=_was_live,
+        )
 
         # Sprint 26: AUTO-CLEAN paper positions when transitioning to live.
         # Carlos: "se pusiera en 0 todo para que pueda encontrar una entrada
