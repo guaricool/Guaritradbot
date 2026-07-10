@@ -1,6 +1,6 @@
 # Bugs Index
 
-19 bugs encontrados y corregidos. Severidad: 🔴 crítico (rompía runtime) | 🟠 medio | 🟡 menor
+22 bugs encontrados y corregidos. Severidad: 🔴 crítico (rompía runtime) | 🟠 medio | 🟡 menor
 
 | ID | Sev | Sprint | Bug | Fix |
 |----|-----|--------|-----|-----|
@@ -23,11 +23,18 @@
 | [[Bugs/B017_micro_account_death_loop]] | 🔴 | 18 | Auto-adjust solo disparaba con `max_notional < min_order`, no con `notional < min_order` → cuenta $20 muerta | Auto-adjust ahora dispara con cualquier `notional < min_order`, log reason (`max_cap_below_min_order` vs `risk_below_min_order`) |
 | [[Bugs/B018_phantom_exposure_lockup]] | 🔴 | 18 | `_open_exposure_usd()` sumaba TRADE_FILLED sin restar TRADE_CLOSED → exposición crecía sin bound → Mandate Gate bloqueaba todo después de 5 trades round-trip | Usa `PositionRepository.total_exposure_usd()`; audit-fallback ahora sí resta closes |
 | [[Bugs/B019_punished_for_trying]] | 🔴 | 18 | `_daily_loss_usd()` sumaba `risk_usd` teórico de TRADE_APPROVED → 5 trades winners ($1 risk c/u) disparaban kill switch 24h | Suma `realized_pnl` real de TRADE_CLOSED; solo cuenta pérdidas realizadas |
+| [[Bugs/B020_replacement_loop]] | 🔴 | 18 patch | `validate_and_size` podía hacer N replacements consecutivos en un ciclo (close+open N veces si N hipótesis) → broker roundtrips innecesarios, audit inflado | Flag `did_replace_this_cycle` limita a 1 replacement por `validate_and_size()` call |
+| [[Bugs/B021_phantom_pnl_replacement]] | 🔴 | 18 patch | `_try_replace_position` usaba `entry_price` como fallback cuando no había precio fresco → cerraba a breakeven falso, audit corrupto | Abortar el replacement si no hay precio fresco; dejar que PositionMonitor cierre después |
+| [[Bugs/B022_smart_take_dead_code]] | 🔴 | 18 patch | `StrategyAgent` nunca emitía eventos `HYPOTHESIS_GENERATED` al audit → `check_with_signals` siempre recibía `signals=[]` → SMART_PROFIT_TAKE nunca se activaba | StrategyAgent ahora acepta `audit` y emite eventos con strength derivado |
 
 ## Stats
 
-- 🔴 Críticos que rompían runtime: **9** (B001, B002, B003, B006, B013, B017, B018, B019; el B015 era operacional pero mataba la portabilidad)
+- 🔴 Críticos: **12** (B001, B002, B003, B006, B013, B017, B018, B019, B020, B021, B022; el B015 era operacional pero mataba la portabilidad)
 - 🟠 Medios (estrategia/métricas incorrectas): **8**
 - 🟡 Menores: **2**
 
-Sprint 18 agregó 3 bugs críticos encontrados por el audit team. Los 3 habrían bloqueado el bot permanentemente en escenarios realistas (cuentas pequeñas, múltiples round-trips, win streaks).
+Sprint 18 cerró:
+- **3 bugs del audit team** (B017/B018/B019) — encontrados por análisis externo
+- **3 bugs del code review post-sprint** (B020/B021/B022) — encontrados en revisión interna
+
+Los 6 son 🔴 críticos. Los 3 del code review son particularmente insidiosos porque los tests unitarios pasaban (cada módulo se veía correcto en aislamiento), pero el sistema end-to-end no funcionaba.

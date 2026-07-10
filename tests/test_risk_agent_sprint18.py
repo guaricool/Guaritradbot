@@ -293,5 +293,161 @@ class PositionScoringTest(unittest.TestCase):
         self.assertLess(loser_score, winner_score)
 
 
+class B020OneReplacementPerCycleTest(unittest.TestCase):
+    """
+    B020: Position replacement can loop indefinitely within a single cycle.
+
+    Setup: max_open=2, 2 positions open. Receive 5 hypotheses, each strong
+    enough to replace the worst. Without the fix, bot replaces 5 times
+    (closing+opening 5 positions). With the fix, only 1 replacement happens.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.audit = AuditLedger(os.path.join(self.tmpdir, "audit.jsonl"))
+        self.repo = PositionRepository(os.path.join(self.tmpdir, "positions.json"))
+        self.broker = _FakeBroker()
+
+        import time
+        self.repo.add_open(Position(
+            asset="ETH-USD", direction="long",
+            entry_price=3000, stop_loss=2950, take_profit=3150,
+            qty=0.01, risk_usd=0.5,
+            entry_ts=time.time() - 86400,  # 24h old
+            strategy="old",
+        ))
+        self.repo.add_open(Position(
+            asset="GLD", direction="long",
+            entry_price=180, stop_loss=178, take_profit=185,
+            qty=0.1, risk_usd=0.2,
+            entry_ts=time.time() - 86400 * 3,  # 3d old
+            strategy="old",
+        ))
+
+    def test_at_most_one_replacement_per_cycle(self):
+        agent = RiskManagerAgent(
+            broker_client=self.broker,
+            risk_per_trade_pct=1.0,
+            max_capital_per_trade_pct=50.0,
+            atr_stop_multiplier=2.0,
+            min_order_usd=10.0,
+            audit=self.audit,
+            position_repo=self.repo,
+            max_open_trades=2,
+            enable_position_replacement=True,
+            replacement_score_threshold=0.20,
+            current_prices={
+                "ETH-USD": 2900,  # losing
+                "GLD": 184,        # winning
+            },
+        )
+
+        # 5 strong hypotheses that would each trigger a replacement
+        hyps = []
+        for asset in ["BTC-USD", "SPY", "QQQ", "TSLA", "AAPL"]:
+            hyps.append({
+                "asset": asset,
+                "strategy": "momentum",
+                "direction": "long",
+                "price": 100,
+                "atr_at_signal": 1,
+                "expected_move_pct": 5.0,  # very strong
+            })
+
+        state = {"generate_hypotheses": {"hypotheses": hyps}}
+        result = agent.validate_and_size({}, state)
+
+        # Without the fix: 5 approved (loop), 5 positions churned.
+        # With the fix: 1 approved (the first replacement), 4 rejected.
+        approved = result["approved_trades"]
+        rejected = result["rejected_trades"]
+
+        self.assertEqual(
+            len(approved), 1,
+            f"Should approve exactly 1 trade (one replacement per cycle); "
+            f"got {len(approved)} approved. approved={approved}, rejected={rejected}",
+        )
+        # 4 should have been rejected for max_open_trades
+        max_open_rejects = [r for r in rejected if "max_open_trades" in str(r.get("reason", ""))]
+        self.assertEqual(
+            len(max_open_rejects), 4,
+            f"Should reject 4 hypotheses for max_open_trades; got {len(max_open_rejects)}",
+        )
+
+        # Audit should have exactly ONE POSITION_REPLACED event
+        events = self.audit.read_all()
+        replaced = [e for e in events if e.get("event_type") == "POSITION_REPLACED"]
+        self.assertEqual(len(replaced), 1, f"Should have exactly 1 POSITION_REPLACED; got {len(replaced)}")
+
+
+class B021NoPriceAbortTest(unittest.TestCase):
+    """
+    B021: _try_replace_position must ABORT (not use entry_price fallback)
+    when current_prices is missing for the worst position.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.audit = AuditLedger(os.path.join(self.tmpdir, "audit.jsonl"))
+        self.repo = PositionRepository(os.path.join(self.tmpdir, "positions.json"))
+
+        import time
+        self.loser = Position(
+            asset="ETH-USD", direction="long",
+            entry_price=3000, stop_loss=2950, take_profit=3150,
+            qty=0.01, risk_usd=0.5,
+            entry_ts=time.time() - 86400,
+            strategy="old",
+        )
+        self.repo.add_open(self.loser)
+
+    def test_no_current_price_aborts_replacement(self):
+        agent = RiskManagerAgent(
+            risk_per_trade_pct=1.0,
+            max_capital_per_trade_pct=50.0,
+            min_order_usd=10.0,
+            audit=self.audit,
+            position_repo=self.repo,
+            enable_position_replacement=True,
+            replacement_score_threshold=0.10,
+            # NOTE: current_prices is EMPTY — no fresh price for ETH-USD
+            current_prices={},
+        )
+
+        # Strong new hypothesis that would normally trigger replacement
+        new_hyp = {
+            "asset": "BTC-USD", "strategy": "test", "direction": "long",
+            "price": 50000, "atr_at_signal": 500, "expected_move_pct": 5.0,
+        }
+        new_trade = {
+            "asset": "BTC-USD", "direction": "long",
+            "entry_price": 50000, "stop_loss": 49000, "take_profit": 52000,
+            "position_size": 0.001, "notional_usd": 50, "risk_usd": 1,
+        }
+        result = agent._try_replace_position(new_hyp, new_trade, {
+            "expected_move_pct": 5.0,
+            "atr_at_signal": 500,
+            "entry_price": 50000,
+            "stop_loss": 49000,
+            "take_profit": 52000,
+            "direction": "long",
+            "strategy": "test",
+        })
+
+        self.assertFalse(result, "Should ABORT replacement when no current price")
+
+        # Original position should STILL be open (not closed)
+        self.assertEqual(
+            self.repo.count_open(), 1,
+            "Original position must remain open when replacement aborts",
+        )
+
+        # Audit should record the skip with reason=no_current_price
+        events = self.audit.read_all()
+        skipped = [e for e in events if e.get("event_type") == "REPLACEMENT_SKIPPED"]
+        self.assertEqual(len(skipped), 1)
+        self.assertEqual(skipped[0].get("reason"), "no_current_price")
+
+
 if __name__ == "__main__":
     unittest.main()

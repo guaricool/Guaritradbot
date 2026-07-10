@@ -57,6 +57,66 @@ def _was_crossed_recently(a: pd.Series, b: pd.Series, lookback: int = 3, directi
         return (window.iloc[:-1] >= 0).any() and window.iloc[-1] < 0
 
 
+def _hypothesis_strength(h: dict) -> float:
+    """
+    B022: derive a 0..1 strength score for a hypothesis.
+
+    Used by PositionMonitor.check_with_signals() to decide whether an
+    opposing signal is strong enough to trigger SMART_PROFIT_TAKE on a
+    profitable open position.
+
+    Heuristic:
+      - Mean-reversion (RSI/Stoch/Bollinger): deeper into the extreme =
+        stronger. RSI=20 is stronger than RSI=29.
+      - Trend/breakout (MACD/EMA/ADX): ADX value or recency of cross.
+      - Default: 0.5 (neutral).
+    """
+    strategy = h.get("strategy", "").lower()
+    rsi = h.get("rsi_at_signal", 0)
+    direction = h.get("direction", "long")
+
+    # RSI-based mean reversion
+    if "rsi" in strategy:
+        if direction == "long" and rsi > 0:
+            # RSI < 30 → strong long. RSI 30-40 → medium. > 40 → weak.
+            if rsi < 25:
+                return 0.9
+            elif rsi < 30:
+                return 0.8
+            elif rsi < 35:
+                return 0.65
+            else:
+                return 0.5
+        elif direction == "short" and rsi > 0:
+            if rsi > 75:
+                return 0.9
+            elif rsi > 70:
+                return 0.8
+            elif rsi > 65:
+                return 0.65
+            else:
+                return 0.5
+
+    # Stochastic-based
+    if "stoch" in strategy:
+        return 0.75  # treat as strong by default
+
+    # ADX-based trend signals
+    if "adx" in strategy or "breakout" in strategy:
+        return 0.8
+
+    # MACD / EMA crosses
+    if "macd" in strategy or "ema" in strategy or "cross" in strategy:
+        return 0.7
+
+    # Bollinger / S/R
+    if "bb_" in strategy or "resistance" in strategy or "support" in strategy:
+        return 0.65
+
+    # Default
+    return 0.5
+
+
 class StrategyAgent:
     """
     Analiza market_data y genera hipótesis de trade (entry signals).
@@ -66,7 +126,7 @@ class StrategyAgent:
     ADX) y zonas más permisivas en RSI/MACD.
     """
 
-    def __init__(self, strategy_params: dict = None):
+    def __init__(self, strategy_params: dict = None, audit=None):
         self.params = strategy_params or {
             "rsi_oversold": 30,         # cruce estricto
             "rsi_overbought": 70,
@@ -77,6 +137,11 @@ class StrategyAgent:
             "bb_pct_b": 0.05,          # dentro del 5% de la banda
             "adx_trend_min": 20,        # ADX > 20 = tendencia
         }
+        # B022 fix: audit ledger para emitir HYPOTHESIS_GENERATED events.
+        # Esto permite que PositionMonitor.check_with_signals() encuentre
+        # las señales recientes y dispare SMART_PROFIT_TAKE cuando hay
+        # un reversal fuerte contra una posición abierta en profit.
+        self.audit = audit
 
     def _add_hyp(self, hypotheses, asset, tf, direction, strategy, price, **extras):
         hypotheses.append({
@@ -399,6 +464,24 @@ class StrategyAgent:
             print(f"[StrategyAgent] → {len(hypotheses)} hipótesis nuevas:")
             for h in hypotheses:
                 print(f"   • {h['direction'].upper():5} {h['asset']:8} @ ${h['price']:.2f} via {h['strategy']}")
+            # B022 fix: emit HYPOTHESIS_GENERATED events so PositionMonitor
+            # can use them for SMART_PROFIT_TAKE reversal detection. Each
+            # hypothesis carries direction + asset + price; we add a
+            # derived `strength` field (0..1) based on how extreme the
+            # indicator reading was (deeper into oversold = stronger).
+            if self.audit is not None:
+                import time as _t
+                for h in hypotheses:
+                    self.audit.append("HYPOTHESIS_GENERATED", {
+                        "asset": h["asset"],
+                        "tf": h.get("tf", ""),
+                        "direction": h["direction"],
+                        "strategy": h["strategy"],
+                        "price": h["price"],
+                        "atr_at_signal": h.get("atr_at_signal", 0),
+                        "rsi_at_signal": h.get("rsi_at_signal", 0),
+                        "strength": _hypothesis_strength(h),
+                    })
         else:
             print("[StrategyAgent] → 0 hipótesis (sin condiciones activas)")
 

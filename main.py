@@ -179,7 +179,7 @@ def main():
 
     registry = {
         "MarketAnalystAgent": MarketAnalystAgent(event_bus=event_bus, audit=audit),
-        "StrategyAgent": StrategyAgent(strategy_params=strategy_params),
+        "StrategyAgent": StrategyAgent(strategy_params=strategy_params, audit=audit),
         "RiskManagerAgent": RiskManagerAgent(
             broker_client=broker_client,
             risk_per_trade_pct=risk_per_trade_pct,

@@ -106,6 +106,13 @@ class RiskManagerAgent:
 
         approved = []
         rejected = []
+        # Sprint 18 fix (B020): at most ONE position replacement per cycle.
+        # Without this flag, if max_open_trades is reached and we receive N
+        # hypotheses, the bot would do N consecutive replacements (close +
+        # open) instead of approving only the best candidate. Each replacement
+        # resets slots_left=1, then the next iteration sees slots_left=0
+        # again and triggers another replacement → exposure can spiral.
+        did_replace_this_cycle = False
         for h in hypotheses:
             entry_price = float(h.get("price", 0))
             atr = float(h.get("atr_at_signal", 0))
@@ -240,10 +247,15 @@ class RiskManagerAgent:
                 # Sprint 18: try position replacement before outright rejection.
                 # If the new hypothesis scores higher than the worst open position
                 # (by replacement_score_threshold), close the worst and free a slot.
+                #
+                # B020 fix: at most ONE replacement per validate_and_size() call.
+                # Subsequent hypotheses in the same cycle that hit max_open_trades
+                # are rejected normally (no more churning the portfolio).
                 replaced = False
                 if (
                     self.enable_position_replacement
                     and self.position_repo is not None
+                    and not did_replace_this_cycle
                 ):
                     replaced = self._try_replace_position(
                         new_hyp=h,
@@ -265,6 +277,7 @@ class RiskManagerAgent:
                     print(f"  🚫 {trade['asset']:8} {direction:5} — slots llenos ({open_count}/{self.max_open_trades})")
                     continue
                 # Replacement happened — slot freed, fall through to approval.
+                did_replace_this_cycle = True
                 slots_left = 1  # we just freed one slot by closing worst
 
             approved.append(trade)
@@ -471,7 +484,29 @@ class RiskManagerAgent:
             return False
 
         # --- Replace: close worst at current price, free slot ---
-        close_price = self.current_prices.get(worst_pos.asset) or worst_pos.entry_price
+        # B021 fix: if we don't have a fresh price for this asset, ABORT the
+        # replacement rather than fall back to entry_price. Closing at
+        # entry_price would record realized_pnl=0 even if the position is
+        # actually in profit or loss — that corrupts the audit log and
+        # daily_loss accounting. Better to skip this cycle and let the
+        # PositionMonitor close it next tick when we have real prices.
+        close_price = self.current_prices.get(worst_pos.asset)
+        if close_price is None or close_price <= 0:
+            if self.audit:
+                self.audit.append("REPLACEMENT_SKIPPED", {
+                    "new_asset": new_trade["asset"],
+                    "new_score": round(new_score, 3),
+                    "worst_asset": worst_pos.asset,
+                    "worst_score": round(worst_score, 3),
+                    "threshold": threshold,
+                    "delta": round(new_score - worst_score, 3),
+                    "reason": "no_current_price",
+                })
+            print(
+                f"  ⏸️  REPLACEMENT_ABORTED {worst_pos.asset:8} — "
+                f"no current price available; will retry next cycle"
+            )
+            return False
         closed = self.position_repo.close_position(
             worst_pos.position_id,
             close_price=close_price,
