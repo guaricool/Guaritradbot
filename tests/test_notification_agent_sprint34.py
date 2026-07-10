@@ -325,5 +325,107 @@ class SystemErrorAlwaysNotifiesTest(unittest.TestCase):
             self.assertIn("Broker disconnected", send.call_args[0][0])
 
 
+class TestTelegramSmokeTestTest(unittest.TestCase):
+    """Sprint 34b: --test-telegram smoke test.
+
+    Verifies that send_test_message() builds a useful diagnostic payload
+    (hostname, mode, token preview, chat_id) and returns the result of
+    the underlying send_telegram_message call (True/False).
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.mode_override_path = _write_mode_override(self.tmpdir, True)  # live
+        self.bus = EventBus()
+        self.config = {
+            "notifications": {"enabled": True, "live_only": True}
+        }
+
+    def test_send_test_message_contains_diagnostics(self):
+        # Build a fully-wired agent with mocked HTTP
+        with patch("src.agents.notification_agent.requests.post") as post:
+            post.return_value.status_code = 200
+            post.return_value.text = '{"ok":true}'
+            # Pre-set token/chat so the agent doesn't warn
+            with patch.dict(os.environ, {
+                "TELEGRAM_BOT_TOKEN": "1234567890:ABCDEFG_testtoken",
+                "TELEGRAM_CHAT_ID": "987654321",
+            }, clear=False):
+                # Force load_dotenv to re-read after env mutation
+                from dotenv import load_dotenv
+                load_dotenv(override=True)
+                agent = NotificationAgent(
+                    self.bus, self.config,
+                    mode_override_path=self.mode_override_path,
+                )
+                ok = agent.send_test_message()
+                self.assertTrue(ok)
+                # Verify HTTP was called
+                post.assert_called_once()
+                # Inspect the payload
+                call_args = post.call_args
+                payload = call_args.kwargs.get("json") or call_args[1].get("json")
+                self.assertIn("Guaritradbot", payload["text"])
+                self.assertIn("Test", payload["text"])
+                self.assertIn("🟢 LIVE", payload["text"])  # we set live mode
+                # Token preview: only last 6 chars, masked
+                self.assertIn("ttoken", payload["text"])  # last 6 chars of "...testtoken"
+                # Chat ID is shown
+                self.assertIn("987654321", payload["text"])
+                # Hostname present
+                import socket
+                hostname = socket.gethostname()
+                self.assertIn(hostname, payload["text"])
+                # parse_mode HTML
+                self.assertEqual(payload["parse_mode"], "HTML")
+
+    def test_send_test_message_includes_paper_mode_marker(self):
+        with patch("src.agents.notification_agent.requests.post") as post:
+            post.return_value.status_code = 200
+            paper_path = _write_mode_override(self.tmpdir, False)  # paper
+            with patch.dict(os.environ, {
+                "TELEGRAM_BOT_TOKEN": "1234567890:ABCDEFG_testtoken",
+                "TELEGRAM_CHAT_ID": "987654321",
+            }, clear=False):
+                from dotenv import load_dotenv
+                load_dotenv(override=True)
+                agent = NotificationAgent(
+                    self.bus, self.config,
+                    mode_override_path=paper_path,
+                )
+                agent.send_test_message()
+                payload = post.call_args.kwargs.get("json") or post.call_args[1].get("json")
+                self.assertIn("🟡 PAPER", payload["text"])
+
+    def test_send_test_message_missing_token_returns_false(self):
+        with patch("src.agents.notification_agent.requests.post") as post:
+            with patch.dict(os.environ, {}, clear=True):  # nuke all env
+                # Reload — NotificationAgent reads env in __init__
+                agent = NotificationAgent(
+                    self.bus, self.config,
+                    mode_override_path=self.mode_override_path,
+                )
+                ok = agent.send_test_message()
+                self.assertFalse(ok)
+                post.assert_not_called()
+
+    def test_send_test_message_reports_telegram_api_error(self):
+        with patch("src.agents.notification_agent.requests.post") as post:
+            post.return_value.status_code = 400
+            post.return_value.text = '{"ok":false,"error":"chat not found"}'
+            with patch.dict(os.environ, {
+                "TELEGRAM_BOT_TOKEN": "1234567890:ABCDEFG_testtoken",
+                "TELEGRAM_CHAT_ID": "987654321",
+            }, clear=False):
+                from dotenv import load_dotenv
+                load_dotenv(override=True)
+                agent = NotificationAgent(
+                    self.bus, self.config,
+                    mode_override_path=self.mode_override_path,
+                )
+                ok = agent.send_test_message()
+                self.assertFalse(ok, "Should return False on API error")
+
+
 if __name__ == "__main__":
     unittest.main()

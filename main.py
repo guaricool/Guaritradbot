@@ -62,7 +62,53 @@ def _build_mandate(config: dict, audit, position_repo=None) -> tuple:
 def main():
     parser = argparse.ArgumentParser(description="Guaritradbot Epic Multi-Agent Trading")
     parser.add_argument("--once", action="store_true", help="Execute the trading loop only once")
+    parser.add_argument(
+        "--test-telegram",
+        action="store_true",
+        help="Send a one-shot test message to Telegram and exit "
+             "(verifies TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID are wired correctly)",
+    )
     args = parser.parse_args()
+
+    # Sprint 34b: --test-telegram exits before any heavy init (no broker,
+    # no workflow engine, no scheduler). Just enough to instantiate
+    # NotificationAgent and ping Telegram.
+    if args.test_telegram:
+        config_path = "config.yaml"
+        config = {}
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = yaml.safe_load(f) or {}
+            except Exception as e:
+                print(f"[--test-telegram] Warning: could not load config.yaml: {e}")
+        try:
+            from src.agents.notification_agent import NotificationAgent
+            agent = NotificationAgent(
+                event_bus=None,  # no subscriptions needed for smoke test
+                config=config,
+                mode_override_path="audit/mode_override.json",
+            )
+            # Force-enable even if config has notifications.enabled=false,
+            # because the test's whole point is to verify the wiring — if
+            # Carlos disabled notifications globally, --test-telegram
+            # should still try to send (and report the config state).
+            agent.enabled = True
+            print("[--test-telegram] Sending test message…")
+            ok = agent.send_test_message()
+            if ok:
+                print("[--test-telegram] ✅ Telegram accepted the message. Check your chat.")
+                sys.exit(0)
+            else:
+                print(
+                    "[--test-telegram] ❌ Telegram send failed.\n"
+                    "  Check that TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set in .env\n"
+                    "  (Coolify → Resources → guaritradbot → Environment)."
+                )
+                sys.exit(1)
+        except Exception as e:
+            print(f"[--test-telegram] ❌ Exception: {e}")
+            sys.exit(2)
 
     print("=== Iniciando Bot Épico (Multi-Agente) ===")
 

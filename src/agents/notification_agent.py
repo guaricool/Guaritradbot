@@ -24,6 +24,8 @@ backward compat with any other subscribers (audit log readers, etc).
 import json
 import logging
 import os
+import platform
+import socket
 from datetime import datetime, timezone
 
 import requests
@@ -274,3 +276,53 @@ class NotificationAgent:
         else:
             filled = int((abs(pct_clamped) / 100.0) * width)
             return "[" + "░" * (width - filled) + "█" * filled + "] (short)"
+
+    # ------------------------------------------------------------------
+    #  Smoke test (CLI: --test-telegram)
+    # ------------------------------------------------------------------
+    def send_test_message(self) -> bool:
+        """Send a one-shot test message to verify Telegram wiring.
+
+        Used by `python main.py --test-telegram` to confirm:
+          - TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID are present in .env
+          - The bot can actually reach the Telegram API
+          - The chat ID is the one Carlos expects (not a stale value)
+
+        Bypasses the live gate (we WANT a message even in paper mode —
+        that's the whole point of the test). Also includes diagnostic
+        info (hostname, mode override, current time) so Carlos can tell
+        at a glance which container sent the message.
+
+        Returns True if Telegram accepted the message (HTTP 200).
+        """
+        try:
+            hostname = socket.gethostname()
+        except Exception:
+            hostname = "unknown-host"
+
+        is_live = _is_live_mode(self.mode_override_path)
+        mode_label = "🟢 LIVE" if is_live else "🟡 PAPER"
+
+        token_preview = (
+            f"***{self.bot_token[-6:]}" if self.bot_token and len(self.bot_token) > 6
+            else "❌ MISSING"
+        )
+        chat_preview = (
+            str(self.chat_id) if self.chat_id else "❌ MISSING"
+        )
+
+        msg = (
+            "🤖 <b>Guaritradbot — Telegram Test</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔹 <b>Host:</b> <code>{hostname}</code>\n"
+            f"🔹 <b>Plataforma:</b> {platform.system()}\n"
+            f"🔹 <b>Modo actual:</b> {mode_label}\n"
+            f"🔹 <b>Hora:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"🔹 <b>Notificaciones:</b> "
+            f"{'✅ enabled' if self.enabled else '❌ disabled'}\n"
+            f"🔹 <b>Live only:</b> {'sí' if self.live_only else 'no'}\n"
+            f"🔹 <b>Token:</b> <code>{token_preview}</code>\n"
+            f"🔹 <b>Chat ID:</b> <code>{chat_preview}</code>\n"
+            "\n✅ <i>Si ves este mensaje, Telegram está bien configurado.</i>\n"
+        )
+        return self.send_telegram_message(msg)
