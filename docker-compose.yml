@@ -2,6 +2,10 @@ version: '3.8'
 
 services:
   # Servicio 1: El cerebro del bot (orquestador)
+  # Sprint 46: added a public port mapping for 8080 so the Next.js
+  # dashboard (separate service, same compose) can reach the FastAPI
+  # HTTP/WebSocket layer from the browser. The bot already had
+  # audit/ as a volume; no other changes.
   guaritradbot:
     build:
       context: .
@@ -10,6 +14,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    ports:
+      - "8080:8080"
     volumes:
       # Sprint 8 fix: NO montar /app entero (eso congela source code + config.yaml
       # en el volume y bloquea updates del repo). Solo persistir audit/ (runtime state).
@@ -19,7 +25,7 @@ services:
     # starve the host. The audit flagged "ausencia de límites de
     # recursos". 1 CPU + 1GB is enough for the bot (it's mostly
     # I/O-bound, sleeping most of the cycle). The dashboard gets
-    # more (2 CPU + 2GB) because it runs the Streamlit server +
+    # more (2 CPU + 2GB) because it runs the Node server +
     # periodic re-renders.
     deploy:
       resources:
@@ -36,22 +42,28 @@ services:
       retries: 3
       start_period: 120s
 
-  # Servicio 2: El Dashboard interactivo
+  # Servicio 2: Next.js dashboard (Sprint 46B)
+  # Replaces the old Streamlit monolith. Reads bot state via the
+  # FastAPI HTTP/WebSocket API exposed on guaritradbot_engine:8080.
+  # - NEXT_PUBLIC_API_URL is baked at build time → must match the
+  #   bot's publicly reachable URL. The build arg pulls it from
+  #   the env_file / Coolify env so the same image can target
+  #   different bot URLs.
   dashboard:
     build:
       context: .
       dockerfile: Dockerfile.dashboard
+      args:
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://13.140.181.29:8080}
     container_name: guaritradbot_dashboard
     restart: unless-stopped
-    # Sprint 45 fix (H8): the dashboard needs DASHBOARD_PASSWORD from
-    # .env now that it requires a login (previously had zero auth).
-    # The bot service already had this; the dashboard service didn't.
     env_file:
       - .env
+    environment:
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
     ports:
-      - "8501:8501"
-    volumes:
-      - bot_audit:/app/audit
+      - "3000:3000"
     depends_on:
       - guaritradbot
     deploy:
@@ -63,11 +75,11 @@ services:
           cpus: '0.5'
           memory: 512M
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=5).read()"]
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000', r => process.exit(r.statusCode === 200 || r.statusCode === 307 || r.statusCode === 302 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 60s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 60s
 
 volumes:
   bot_audit:
