@@ -20,7 +20,7 @@ What this module does
 - `build_positions()` — list of positions with computed current
   P&L (calls yfinance for live prices; falls back to entry price
   if fetch fails, with `current_price_source` flag so the UI can
-  label it appropriately).
+  show it appropriately).
 - `build_audit()` — recent audit events (filterable by since/until).
 - `read_mode()` — current mode from `audit/mode_override.json` or
   config.yaml fallback.
@@ -867,8 +867,29 @@ def close_position(
     position_id: str,
     audit_path: str = "audit/audit.jsonl",
     positions_path: str = "data_store/positions.json",
+    fee_pct: float = 0.0,
+    fee_pct_for_asset=None,
 ) -> Optional[Dict]:
     """Close an open position at its entry price (best-effort fallback).
+
+    Sprint 46N (audit M2): applies the same real binance.us round-trip
+    fee PositionMonitor's SL/TP and smart-profit-take closes already
+    account for (Sprint 46J) and RiskManagerAgent's replacement closes
+    now account for too. Since this manual close always uses
+    close_price == entry_price (no live price feed here), gross_pnl is
+    always 0 -- applying a nonzero fee simply records the small
+    realized LOSS the fee itself represents, instead of silently
+    reporting a perfect break-even that never actually happens on a
+    real exchange.
+
+    Two ways to supply the fee (both default to fee-free, the old
+    behavior): a flat `fee_pct` (fine when the caller already knows
+    this is a single crypto position), or `fee_pct_for_asset` -- an
+    optional callable `f(asset: str) -> float`, resolved against THIS
+    position's actual asset once it's looked up below. If both are
+    given, `fee_pct_for_asset` wins (it's asset-aware; a flat `fee_pct`
+    passed alongside it would just be a stale/wrong guess for this
+    specific asset).
 
     Real price discovery happens in the bot's PositionMonitor. This
     endpoint is for MANUAL operator-initiated closes from the
@@ -925,7 +946,17 @@ def close_position(
             "if you intended to fully exit the market position."
         )
 
-    closed = repo.close_position(position_id, close_price=target.entry_price, reason="MANUAL_CLOSE_VIA_API")
+    effective_fee_pct = fee_pct
+    if fee_pct_for_asset is not None:
+        try:
+            effective_fee_pct = float(fee_pct_for_asset(target.asset) or 0.0)
+        except Exception:
+            effective_fee_pct = 0.0
+
+    closed = repo.close_position(
+        position_id, close_price=target.entry_price, reason="MANUAL_CLOSE_VIA_API",
+        fee_pct=effective_fee_pct,
+    )
     if closed is None:
         return None
     audit = AuditLedger(path=audit_path)
@@ -956,6 +987,7 @@ def close_position(
 def close_all_positions(
     audit_path: str = "audit/audit.jsonl",
     positions_path: str = "data_store/positions.json",
+    fee_pct_for_asset=None,
 ) -> List[Dict]:
     """Sprint 46H: bulk version of `close_position` — Carlos's ask:
     "que se puedan detener las entradas que están abiertas, y así
@@ -975,12 +1007,22 @@ def close_all_positions(
 
     Returns the list of closed-position dicts (same shape as
     `close_position`'s return value), in the order they were closed.
+
+    Sprint 46N (audit M2): `fee_pct_for_asset` (optional callable,
+    `f(asset: str) -> float`, same contract as PositionMonitor's) lets
+    the caller apply a PER-POSITION fee -- unlike `close_position`'s
+    flat `fee_pct` (fine for a single asset), a bulk close can mix
+    crypto (real taker fee) and equities (commission-free), so a single
+    shared rate would either overcharge equities or undercharge crypto.
     """
     repo = get_position_repo(positions_path)
     position_ids = [p.position_id for p in repo.open()]
     closed_list: List[Dict] = []
     for pid in position_ids:
-        closed = close_position(pid, audit_path=audit_path, positions_path=positions_path)
+        closed = close_position(
+            pid, audit_path=audit_path, positions_path=positions_path,
+            fee_pct_for_asset=fee_pct_for_asset,
+        )
         if closed is not None:
             closed_list.append(closed)
     return closed_list

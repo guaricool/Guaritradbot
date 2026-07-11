@@ -913,6 +913,11 @@ def main():
             alpaca_broker=alpaca_broker,
             brokers_config=brokers_config,
             mode_override_path=override_path,
+            # Sprint 46N (audit M2): fee-aware position-replacement
+            # closes -- same callable PositionMonitor already uses, so
+            # both close paths record realized P&L net of the same
+            # real binance.us taker fee instead of only one of them.
+            fee_pct_for_asset=_fee_pct_for_asset,
         ),
         "DebateAgent": DebateAgent(position_repo=position_repo, audit=audit),
         "ExecutionAgent": ExecutionAgent(event_bus=event_bus),

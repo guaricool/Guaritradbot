@@ -115,6 +115,17 @@ class RiskManagerAgent:
         # with only an audit-log breadcrumb (CAP_AUTO_ADJUSTED) and no
         # enforcement. See CAP_AUTO_ADJUSTED_REJECTED below.
         max_auto_adjust_risk_multiplier: float = 2.0,
+        # Sprint 46N (audit M2): position-REPLACEMENT closes
+        # (_try_replace_position below) previously called
+        # position_repo.close_position() with no fee_pct, recording
+        # gross P&L for the closed position -- unlike PositionMonitor's
+        # SL/TP and smart-profit-take closes, which have been fee-aware
+        # since Sprint 46J. Optional callable, same contract as
+        # PositionMonitor's `fee_pct_for_asset`: `f(asset: str) -> float`
+        # (fraction, e.g. 0.001 = 0.1%). Wired in main.py from the same
+        # `_fee_pct_for_asset` closure PositionMonitor already uses.
+        # None (the default) preserves the old fee-free behavior.
+        fee_pct_for_asset=None,
     ):
         self.broker = broker_client
         self.risk_per_trade_pct = risk_per_trade_pct
@@ -160,6 +171,21 @@ class RiskManagerAgent:
         self._asset_to_class = build_asset_to_class_map(self.brokers_config)
         # Sprint 46N (audit A2).
         self.max_auto_adjust_risk_multiplier = max_auto_adjust_risk_multiplier
+        # Sprint 46N (audit M2).
+        self.fee_pct_for_asset = fee_pct_for_asset
+
+    def _fee_pct(self, asset: str) -> float:
+        """Same defensive contract as PositionMonitor._fee_pct: a
+        missing callable or an exception inside it must never block a
+        position replacement -- it just means the close is recorded
+        fee-free (the pre-M2 behavior), not that the trade is aborted.
+        """
+        if self.fee_pct_for_asset is None:
+            return 0.0
+        try:
+            return float(self.fee_pct_for_asset(asset) or 0.0)
+        except Exception:
+            return 0.0
 
     def get_account_balance(self, asset: Optional[str] = None) -> tuple:
         """Return (balance_usd, source) to size a trade against.
@@ -1367,6 +1393,10 @@ class RiskManagerAgent:
             worst_pos.position_id,
             close_price=close_price,
             reason="REPLACED_BY_BETTER_SIGNAL",
+            # Sprint 46N (audit M2): previously fee-free (gross P&L),
+            # unlike PositionMonitor's SL/TP and smart-profit-take
+            # closes (fee-aware since Sprint 46J).
+            fee_pct=self._fee_pct(worst_pos.asset),
         )
         if closed is None:
             return False

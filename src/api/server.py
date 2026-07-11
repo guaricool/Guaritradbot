@@ -157,6 +157,29 @@ def _load_config() -> dict:
         return {}
 
 
+def _fee_pct_for_asset(asset: str) -> float:
+    """Sprint 46N (audit M2): the same real binance.us round-trip fee
+    the bot itself charges on SL/TP, smart-profit-take, and position-
+    replacement closes (`trading.crypto_taker_fee_pct` in config.yaml,
+    default 0.001 = 0.1%; see main.py's `_fee_pct_for_asset` closure
+    for the bot-side twin of this function), applied here so a manual
+    dashboard close records the same realistic cost instead of a
+    fee-free 0.0. Crypto only -- Alpaca equities are commission-free,
+    so anything `get_asset_class` doesn't classify as CRYPTO gets 0.0
+    (same conservative default used everywhere else in the bot).
+    Best-effort: any error loading config.yaml just means 0.0 (never
+    block a manual close over a config read failure).
+    """
+    try:
+        from src.data.asset_class import get_asset_class, AssetClass
+        if get_asset_class(asset) != AssetClass.CRYPTO:
+            return 0.0
+        cfg = _load_config()
+        return float((cfg.get("trading", {}) or {}).get("crypto_taker_fee_pct", 0.001))
+    except Exception:
+        return 0.0
+
+
 # ----------------------------------------------------------------------
 # Lifespan: load config once, share with requests
 # ----------------------------------------------------------------------
@@ -691,6 +714,9 @@ def post_close_position(
         position_id=position_id,
         audit_path=_audit_path(),
         positions_path=_positions_path(),
+        # Sprint 46N (audit M2): same real binance.us round-trip fee
+        # PositionMonitor/RiskManagerAgent closes already account for.
+        fee_pct_for_asset=_fee_pct_for_asset,
     )
     if closed is None:
         raise HTTPException(status_code=404, detail=f"position {position_id!r} not found or already closed")
@@ -706,7 +732,10 @@ def post_close_all_positions(_: None = Depends(auth.require_auth)) -> Dict[str, 
     docstring for the repo-only-close trade-off (same as the single
     close endpoint above, just applied to all open positions).
     """
-    closed = close_all_positions(audit_path=_audit_path(), positions_path=_positions_path())
+    closed = close_all_positions(
+        audit_path=_audit_path(), positions_path=_positions_path(),
+        fee_pct_for_asset=_fee_pct_for_asset,
+    )
     return {"closed_count": len(closed), "closed": closed}
 
 

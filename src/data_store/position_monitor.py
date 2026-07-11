@@ -273,8 +273,27 @@ class PositionMonitor:
                 continue
 
             upnl = pos.unrealized_pnl(price)
-            if upnl <= self.min_profit_to_protect:
-                # No hay profit que proteger
+            # Sprint 46N (audit M2): min_profit_to_protect used to be
+            # compared against RAW gross unrealized PnL. The eventual
+            # close below (_execute_close -> close_position) correctly
+            # subtracts round-trip fees (Sprint 46J), but this GATE
+            # deciding whether to close early at all was fee-blind --
+            # with the config default of 0.0, a $0.01 gross profit
+            # could trigger a SMART_PROFIT_TAKE close that nets a
+            # REALIZED LOSS once ~$0.02 of round-trip fees are
+            # deducted. Now the effective floor is whichever is
+            # higher: the configured min_profit_to_protect, or the
+            # actual round-trip fee cost for THIS position at the
+            # current price -- so an early close is only taken when
+            # it's provably still a net win after fees, regardless of
+            # how low the operator set min_profit_to_protect.
+            fee_pct = self._fee_pct(asset)
+            round_trip_fee = (
+                (pos.entry_price * pos.qty) + (price * pos.qty)
+            ) * fee_pct if fee_pct else 0.0
+            effective_min_profit = max(self.min_profit_to_protect, round_trip_fee)
+            if upnl <= effective_min_profit:
+                # No hay profit que proteger (neto de fees)
                 continue
 
             # Buscar señal opuesta con fuerza suficiente
