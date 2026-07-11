@@ -195,6 +195,35 @@ def _fetch_prices_for_open_positions(position_repo) -> dict:
     return prices
 
 
+def _should_alert_fast_monitor_blind(consecutive_blind_ticks: int, threshold: int) -> bool:
+    """Sprint 46N (audit A6): decide whether THIS blind tick should
+    trigger a SYSTEM_ERROR alert, given how many consecutive ticks in
+    a row have had no prices at all.
+
+    Extracted as a pure function (no I/O, no closures) so the alert
+    cadence is unit-testable in isolation from `fast_monitor_tick`,
+    which is a closure defined inside `main()` and can't easily be
+    exercised directly in a test.
+
+    Behavior: alert on the tick where the streak FIRST reaches
+    `threshold` (e.g. 3 consecutive blind ticks), then again every
+    `threshold` ticks after that (6, 9, 12, ...) — a single blind tick
+    is treated as a possible transient blip (rate limit, brief network
+    hiccup) and doesn't page anyone; a sustained blind streak escalates
+    once and then keeps reminding periodically instead of either
+    going silent forever after the first alert, or spamming Telegram
+    every single tick (every ~2 minutes) for the full duration of a
+    longer outage.
+    """
+    if threshold <= 0:
+        # Defensive: a misconfigured threshold shouldn't crash the
+        # tick or fire on every single blind tick unboundedly either.
+        return consecutive_blind_ticks == 1
+    if consecutive_blind_ticks < threshold:
+        return False
+    return (consecutive_blind_ticks - threshold) % threshold == 0
+
+
 def _start_api_server(
     audit_path: str,
     positions_path: str,
@@ -881,6 +910,19 @@ def main():
     # config["notifications"] block is available at construction time.
     _pupdate_scheduler = None
 
+    # Sprint 46N (audit A6): count consecutive fast_monitor_tick runs
+    # where price fetching returned NOTHING while positions were open
+    # ("flying blind" — SL/TP protection can't run without a current
+    # price). The hourly cycle already alerts on a total historical-
+    # data-feed failure (MarketAnalystAgent's MARKET_DATA_TOTAL_FAILURE,
+    # Sprint 43 C6), but that's a different code path (fetch_one for
+    # indicators) and never covered this fast, live-price-only tick —
+    # a data-provider outage here could silently leave every open
+    # position unprotected for as long as the outage lasts, with
+    # nothing telling Carlos to go check manually.
+    _blind_tick_count = 0
+    _FAST_MONITOR_BLIND_ALERT_THRESHOLD = 3
+
     def fast_monitor_tick():
         """Sprint 46I — decoupled, fast-cadence position protection.
 
@@ -909,12 +951,58 @@ def main():
         GP/hyperopt-adjacent work) and doesn't need sub-hour freshness
         the way protecting an already-open position does.
         """
+        nonlocal _blind_tick_count
         opens = position_repo.open()
         if not opens:
+            # Nothing to protect right now — reset so a real blind
+            # streak later starts counting from zero, not from
+            # whatever it was before the book emptied out.
+            _blind_tick_count = 0
             return
         prices = _fetch_prices_for_open_positions(position_repo)
         if not prices:
+            # Sprint 46N (audit A6): every price fetch failed this tick
+            # while positions are open — SL/TP protection did NOT run.
+            # Track + alert instead of silently returning (previous
+            # behavior). A single blind tick can be a transient blip
+            # (rate limit, brief network hiccup); alert once the streak
+            # crosses the threshold, then repeat the alert every
+            # `threshold` ticks after that so it isn't a one-time
+            # notice Carlos could miss, but also isn't Telegram spam
+            # every 2 minutes for the entire duration of a longer outage.
+            _blind_tick_count += 1
+            assets_at_risk = sorted({p.asset for p in opens})
+            print(
+                f"[FastMonitor] ⚠️ SIN PRECIOS este ciclo ({_blind_tick_count} "
+                f"consecutivos) — {len(opens)} posición(es) abierta(s) sin "
+                f"protección SL/TP este ciclo: {assets_at_risk}"
+            )
+            if audit:
+                audit.append("FAST_MONITOR_BLIND", {
+                    "consecutive_blind_ticks": _blind_tick_count,
+                    "open_positions": len(opens),
+                    "assets": assets_at_risk,
+                })
+            should_alert = _should_alert_fast_monitor_blind(
+                _blind_tick_count, _FAST_MONITOR_BLIND_ALERT_THRESHOLD
+            )
+            if should_alert and event_bus is not None:
+                event_bus.publish("SYSTEM_ERROR", {
+                    "kind": "FAST_MONITOR_BLIND",
+                    "consecutive_blind_ticks": _blind_tick_count,
+                    "open_positions": len(opens),
+                    "assets": assets_at_risk,
+                    "error": (
+                        f"📉 fast_monitor_tick lleva {_blind_tick_count} ciclos "
+                        f"consecutivos SIN PRECIOS para {len(opens)} posición(es) "
+                        f"abierta(s) ({', '.join(assets_at_risk)}). La protección "
+                        f"SL/TP no puede evaluarse sin precio actual — verificar "
+                        f"el proveedor de datos (yfinance/broker)."
+                    ),
+                })
             return
+        # Got at least one price this tick — the blind streak (if any) is over.
+        _blind_tick_count = 0
         try:
             # 1a. SL/TP mechanical check (+ OCO reconciliation for
             # native_oco positions — see position_monitor.py).
