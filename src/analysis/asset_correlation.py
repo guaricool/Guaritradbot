@@ -94,6 +94,7 @@ def fetch_returns(
     symbols: Sequence[str],
     window_days: int = 90,
     interval: str = "1d",
+    cache: Optional[Dict[str, pd.Series]] = None,
 ) -> Dict[str, pd.Series]:
     """Fetch daily returns for a list of symbols via yfinance.
 
@@ -106,6 +107,16 @@ def fetch_returns(
         symbols: tickers to fetch (e.g. ["BTC-USD", "SPY"]).
         window_days: how many days of history (default 90d).
         interval: yfinance interval string ("1d" default).
+        cache: Sprint 46N (audit A5) — optional read-through cache,
+            `{symbol: pd.Series}`. If given, a symbol already present
+            is used as-is (no network call); a symbol not yet present
+            is fetched normally and the result is WRITTEN BACK into
+            this same dict, so a caller that reuses the same `cache`
+            object across several `fetch_returns`/`analyze_assets`
+            calls within one cycle only ever fetches each symbol once,
+            no matter how many times it's asked for. Callers that
+            don't care about cross-call reuse simply omit this (default
+            None = old behavior, always fetch fresh).
 
     Returns:
         Dict {symbol: pd.Series[float]} of daily simple returns.
@@ -113,6 +124,9 @@ def fetch_returns(
     period = f"{window_days}d"
     out: Dict[str, pd.Series] = {}
     for sym in symbols:
+        if cache is not None and sym in cache:
+            out[sym] = cache[sym]
+            continue
         try:
             df = safe_yf_download(sym, period=period, interval=interval)
         except Exception:
@@ -135,6 +149,8 @@ def fetch_returns(
         if ret.empty:
             continue
         out[sym] = ret
+        if cache is not None:
+            cache[sym] = ret
     return out
 
 
@@ -243,6 +259,7 @@ def analyze_assets(
     window_days: int = 90,
     interval: str = "1d",
     threshold: float = DEFAULT_WELL_DIVERSIFIED_THRESHOLD,
+    returns_cache: Optional[Dict[str, pd.Series]] = None,
 ) -> AssetCorrelationResult:
     """One-shot: fetch returns → align → correlation matrix → group.
 
@@ -251,13 +268,19 @@ def analyze_assets(
         window_days: lookback window (default 90 = ~3 months of trading days).
         interval: yfinance interval.
         threshold: avg correlation above this is "not diversified".
+        returns_cache: Sprint 46N (audit A5) — passed straight through
+            to `fetch_returns` as its `cache` param. See that
+            docstring: lets a caller (e.g. RiskManagerAgent evaluating
+            several hypotheses in one cycle) avoid re-fetching the
+            same existing-book assets' yfinance data for every
+            hypothesis.
 
     Returns:
         AssetCorrelationResult with matrix, avg correlation, and asset
         class groups. If no symbols could be fetched, returns an empty
         result with well_diversified=True (no signal = no warning).
     """
-    returns = fetch_returns(symbols, window_days=window_days, interval=interval)
+    returns = fetch_returns(symbols, window_days=window_days, interval=interval, cache=returns_cache)
     if not returns:
         # Sprint 45 fix (N5): unknown, not "confirmed diversified".
         return AssetCorrelationResult(

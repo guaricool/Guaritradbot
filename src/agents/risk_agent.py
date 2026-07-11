@@ -274,6 +274,22 @@ class RiskManagerAgent:
         cycle_balance, cycle_balance_source = self.get_account_balance()
         balance_cache: Dict[str, Tuple[float, str]] = {"crypto": (cycle_balance, cycle_balance_source)}
 
+        # Sprint 46N (audit A5): per-cycle returns cache for the
+        # portfolio-risk gates below (_check_portfolio_correlation,
+        # _check_portfolio_tail_risk). Before this, EACH hypothesis in
+        # this same validate_and_size() call re-fetched yfinance data
+        # from scratch for every asset in the existing open book (N
+        # hypotheses x M open-book assets = N*M yfinance calls for
+        # data that can't have changed within one cycle) — the audit's
+        # A5 finding, part of why a slow hourly cycle could run
+        # 10-20 minutes and starve fast_monitor_tick. Two separate
+        # dicts because analyze_assets (correlation, 90d window) and
+        # compute_portfolio_tail_risk (CVaR, 180d window) use different
+        # lookback windows — sharing one cache between them would
+        # silently serve a wrong-length series to whichever ran second.
+        self._cycle_correlation_returns_cache: Dict[str, Any] = {}
+        self._cycle_tail_risk_returns_cache: Dict[str, Any] = {}
+
         # Sprint 2: cuántas posiciones abiertas ya tenemos
         open_count = self.position_repo.count_open() if self.position_repo else 0
         slots_left = max(0, self.max_open_trades - open_count)
@@ -1047,7 +1063,10 @@ class RiskManagerAgent:
             # actually diversified" signal yet.
             return True, "too_few_assets_for_correlation_check"
         try:
-            result = analyze_assets(sorted(open_assets))
+            result = analyze_assets(
+                sorted(open_assets),
+                returns_cache=getattr(self, "_cycle_correlation_returns_cache", None),
+            )
         except Exception as e:
             return True, f"correlation_check_error:{str(e)[:100]}"
         if result.well_diversified is None:
@@ -1086,7 +1105,10 @@ class RiskManagerAgent:
         if len(weights) < 2:
             return True, "too_few_assets_for_tail_risk_check"
         try:
-            result = compute_portfolio_tail_risk(weights)
+            result = compute_portfolio_tail_risk(
+                weights,
+                returns_cache=getattr(self, "_cycle_tail_risk_returns_cache", None),
+            )
         except Exception as e:
             return True, f"tail_risk_check_error:{str(e)[:100]}"
         if result.n_observations == 0:

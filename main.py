@@ -1040,20 +1040,23 @@ def main():
 
         This function is scheduled independently (see
         config.yaml's schedule.fast_monitor_interval_minutes, default
-        2) via `schedule.every(...).minutes.do(fast_monitor_tick)`
-        below, registered into the SAME global `schedule` instance
-        `EpochScheduler.start()`'s while-loop already drives — no
-        changes needed to scheduler.py. It runs ONLY the position-
-        protection half of what job_with_monitor used to do inline:
-        SL/TP polling, smart profit-take, OCO reconciliation (for
-        crypto positions using Sprint 46I's native_oco protection —
-        see position_monitor.py), equity tracking, and per-position
-        P&L update notifications. It never touches new-entry
-        generation (StrategyAgent/DebateAgent/RiskManagerAgent) — that
-        stays on the hourly cycle in job_with_monitor, which is
-        heavier (yfinance fetches across the full asset universe,
-        GP/hyperopt-adjacent work) and doesn't need sub-hour freshness
-        the way protecting an already-open position does.
+        2). Sprint 46N (audit A5): it now runs on its own dedicated
+        daemon thread with its own timer (see the
+        `_fast_monitor_loop`/`_fast_monitor_thread` block near the end
+        of main()) instead of being registered on the same global
+        `schedule` instance / single-threaded while-loop that also
+        drives job_with_monitor — see that block's comment for the
+        full rationale. It runs ONLY the position-protection half of
+        what job_with_monitor used to do inline: SL/TP polling, smart
+        profit-take, OCO reconciliation (for crypto positions using
+        Sprint 46I's native_oco protection — see position_monitor.py),
+        equity tracking, and per-position P&L update notifications. It
+        never touches new-entry generation (StrategyAgent/DebateAgent/
+        RiskManagerAgent) — that stays on the hourly cycle in
+        job_with_monitor, which is heavier (yfinance fetches across the
+        full asset universe, GP/hyperopt-adjacent work) and doesn't
+        need sub-hour freshness the way protecting an already-open
+        position does.
         """
         nonlocal _blind_tick_count
         opens = position_repo.open()
@@ -1217,14 +1220,14 @@ def main():
         # smart profit-take, OCO reconciliation, equity tracking) no
         # longer lives here — it runs independently on a faster
         # cadence via `fast_monitor_tick` (see above and the
-        # `schedule.every(...).minutes.do(fast_monitor_tick)` call
-        # below main()). This function now only does the drawdown
-        # check + capital routing + manual pause gates, then the full
-        # hourly analysis cycle (original_job). It still needs its OWN
-        # price snapshot for the drawdown equity calc below — fetched
-        # independently from fast_monitor_tick's (different cadence,
-        # simplest to keep them decoupled rather than share mutable
-        # state between two differently-timed scheduled jobs).
+        # dedicated fast-monitor-thread block below main()). This
+        # function now only does the drawdown check + capital routing
+        # + manual pause gates, then the full hourly analysis cycle
+        # (original_job). It still needs its OWN price snapshot for
+        # the drawdown equity calc below — fetched independently from
+        # fast_monitor_tick's (different cadence, simplest to keep
+        # them decoupled rather than share mutable state between two
+        # differently-timed scheduled jobs).
         # Sprint 43 H3 (fixed for real in 46D; equity source fixed in
         # 46N audit A1): drawdown kill switch check. If the account
         # has dropped more than the configured threshold from its peak
@@ -1392,5 +1395,110 @@ def main():
 
     scheduler.job = job_with_monitor
 
-    # Sprint 46I: register the fast position-monitor loop on the SAME
-    # global `schedule` instance EpochS
+    _fast_monitor_minutes = float(
+        config.get("schedule", {}).get("fast_monitor_interval_minutes", 2)
+    )
+
+    # Run once immediately at startup (both --once and daemon modes), so
+    # open positions are protected right away instead of waiting up to
+    # fast_monitor_interval_minutes for the first tick.
+    try:
+        fast_monitor_tick()
+    except Exception as e:
+        print(f"[Init] fast_monitor_tick inicial falló (continuando): {e}")
+
+    # Sprint 46N (audit A5): fast_monitor_tick now runs on its OWN daemon
+    # thread with its own timer, instead of being registered on the SAME
+    # global `schedule` instance / single-threaded `while True:
+    # schedule.run_pending()` loop that also drives the hourly
+    # job_with_monitor cycle (EpochScheduler.start(),
+    # src/execution/scheduler.py:216-221). Both jobs used to run
+    # sequentially on that one thread — a slow hourly cycle (15 yfinance
+    # downloads with retries, plus per-hypothesis portfolio-risk-gate
+    # yfinance calls, which could together take 10-20 minutes under Yahoo
+    # rate limiting) could starve fast_monitor_tick for that entire
+    # duration, suspending SL/TP protection on open positions exactly when
+    # the bot is busiest. This thread is fully independent: its own
+    # sleep/tick timer, never blocked on (or blocking) job_with_monitor.
+    #
+    # Thread-safety (verified, not just assumed): PositionRepository
+    # guards every read/write with a threading.RLock (Sprint 46 C8) and
+    # close_position() is idempotent — it checks is_open inside the lock
+    # and returns None if already closed — so a race between this
+    # thread's SL/TP close and job_with_monitor's replacement-close on
+    # the same position resolves safely by construction.
+    # AuditLedger.append() serializes via fcntl.flock per write.
+    # EventBus.publish() only iterates `subscribers`, which is mutated
+    # only at startup (subscribe()), so concurrent publish() calls are
+    # safe. EquityTracker.history is a deque with a single writer (this
+    # thread) and a single reader (job_with_monitor) — safe under
+    # CPython's GIL without an extra lock.
+    #
+    # Only started in daemon mode: `--once` never enters the long-lived
+    # while loop at all (scheduler.start(run_once_for_test=True) runs one
+    # cycle and returns before the process exits), so a background timer
+    # thread would never get a chance to fire — the synchronous call
+    # above already covers --once.
+    _fast_monitor_lock = threading.Lock()
+    _fast_monitor_stop_event = threading.Event()
+
+    def _fast_monitor_loop():
+        interval_seconds = max(_fast_monitor_minutes * 60.0, 1.0)
+        while not _fast_monitor_stop_event.wait(interval_seconds):
+            # Non-blocking acquire: if a previous tick is still running
+            # (slower than the configured interval — e.g. a broker/
+            # exchange hiccup), skip this tick rather than queuing up
+            # overlapping runs against the same broker clients/repo.
+            if not _fast_monitor_lock.acquire(blocking=False):
+                print("[FastMonitor] tick anterior aún en curso; salteando este tick.")
+                continue
+            try:
+                fast_monitor_tick()
+            except Exception as e:
+                print(f"[FastMonitor] tick falló (continuando): {e}")
+            finally:
+                _fast_monitor_lock.release()
+
+    if not args.once:
+        _fast_monitor_thread = threading.Thread(
+            target=_fast_monitor_loop,
+            name="fast-monitor-thread",
+            daemon=True,
+        )
+        _fast_monitor_thread.start()
+        print(
+            f"[Init] Fast position monitor armado en su propio hilo: cada "
+            f"{_fast_monitor_minutes} min (independiente del ciclo de análisis "
+            f"de {config.get('schedule', {}).get('run_interval_hours', 1)}h y "
+            f"del scheduler de un solo hilo que lo corre — Sprint 46N audit A5)"
+        )
+    else:
+        print("[Init] Fast position monitor: modo --once, no se arma hilo en "
+              "background (ya corrió una vez arriba).")
+
+    try:
+        if args.once:
+            print("[System] Corriendo en modo UNA SOLA VEZ (--once)")
+            audit.append("WORKFLOW_START", {"mode": "once"})
+            scheduler.start(run_once_for_test=True)
+            audit.append("WORKFLOW_END", {"mode": "once"})
+            print("\n=== Ciclo Único Completado ===")
+            summary = audit.summary()
+            print(f"📒 Audit: {summary['total_events']} events, {len(summary['by_type'])} types")
+            print(f"   Audit file: {audit.path}")
+            print(f"📊 Posiciones: {position_repo.count_open()} abiertas, "
+                  f"${position_repo.total_realized_pnl_usd():.4f} realized PnL total")
+        else:
+            print("[System] Iniciando Demonio (Modo Épocas)...")
+            audit.append("WORKFLOW_START", {"mode": "daemon"})
+            scheduler.start(run_once_for_test=False)
+    except KeyboardInterrupt:
+        audit.append("BOT_STOP_KEYBOARDINT", {})
+        print("\nBot detenido por el usuario (Ctrl+C).")
+    except Exception as e:
+        audit.append("BOT_STOP_EXCEPTION", {"error": str(e)})
+        raise
+
+
+if __name__ == "__main__":
+    main()

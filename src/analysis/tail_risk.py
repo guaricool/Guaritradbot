@@ -153,6 +153,7 @@ def compute_portfolio_tail_risk(
     asset_weights: Dict[str, float],
     window_days: int = 180,
     interval: str = "1d",
+    returns_cache: Optional[Dict[str, pd.Series]] = None,
 ) -> TailRiskResult:
     """Compute portfolio tail risk for the given asset weights.
 
@@ -163,6 +164,15 @@ def compute_portfolio_tail_risk(
             .notional_usd; the caller converts to a weight dict.
         window_days: lookback for returns (default 180d = 6 months).
         interval: yfinance interval.
+        returns_cache: Sprint 46N (audit A5) — passed straight through
+            to `fetch_returns` as its `cache` param, so a caller
+            evaluating several candidate trades in one cycle only
+            fetches each symbol's yfinance data once. NOTE: this cache
+            uses a DIFFERENT window (180d) than
+            `asset_correlation.analyze_assets`'s (90d) — callers must
+            NOT share the same cache dict between the two functions,
+            or a shorter/longer series fetched for one would be
+            silently reused for the other.
 
     Returns:
         TailRiskResult with VaR/CVaR at 95% and 99% plus the
@@ -177,7 +187,7 @@ def compute_portfolio_tail_risk(
             mean_daily_return=0.0, std_daily_return=0.0,
             annual_volatility=0.0, worst_single_day=0.0,
         )
-    rets = fetch_returns(symbols, window_days=window_days, interval=interval)
+    rets = fetch_returns(symbols, window_days=window_days, interval=interval, cache=returns_cache)
     if not rets:
         return TailRiskResult(
             assets=symbols, weights=[asset_weights[s] for s in symbols],
