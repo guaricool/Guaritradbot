@@ -187,13 +187,38 @@ app = FastAPI(
     lifespan=_lifespan,
 )
 
-# CORS: by default allow all in dev. In prod, narrow to dashboard's
-# public origin via DASHBOARD_CORS_ORIGINS env var (comma-separated).
-_CORS_ORIGINS = os.getenv("DASHBOARD_CORS_ORIGINS", "*").split(",")
+# CORS (Sprint 46N — audit A9): this used to default to `"*"` (allow
+# ANY origin) with `allow_credentials=True` — a browser tab open to
+# any random website could make authenticated-looking cross-origin
+# requests against this API. Fails CLOSED now: with no
+# `DASHBOARD_CORS_ORIGINS` set, NO browser origin is allowed (the
+# dashboard simply won't load data until the operator sets this to
+# the dashboard's actual public URL, e.g.
+# `DASHBOARD_CORS_ORIGINS=http://13.140.181.29:3050` per this repo's
+# docker-compose.yml, or the Coolify-assigned hostname once TLS is
+# added per A10) — same "must configure to unlock" pattern
+# `DASHBOARD_PASSWORD` already uses elsewhere in this file.
+#
+# `allow_credentials` is now tied to whether any origin is actually
+# configured: this API authenticates via a Bearer token the frontend
+# attaches explicitly to each request (see dashboard/src/lib/api.ts),
+# NOT via cookies, so there was never a need for
+# `allow_credentials=True` in the first place — it only matters for
+# cookie-based auth. Leaving it False removes an unnecessary CORS
+# privilege regardless of how `DASHBOARD_CORS_ORIGINS` ends up
+# configured.
+_CORS_ORIGINS = [o.strip() for o in os.getenv("DASHBOARD_CORS_ORIGINS", "").split(",") if o.strip()]
+if not _CORS_ORIGINS:
+    print(
+        "[server] ⚠️  DASHBOARD_CORS_ORIGINS is not set — no browser origin "
+        "is allowed to call this API (fails closed). Set it to the "
+        "dashboard's public URL (comma-separated if more than one) to "
+        "unlock the dashboard, e.g. DASHBOARD_CORS_ORIGINS=http://13.140.181.29:3050"
+    )
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_CORS_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
@@ -400,13 +425,34 @@ def set_mode(req: SetModeRequest, _: None = Depends(auth.require_auth)) -> SetMo
 # ----------------------------------------------------------------------
 
 @app.post("/api/auth/login", response_model=LoginResponse)
-def login(req: LoginRequest) -> LoginResponse:
+def login(req: LoginRequest, request: Request) -> LoginResponse:
+    """Password -> token.
+
+    Sprint 46N (audit A9): this endpoint used to have NO throttling at
+    all — unlimited password guesses, zero backoff. Now gated by
+    `auth.login_rate_limiter`, keyed by client IP: after
+    `DASHBOARD_LOGIN_MAX_ATTEMPTS` (default 5) failures within
+    `DASHBOARD_LOGIN_WINDOW_SECONDS` (default 15 min), that IP is
+    locked out for `DASHBOARD_LOGIN_LOCKOUT_SECONDS` (default 15 min)
+    and gets 429 instead of even attempting the password check. A
+    successful login clears that IP's history.
+    """
+    client_key = request.client.host if request.client else "unknown"
+    allowed, retry_after = auth.login_rate_limiter.check(client_key)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many failed login attempts; try again in {int(retry_after) + 1}s",
+            headers={"Retry-After": str(int(retry_after) + 1)},
+        )
     try:
         token = auth.issue_token(password=req.password)
     except PermissionError as e:
+        auth.login_rate_limiter.record_failure(client_key)
         # Same response for any auth failure — don't leak whether
         # the password env var is set or not.
         raise HTTPException(status_code=401, detail=f"auth failed: {e}")
+    auth.login_rate_limiter.record_success(client_key)
     return LoginResponse(
         token=token,
         expires_in_s=auth.TOKEN_TTL_SECONDS,
@@ -747,8 +793,6 @@ def get_stats(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
         "total_realized_pnl_usd": snap.total_realized_pnl_usd,
         "ts": snap.last_update_ts,
     }
-
-
 # ----------------------------------------------------------------------
 # Allocation + risk metrics (Sprint 44A/44B modules surfaced over HTTP)
 # ----------------------------------------------------------------------
@@ -905,6 +949,22 @@ def get_equity(
 # Restart (graceful)
 # ----------------------------------------------------------------------
 
+# Sprint 46N (audit A10): a single leaked/shared bearer token (12h TTL,
+# lives in the dashboard's localStorage) could otherwise trigger
+# POST /api/restart in a loop — a cheap DoS that also nukes the
+# drawdown kill switch's in-memory cooldown state on every bounce (see
+# A1). This module-level timestamp + env-configurable cooldown adds a
+# floor between accepted restarts. Deliberately in-memory (not
+# persisted): the API process itself restarts alongside the bot in
+# this deployment (same container, see main.py's `_start_api_server`),
+# so persisting across restarts would require surviving the very
+# restart it's meant to throttle — a disk-based cooldown belongs in
+# main.py's own startup path if that's ever needed. This still closes
+# the actual loop-DoS: within one running process, restarts are capped.
+_last_restart_ts: Optional[float] = None
+_RESTART_COOLDOWN_SECONDS = float(os.getenv("DASHBOARD_RESTART_COOLDOWN_SECONDS", "60"))
+
+
 @app.post("/api/restart")
 def post_restart(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     """Best-effort graceful restart of the bot process.
@@ -917,6 +977,25 @@ def post_restart(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     Returns 202 Accepted with a note that the actual restart is
     asynchronous (the bot will be down for ~10-30s).
     """
+    global _last_restart_ts
+    now = time.time()
+    if _last_restart_ts is not None:
+        elapsed = now - _last_restart_ts
+        if elapsed < _RESTART_COOLDOWN_SECONDS:
+            retry_after = _RESTART_COOLDOWN_SECONDS - elapsed
+            print(
+                f"[server] ⚠️  POST /api/restart blocked by cooldown — a restart "
+                f"was requested {elapsed:.0f}s ago (cooldown={_RESTART_COOLDOWN_SECONDS:.0f}s). "
+                f"If this wasn't you, the shared dashboard token may be compromised."
+            )
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"restart cooldown active; try again in {int(retry_after) + 1}s "
+                    f"(prevents a leaked/shared token from looping /api/restart, audit A10)"
+                ),
+                headers={"Retry-After": str(int(retry_after) + 1)},
+            )
     pid_path = os.getenv("DASHBOARD_BOT_PID_FILE", "/tmp/guaritradbot.pid")
     if not os.path.exists(pid_path):
         raise HTTPException(
@@ -934,6 +1013,8 @@ def post_restart(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"pid {pid} not found; bot already stopped?")
     except PermissionError:
         raise HTTPException(status_code=403, detail=f"no permission to signal pid {pid}")
+    _last_restart_ts = now
+    print(f"[server] 🔁 POST /api/restart accepted — sent SIGTERM to pid {pid}.")
     return {
         "ok": True,
         "pid": pid,

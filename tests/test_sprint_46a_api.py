@@ -45,6 +45,14 @@ class _TempPaths:
         os.environ["DASHBOARD_POSITIONS_PATH"] = self.positions_path
         os.environ["DASHBOARD_CONFIG_PATH"] = self.config_path
         os.environ["DASHBOARD_PASSWORD"] = "testpw123"
+        # Sprint 46N (audit A9): auth.py now derives the token-signing
+        # key from an independent secret persisted at
+        # DASHBOARD_TOKEN_SECRET_FILE (default audit/token_secret.key,
+        # relative to CWD) if DASHBOARD_TOKEN_SECRET isn't set. Without
+        # pointing this at the temp dir like every other path above,
+        # test runs would silently create/reuse a stray
+        # audit/token_secret.key in the real repo checkout.
+        os.environ["DASHBOARD_TOKEN_SECRET_FILE"] = str(self.audit_dir / "token_secret.key")
         return self
 
     def __exit__(self, *a):
