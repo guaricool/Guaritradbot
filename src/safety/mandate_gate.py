@@ -38,6 +38,14 @@ class MandateConfig:
     max_position_usd: float = 20.0
     max_daily_loss_usd: float = 5.0
     max_total_exposure_usd: float = 100.0
+    # Sprint 46J: cap on how many NEW positions can be OPENED in a
+    # rolling 24h window. Deliberately separate from max_open_trades
+    # (concurrent open positions) — this guards against a bot that
+    # keeps opening/closing/reopening the same handful of slots all
+    # day, paying a round of exchange fees every time, even if it
+    # never holds more than max_open_trades at once. 0 = unlimited
+    # (backward-compatible default; matches config.yaml's default).
+    max_daily_trades: int = 0
 
 
 @dataclass
@@ -104,6 +112,26 @@ class MandateGate:
                 if pnl < 0:
                     loss += abs(pnl)
         return loss
+
+    def _daily_trade_count(self, now_ts: float | None = None) -> int:
+        """Sprint 46J: count positions OPENED (entry_ts) in the last
+        24h, open or already closed — this is a rate limit on NEW
+        entries, not a snapshot of currently-open ones (that's
+        `_open_exposure_usd` / max_open_trades's job). Same
+        preferred-source pattern as `_daily_loss_usd`: PositionRepository
+        is authoritative when available; falls back to 0 (fail-open —
+        matches every other check in this class, a missing position_repo
+        means this cap simply doesn't block anything rather than
+        silently freezing the bot).
+        """
+        if self.position_repo is None:
+            return 0
+        now = now_ts or time.time()
+        cutoff = now - 24 * 3600
+        return sum(
+            1 for p in self.position_repo.all()
+            if p.entry_ts is not None and p.entry_ts >= cutoff
+        )
 
     def _open_exposure_usd(self) -> float:
         """
@@ -180,6 +208,25 @@ class MandateGate:
                 "error": f"🚫 Mandate reject: {asset} notional ${notional:.2f} > max ${self.config.max_position_usd:.2f}",
             })
             return verdict
+
+        # 2b. Max trades per day (Sprint 46J — rolling 24h, rate limit
+        # on NEW entries, independent of max_open_trades).
+        if self.config.max_daily_trades > 0:
+            trade_count = self._daily_trade_count()
+            if trade_count >= self.config.max_daily_trades:
+                verdict = MandateVerdict(
+                    ok=False,
+                    reason=f"max_daily_trades_reached:{trade_count}>={self.config.max_daily_trades}",
+                )
+                self._publish_system_error("MANDATE_MAX_DAILY_TRADES", {
+                    "asset": asset,
+                    "daily_trade_count": trade_count,
+                    "max_daily_trades": self.config.max_daily_trades,
+                    "error": (f"🚦 Max daily trades reached: {trade_count} "
+                              f">= {self.config.max_daily_trades} en las "
+                              f"últimas 24h. {asset} bloqueado."),
+                })
+                return verdict
 
         # 3. Daily loss rolling 24h (REALIZED P&L — Sprint 18 fix)
         daily_loss = self._daily_loss_usd()

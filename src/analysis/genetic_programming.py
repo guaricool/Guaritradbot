@@ -396,6 +396,7 @@ def fitness(
     simulate_exits: bool = False,
     atr_stop_multiplier: float = 2.0,
     atr_take_profit_multiplier: float = 4.0,
+    fee_pct: float = 0.0,
 ) -> Dict[str, float]:
     """Score a strategy tree on the given price data.
 
@@ -425,6 +426,19 @@ def fitness(
             when `simulate_exits=True`. Same names/semantics as
             config.yaml's `trading:` section — pass the bot's actual
             configured values so the backtest matches live sizing.
+        fee_pct: Sprint 46J fix. Before this, `fitness()` scored every
+            strategy as if trading were frictionless — no commission,
+            no slippage — which is exactly the "ignoring fees" mistake
+            that inflates apparent edge (a strategy trading every bar
+            can look great on paper and be a guaranteed loser once real
+            binance.us taker fees are subtracted). Default 0.0 preserves
+            the exact original numeric behavior for the existing GP test
+            suite; `run_evolution_cli` (the real entry point) passes a
+            real value. Same cost model as `src/optimization/backtester
+            .py`'s `Backtester` class (commission+slippage charged
+            proportional to `|Δposition|`, so a full reversal costs 2x
+            and simply holding costs 0x) — expressed as a single
+            round-trip-friction fraction here for simplicity.
 
     Returns a dict with: sharpe, total_return, max_drawdown, n_trades,
     parsimony, score (the composite we maximize).
@@ -445,6 +459,12 @@ def fitness(
             sig = raw.replace(0, np.nan).ffill().fillna(0).clip(-1, 1)
         returns = prices["Close"].pct_change().fillna(0)
         strat = sig.shift(1).fillna(0) * returns
+        if fee_pct:
+            # Sprint 46J: subtract transaction costs proportional to how
+            # much the position changed each bar (0 = held, 1 = fresh
+            # entry/exit, 2 = a full long<->short reversal in one bar).
+            position_changes = sig.diff().abs().fillna(0)
+            strat = strat - position_changes * fee_pct
         if strat.std() == 0 or len(strat) < 2:
             return {"sharpe": 0.0, "total_return": 0.0, "max_drawdown": 0.0,
                     "n_trades": 0, "parsimony": 0.0, "score": 0.0}
@@ -505,6 +525,7 @@ def multi_symbol_fitness(
     simulate_exits: bool = False,
     atr_stop_multiplier: float = 2.0,
     atr_take_profit_multiplier: float = 4.0,
+    fee_pct: float = 0.0,
 ) -> Dict[str, float]:
     """Evaluate a tree on multiple symbols and return aggregate metrics.
 
@@ -524,6 +545,7 @@ def multi_symbol_fitness(
             simulate_exits=simulate_exits,
             atr_stop_multiplier=atr_stop_multiplier,
             atr_take_profit_multiplier=atr_take_profit_multiplier,
+            fee_pct=fee_pct,
         )
         if f["n_trades"] >= 3:
             per_symbol[sym] = f
@@ -835,6 +857,7 @@ def _evaluate_population(
     simulate_exits: bool = False,
     atr_stop_multiplier: float = 2.0,
     atr_take_profit_multiplier: float = 4.0,
+    fee_pct: float = 0.0,
 ) -> List[Dict[str, Any]]:
     """Score every individual. Returns list of dicts {tree, score, ...}."""
     out: List[Dict[str, Any]] = []
@@ -845,6 +868,7 @@ def _evaluate_population(
                 simulate_exits=simulate_exits,
                 atr_stop_multiplier=atr_stop_multiplier,
                 atr_take_profit_multiplier=atr_take_profit_multiplier,
+                fee_pct=fee_pct,
             )
             # Use the first available symbol's metrics as the "primary"
             primary_metrics = {}
@@ -868,6 +892,7 @@ def _evaluate_population(
                 simulate_exits=simulate_exits,
                 atr_stop_multiplier=atr_stop_multiplier,
                 atr_take_profit_multiplier=atr_take_profit_multiplier,
+                fee_pct=fee_pct,
             )
             sym_key = next(iter(prices_by_symbol)) if prices_by_symbol else "?"
             out.append({
@@ -901,6 +926,7 @@ def evolve(
     simulate_exits: bool = False,
     atr_stop_multiplier: float = 2.0,
     atr_take_profit_multiplier: float = 4.0,
+    fee_pct: float = 0.0,
 ) -> EvolutionResult:
     """Run a full GP evolution loop.
 
@@ -938,6 +964,10 @@ def evolve(
             typical `top_k` used by `StrategyLibrary.add_from_evolution`
             so every candidate that could actually be added to the
             library has a real `is_oos_ratio`, not just rank #1.
+        fee_pct: Sprint 46J — round-trip transaction-cost fraction
+            applied in `fitness()` (see its docstring). Default 0.0 =
+            old frictionless behavior; `run_evolution_cli` passes a
+            real value.
 
     Returns:
         EvolutionResult with the best tree found + run history.
@@ -987,6 +1017,7 @@ def evolve(
             simulate_exits=simulate_exits,
             atr_stop_multiplier=atr_stop_multiplier,
             atr_take_profit_multiplier=atr_take_profit_multiplier,
+            fee_pct=fee_pct,
         )
         scored.sort(key=lambda x: x["score"], reverse=True)
         # Track best
@@ -1033,11 +1064,23 @@ def evolve(
             if len(next_population) < population_size:
                 next_population.append(c2)
         population = next_population[:population_size]
-    # Final eval of last gen
+    # Final eval of last gen.
+    # Sprint 46J fix: this call previously omitted simulate_exits/
+    # atr_stop_multiplier/atr_take_profit_multiplier (and now fee_pct),
+    # unlike every per-generation call above — so the scores attached to
+    # `final_population` (what `StrategyLibrary.add_from_evolution`
+    # actually reads) silently used the frictionless/no-exit-simulation
+    # defaults even when the caller passed simulate_exits=True. Passing
+    # the same params here makes the final scoring consistent with how
+    # the rest of the run was scored.
     final_population = _evaluate_population(
         population, evolution_data,
         direction=direction, use_multi_symbol=use_multi_symbol,
         use_min_symbols=min_symbols,
+        simulate_exits=simulate_exits,
+        atr_stop_multiplier=atr_stop_multiplier,
+        atr_take_profit_multiplier=atr_take_profit_multiplier,
+        fee_pct=fee_pct,
     )
     final_population.sort(key=lambda x: x["score"], reverse=True)
     if final_population and (not best_ever or final_population[0]["score"] > best_ever["score"]):
@@ -1077,6 +1120,7 @@ def evolve(
                 simulate_exits=simulate_exits,
                 atr_stop_multiplier=atr_stop_multiplier,
                 atr_take_profit_multiplier=atr_take_profit_multiplier,
+                fee_pct=fee_pct,
             )
             if not oos_scored:
                 continue
@@ -1506,12 +1550,26 @@ def run_evolution_cli(
     simulate_exits: bool = True,
     atr_stop_multiplier: float = 2.0,
     atr_take_profit_multiplier: float = 4.0,
+    fee_pct: float = 0.001,
 ) -> EvolutionResult:
     """End-to-end: load synthetic multi-symbol data, evolve, save library.
 
     This is the entry point for `python -m src.analysis.genetic_programming`.
     Uses synthetic data by default; in production, replace with real
     OHLCV loaders (e.g. via yfinance or cached data_store/ files).
+
+    fee_pct default (0.001 = 0.1% per unit position change, see
+    `fitness()`'s docstring): Sprint 46J. binance.us's published taker
+    fee schedule starts around this order of magnitude at the base
+    volume tier — verify YOUR account's actual tier at
+    https://www.binance.us/fee-schedule and adjust if different. This
+    is a placeholder for "some realistic friction exists," not a
+    guarantee of your exact rate. NOTE: as of this writing,
+    `run_evolution_cli`/`evolve` are NOT called anywhere in the live
+    bot (main.py) — they're a standalone research/optimization tool
+    invoked via `python -m src.analysis.genetic_programming` or tests
+    only. This fix makes that tool's output trustworthy whenever it
+    IS run; it does not by itself change anything about the running bot.
     """
     rng = np.random.default_rng(seed)
     # Synthetic data for 3 symbols: 2 trending, 1 sideways.
@@ -1555,6 +1613,7 @@ def run_evolution_cli(
         simulate_exits=simulate_exits,
         atr_stop_multiplier=atr_stop_multiplier,
         atr_take_profit_multiplier=atr_take_profit_multiplier,
+        fee_pct=fee_pct,
     )
     if verbose:
         print(f"\n[GP] best score: {result.best_score:.3f}")

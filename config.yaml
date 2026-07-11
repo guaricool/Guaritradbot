@@ -71,6 +71,17 @@ trading:
   # apply to equities/ETFs (Alpaca) — see alpaca_broker.py, fractional
   # shares can't be combined with bracket/OCO orders there.
   use_native_crypto_stops: false
+  # Sprint 46J: real binance.us taker fee (one-way, as a fraction —
+  # 0.001 = 0.1%), charged on both entry AND exit notional when
+  # realized P&L is recorded for a crypto close. Previously the bot's
+  # P&L (dashboard, equity tracker, GP fitness scoring) assumed
+  # frictionless trading — a textbook "ignoring fees" mistake that can
+  # make a losing strategy look profitable, especially with positions
+  # this small ($10-20, where fees are a much bigger % of notional than
+  # on a large account). Alpaca equities always use 0.0 regardless
+  # (commission-free). Verify YOUR actual fee tier at
+  # https://www.binance.us/fee-schedule and adjust if different.
+  crypto_taker_fee_pct: 0.001
 
 schedule:
   run_interval_hours: 1
@@ -103,6 +114,15 @@ mandate:
   max_position_usd: 20              # tope absoluto por trade
   max_daily_loss_usd: 5             # kill switch cuando esta banda se pierde en 24h (P&L realizado, no teórico)
   max_total_exposure_usd: 100       # tope de exposición total abierta simultánea
+  # Sprint 46J: cap on NEW positions opened in a rolling 24h window —
+  # separate from max_open_trades (which only limits how many can be
+  # OPEN AT ONCE). Without this, nothing stops the bot from opening,
+  # closing, and re-opening positions many times a day if signals keep
+  # firing — each round-trip pays fees (see trading.crypto_taker_fee_pct)
+  # and overtrading was explicitly flagged as a risk to guard against.
+  # 0 = unlimited (default, unchanged behavior) — set a real number
+  # (e.g. 10-20) once you want this guard active.
+  max_daily_trades: 0
   kill_switch_file: "/tmp/GUARITRADBOT_KILL"
   audit_log_dir: "audit"
 

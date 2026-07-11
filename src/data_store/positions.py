@@ -59,6 +59,20 @@ class Position:
     protection_mode: str = "polling"  # "polling" | "native_oco"
     broker_oco_order_id: Optional[str] = None
 
+    # Sprint 46J — real exchange fees. Before this, `realized_pnl` was
+    # pure gross price movement (entry vs close), with zero accounting
+    # for the taker fee binance.us actually charges on every market-
+    # order fill. That's the exact "ignoring fees" mistake that makes a
+    # bot look profitable in the dashboard while quietly losing money
+    # once real trading costs are counted — especially dangerous here
+    # given how small this account's positions are (fees are a bigger
+    # % of a $10-20 trade than of a $10,000 one). Default 0.0 preserves
+    # the original gross-only calculation for every position opened
+    # before this existed and for Alpaca equities (commission-free —
+    # see main.py's fee_pct_for_asset). Informational only; does not
+    # change WHEN a position closes, only what P&L gets recorded.
+    fees_paid_usd: float = 0.0
+
     @property
     def notional_usd(self) -> float:
         return abs(self.entry_price * self.qty)
@@ -149,22 +163,48 @@ class PositionRepository:
         self.positions.append(position)
         self._save()
 
-    def close_position(self, position_id: str, close_price: float, reason: str) -> Optional[Position]:
+    def close_position(
+        self,
+        position_id: str,
+        close_price: float,
+        reason: str,
+        fee_pct: float = 0.0,
+    ) -> Optional[Position]:
+        """Close an open position and record realized P&L.
+
+        Args:
+            fee_pct: Sprint 46J — round-trip trading-cost fraction (e.g.
+                0.001 = 0.1% one-way, charged on BOTH entry and exit
+                notional since binance.us market orders are always
+                taker). Default 0.0 preserves the exact original
+                gross-only calculation for every existing caller —
+                callers that know the asset's real fee (see main.py's
+                `fee_pct_for_asset`) opt in explicitly.
+        """
         for p in self.positions:
             if p.position_id == position_id and p.is_open:
                 p.closed_ts = time.time()
                 p.closed_price = close_price
                 p.close_reason = reason
                 direction_sign = 1.0 if p.direction == "long" else -1.0
-                p.realized_pnl = direction_sign * (close_price - p.entry_price) * p.qty
+                gross_pnl = direction_sign * (close_price - p.entry_price) * p.qty
+                fees = 0.0
+                if fee_pct:
+                    entry_notional = abs(p.entry_price * p.qty)
+                    exit_notional = abs(close_price * p.qty)
+                    fees = (entry_notional + exit_notional) * fee_pct
+                p.fees_paid_usd = fees
+                p.realized_pnl = gross_pnl - fees
                 self._save()
                 return p
         return None
 
-    def close_for_asset(self, asset: str, close_price: float, reason: str) -> List[Position]:
+    def close_for_asset(
+        self, asset: str, close_price: float, reason: str, fee_pct: float = 0.0
+    ) -> List[Position]:
         closed = []
         for p in list(self.positions):
             if p.is_open and p.asset == asset:
-                if self.close_position(p.position_id, close_price, reason):
+                if self.close_position(p.position_id, close_price, reason, fee_pct=fee_pct):
                     closed.append(p)
         return closed

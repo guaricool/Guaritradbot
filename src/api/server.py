@@ -247,6 +247,8 @@ class UpdateRiskConfigRequest(BaseModel):
     max_cvar_95_pct: Optional[float] = Field(default=None, gt=0, le=100)
     max_stress_drawdown_pct: Optional[float] = Field(default=None, gt=0, le=100)
     mandate_allowed_symbols: Optional[List[str]] = None
+    # Sprint 46J: rolling-24h new-entry rate limit. 0 = unlimited.
+    max_daily_trades: Optional[int] = Field(default=None, ge=0, le=1000)
     updated_by: Optional[str] = "dashboard"
 
 

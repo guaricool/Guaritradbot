@@ -59,6 +59,9 @@ def _build_mandate(config: dict, audit, position_repo=None, event_bus=None) -> t
         max_position_usd=float(cfg.get("max_position_usd", 20.0)),
         max_daily_loss_usd=float(cfg.get("max_daily_loss_usd", 5.0)),
         max_total_exposure_usd=float(cfg.get("max_total_exposure_usd", 100.0)),
+        # Sprint 46J: rate limit on new entries per rolling 24h. 0 (the
+        # config.yaml default) = unlimited, unchanged behavior.
+        max_daily_trades=int(cfg.get("max_daily_trades", 0)),
     )
     return (MandateGate(mc, audit_ledger=audit, position_repo=position_repo, event_bus=event_bus), mc)
 
@@ -377,6 +380,12 @@ def main():
                     for _k, _v in _risk_applied.items():
                         if _k == "mandate_allowed_symbols":
                             config["mandate"]["allowed_symbols"] = _v
+                        elif _k == "max_daily_trades":
+                            # Sprint 46J: mandate.* field, same special-
+                            # case treatment as allowed_symbols above —
+                            # everything else in this loop is a risk.*
+                            # field (see RISK_CONFIG_DEFAULTS).
+                            config["mandate"]["max_daily_trades"] = _v
                         else:
                             config["risk"][_k] = _v
                     print(f"[Init] Risk/mandate config override applied from {_risk_override_path}: {_risk_applied}")
@@ -393,6 +402,15 @@ def main():
     enable_position_replacement = trading_cfg.get("enable_position_replacement", True)
     replacement_score_threshold = float(trading_cfg.get("replacement_score_threshold", 0.20))
     min_profit_to_protect = float(trading_cfg.get("min_profit_to_protect", 0.0))
+    # Sprint 46J: real binance.us taker fee (ONE-WAY, as a fraction —
+    # e.g. 0.001 = 0.1%), charged on BOTH the entry and exit notional
+    # when a crypto position closes (PositionRepository.close_position's
+    # `fee_pct` docstring). Alpaca equities are commission-free, so they
+    # always get 0.0 regardless of this setting — see
+    # `_fee_pct_for_asset` below. Verify your actual tier at
+    # https://www.binance.us/fee-schedule; this default is a reasonable
+    # placeholder, not a guarantee of your account's real rate.
+    crypto_taker_fee_pct = float(trading_cfg.get("crypto_taker_fee_pct", 0.001))
 
     broker_client = None
     exchange_cfg = config.get("exchange", {})
@@ -679,12 +697,23 @@ def main():
         # caveat before enabling this in live mode).
         use_native_crypto_stops=bool(trading_cfg.get("use_native_crypto_stops", False)),
     )
+    def _fee_pct_for_asset(asset: str) -> float:
+        """Sprint 46J: crypto assets (binance.us) get the real taker
+        fee; Alpaca equities are commission-free, so anything NOT
+        classified as "crypto" by `_asset_class_for` (equity, or
+        "unknown" — conservative default) gets 0.0. See
+        `crypto_taker_fee_pct`'s comment above for the config source
+        and PositionMonitor's docstring for how this gets used.
+        """
+        return crypto_taker_fee_pct if _asset_class_for(asset, brokers_config) == "crypto" else 0.0
+
     position_monitor = PositionMonitor(
         repo=position_repo,
         audit=audit,
         event_bus=event_bus,
         broker=broker_client,
         min_profit_to_protect=min_profit_to_protect,
+        fee_pct_for_asset=_fee_pct_for_asset,
     )
 
     strategy_params = None

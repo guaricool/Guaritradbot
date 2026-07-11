@@ -147,6 +147,7 @@ type RiskFormState = {
   max_cvar_95_pct: string;
   max_stress_drawdown_pct: string;
   mandate_allowed_symbols: string; // comma-separated in the UI
+  max_daily_trades: string; // Sprint 46J: 0 = unlimited
 };
 
 function toRiskFormState(cfg: RiskConfig): RiskFormState {
@@ -158,6 +159,7 @@ function toRiskFormState(cfg: RiskConfig): RiskFormState {
     max_cvar_95_pct: String(cfg.max_cvar_95_pct),
     max_stress_drawdown_pct: String(cfg.max_stress_drawdown_pct),
     mandate_allowed_symbols: cfg.mandate_allowed_symbols.join(", "),
+    max_daily_trades: String(cfg.max_daily_trades),
   };
 }
 
@@ -217,6 +219,14 @@ const RISK_NUMERIC_FIELDS: Array<{
     max: 100,
     step: "1",
   },
+  {
+    key: "max_daily_trades",
+    label: "Max new entries per day",
+    hint: "rolling 24h rate limit on NEW positions opened (0 = unlimited). Separate from max open trades.",
+    min: 0,
+    max: 200,
+    step: "1",
+  },
 ];
 
 function RiskSettingsSection() {
@@ -270,6 +280,7 @@ function RiskSettingsSection() {
           .split(",")
           .map((s) => s.trim())
           .filter((s) => s.length > 0),
+        max_daily_trades: Number(form.max_daily_trades),
       };
       const res = await api.updateRiskConfig(updates);
       setForm(toRiskFormState(res));

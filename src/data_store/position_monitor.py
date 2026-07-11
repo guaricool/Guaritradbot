@@ -44,6 +44,7 @@ class PositionMonitor:
         event_bus=None,
         broker=None,
         min_profit_to_protect: float = 0.0,
+        fee_pct_for_asset=None,
     ):
         """
         Args:
@@ -54,12 +55,32 @@ class PositionMonitor:
             min_profit_to_protect: minimum unrealized PnL (USD) required to
                 trigger an early close on reversal. 0 = always protect if in
                 profit. Default 0 (any profit triggers if reversal signal).
+            fee_pct_for_asset: Sprint 46J — optional callable
+                `(asset: str) -> float` returning the round-trip fee
+                fraction to charge THIS asset's close against realized
+                P&L (see `PositionRepository.close_position`'s
+                `fee_pct` docstring). Wired in main.py from
+                `brokers_config` + `trading.crypto_taker_fee_pct` —
+                crypto assets get the real binance.us taker fee,
+                Alpaca equities get 0.0 (commission-free). Default None
+                = always 0.0, i.e. every position closed through this
+                monitor keeps the exact original gross-only P&L unless
+                the caller explicitly opts in.
         """
         self.repo = repo
         self.audit = audit
         self.event_bus = event_bus
         self.broker = broker
         self.min_profit_to_protect = min_profit_to_protect
+        self.fee_pct_for_asset = fee_pct_for_asset
+
+    def _fee_pct(self, asset: str) -> float:
+        if self.fee_pct_for_asset is None:
+            return 0.0
+        try:
+            return float(self.fee_pct_for_asset(asset) or 0.0)
+        except Exception:
+            return 0.0
 
     def check(self, current_prices: Dict[str, float]) -> list:
         """
@@ -347,7 +368,12 @@ class PositionMonitor:
         its own broker order (the exchange already closed the position
         via the OCO fill), it only needs this bookkeeping tail.
         """
-        closed = self.repo.close_position(pos.position_id, price, reason)
+        # Sprint 46J: charge the asset's real round-trip fee (0.0 for
+        # equities / any caller that didn't wire fee_pct_for_asset —
+        # see this class's docstring above) against realized P&L.
+        closed = self.repo.close_position(
+            pos.position_id, price, reason, fee_pct=self._fee_pct(pos.asset)
+        )
         if closed and self.audit is not None:
             self.audit.append(
                 "TRADE_CLOSED",
@@ -360,6 +386,7 @@ class PositionMonitor:
                     "close_price": price,
                     "reason": reason,
                     "realized_pnl_usd": round(closed.realized_pnl or 0.0, 4),
+                    "fees_paid_usd": round(closed.fees_paid_usd or 0.0, 4),
                     "duration_s": (closed.closed_ts - closed.entry_ts) if closed.closed_ts else 0,
                 },
             )

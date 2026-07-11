@@ -590,6 +590,10 @@ def write_trading_config(
 #     (max_position_usd/max_daily_loss_usd/max_total_exposure_usd) —
 #     those are intentionally NOT exposed here yet; ask if you want
 #     them added too, same mechanism.
+#   - `mandate.max_daily_trades` (Sprint 46J) — new-entry rate limit,
+#     0 = unlimited. Exposed here alongside allowed_symbols using the
+#     same "special-case mandate.* field" pattern (see the merge loop
+#     in main.py's Sprint 46F risk-override block).
 #
 # Like trading config, this is READ at startup only — a saved change
 # needs a bot restart (POST /api/restart) to take effect.
@@ -602,6 +606,7 @@ RISK_CONFIG_DEFAULTS: Dict[str, Any] = {
     "max_cvar_95_pct": 20.0,
     "max_stress_drawdown_pct": 70.0,
     "mandate_allowed_symbols": [],
+    "max_daily_trades": 0,
 }
 
 
@@ -642,6 +647,7 @@ def read_risk_config(
             "max_stress_drawdown_pct", RISK_CONFIG_DEFAULTS["max_stress_drawdown_pct"]
         ),
         "mandate_allowed_symbols": list(mandate_cfg.get("allowed_symbols", [])),
+        "max_daily_trades": int(mandate_cfg.get("max_daily_trades", RISK_CONFIG_DEFAULTS["max_daily_trades"])),
     }
     updated_at = None
     updated_by = None

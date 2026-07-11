@@ -101,6 +101,8 @@ export interface RiskConfig {
   max_cvar_95_pct: number;
   max_stress_drawdown_pct: number;
   mandate_allowed_symbols: string[];
+  // Sprint 46J: new-entry rate limit, rolling 24h. 0 = unlimited.
+  max_daily_trades: number;
 }
 
 export interface RiskConfigResponse extends RiskConfig {
