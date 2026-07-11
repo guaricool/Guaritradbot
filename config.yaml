@@ -105,6 +105,28 @@ trading:
   # is wired in for crypto. Does not affect equities (Alpaca shorts are
   # a separate, already-gated path).
   allow_crypto_short: false
+  # Sprint 46N (audit M3): Alpaca cannot open a short position via
+  # fractional/notional orders (this bot's equity sizing always uses
+  # notional_usd — see alpaca_broker.py's create_market_order). An
+  # equity "short" hypothesis on SPY/QQQ/GLD/USO previously passed
+  # every gate and simulated a clean fill in PAPER mode (identical
+  # math to a long, just inverted P&L) — completely masking that the
+  # exact same trade is a guaranteed broker rejection once you flip to
+  # LIVE. Keep false unless whole-share order sizing + real margin/
+  # short eligibility is wired in for equities. Does not affect crypto
+  # (separate, already-gated path — see allow_crypto_short above).
+  allow_equity_short: false
+  # Sprint 46N (audit M3): paper-mode fills were always simulated at
+  # the EXACT signal price with zero slippage -- optimistic by
+  # construction, one of the audit's named causes of paper/live
+  # divergence (a real market order always pays some spread/impact
+  # cost). Applied AGAINST the trader on every simulated fill (paper
+  # mode and the no-broker dev path): longs fill slightly higher,
+  # shorts fill slightly lower. 0.0005 = 0.05%, a conservative
+  # placeholder for a small-cap/liquid symbol; raise it if you trade
+  # something thinner. Set to 0.0 to restore the old frictionless
+  # behavior.
+  paper_slippage_pct: 0.0005
 
 schedule:
   run_interval_hours: 1
@@ -158,4 +180,20 @@ mandate:
 # enabled=false disables the drift gate; the 44A concentration cap
 # (max_asset_class_concentration_pct) still runs as a backstop.
 allocation_policy:
-  
+  enabled: true
+  drift_tolerance_pct: 10
+  targets:
+    crypto: 0.40
+    equity_growth: 0.40
+    commodity_safe: 0.10
+    commodity_energy: 0.10
+
+# === Sprint 22 — Paper→Live Transition Safety ===
+# What should the pre-flight checklist do with paper positions when
+# switching to live? Only applies when interactive=False (e.g., daemon mode).
+# - close:  mark them closed in repo, P&L=0, proceed to live
+# - ignore: keep them in repo but warn that they don't exist in live exchange
+# - abort:   refuse to proceed (DEFAULT — safest)
+live_transition:
+  auto_action: "abort"              # default safe option for non-interactive mode
+  dry_run_qty: 0.00001              # BTC qty for dry-run validation order (~50¢ at $50k)

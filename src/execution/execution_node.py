@@ -258,6 +258,17 @@ class ExecutionNode:
         # latency during market hours without blocking the cycle long.
         alpaca_fill_poll_attempts: int = 5,
         alpaca_fill_poll_delay_s: float = 0.5,
+        # Sprint 46N (audit M3): simulated fills (paper mode AND the
+        # no-broker dev path) previously always filled at the EXACT
+        # signal price -- optimistic by construction, one of the audit's
+        # named causes of paper/live divergence (paper never pays the
+        # market-impact/spread cost a real market order does). Default
+        # 0.0 preserves that exact old behavior for every existing
+        # caller/test; main.py wires this from
+        # config.yaml's trading.paper_slippage_pct (nonzero default) so
+        # a real bot deployment gets a more realistic paper P&L without
+        # any test needing to change. See `_apply_paper_slippage`.
+        paper_slippage_pct: float = 0.0,
     ):
         self.event_bus = event_bus
         self.execution_mode = execution_mode
@@ -267,6 +278,8 @@ class ExecutionNode:
         self.kill_switch = kill_switch
         self.audit = audit
         self.mode_override_path = mode_override_path
+        # Sprint 46N (audit M3).
+        self.paper_slippage_pct = paper_slippage_pct
         # Sprint 46I: place a real OCO stop-loss/take-profit order on
         # binance.us right after a confirmed crypto LONG entry fill,
         # instead of relying only on PositionMonitor's price polling.
@@ -603,6 +616,33 @@ class ExecutionNode:
             print(f"[ExecutionNode] ⚠️ Could not fetch supported symbols: {e}")
         return None
 
+    def _apply_paper_slippage(self, entry_price: float, direction: str) -> float:
+        """Sprint 46N (audit M3): simulate execution slippage on a
+        PAPER/no-broker fill, moving the recorded fill price AGAINST
+        the trader by `self.paper_slippage_pct` -- a long entry fills
+        at a slightly HIGHER price (you're buying, the market moves
+        against you / you cross the spread), a short entry fills at a
+        slightly LOWER price. This mirrors what a real market order
+        actually experiences (spread + market impact) that a naive
+        "fill at the exact signal price" simulation ignores entirely.
+
+        Defensive: `self.paper_slippage_pct <= 0` (the default) or a
+        non-finite/invalid `entry_price` returns `entry_price`
+        unchanged -- this must never raise or block a paper fill, and
+        must never IMPROVE the fill price (that would make paper
+        trading look better than reality, the opposite of the goal).
+        """
+        try:
+            price = float(entry_price)
+            pct = float(self.paper_slippage_pct)
+        except (TypeError, ValueError):
+            return entry_price
+        if pct <= 0 or price <= 0:
+            return entry_price
+        if direction == "short":
+            return price * (1.0 - pct)
+        return price * (1.0 + pct)
+
     def execute_order(self, order_data: dict):
         # Doble check del kill switch
         if self.kill_switch and self.kill_switch.is_triggered():
@@ -718,9 +758,14 @@ class ExecutionNode:
         # "FILLED (SIMULATED)" so dashboards and downstream agents keep
         # working in dev environments with no broker credentials.
         if broker_instance is None:
+            # Sprint 46N (audit M3): apply simulated slippage (see
+            # `_apply_paper_slippage`'s docstring) so this dev-mode
+            # simulated fill isn't recorded at the exact, frictionless
+            # signal price.
+            sim_fill_price = self._apply_paper_slippage(entry_price, direction)
             print(
                 f"[ExecutionNode] 🟡 NO BROKER — orden {asset} {direction} "
-                f"simulada localmente (default dev behavior)."
+                f"simulada localmente @ ${sim_fill_price:.4f} (default dev behavior)."
             )
             status = "FILLED (SIMULATED)"
             if self.audit:
@@ -730,7 +775,8 @@ class ExecutionNode:
                         "asset": asset,
                         "direction": direction,
                         "qty": qty,
-                        "entry_price": entry_price,
+                        "entry_price": sim_fill_price,
+                        "requested_entry_price": entry_price,
                         "status": status,
                         "simulated": True,
                         "asset_class": asset_class,
@@ -747,7 +793,10 @@ class ExecutionNode:
                     },
                 )
             # Sprint 43 C5: persist position only after confirmed fill.
-            self._persist_filled_position(order_data, status)
+            # Sprint 46N (audit M3): actual_entry_price overrides
+            # order_data's requested price with the slippage-adjusted
+            # simulated fill.
+            self._persist_filled_position(order_data, status, actual_entry_price=sim_fill_price)
             return
 
         # === B033 fix: Paper-mode gate ===
@@ -757,9 +806,14 @@ class ExecutionNode:
         # simulate the fill locally and skip the broker entirely.
         is_paper_mode = not _is_mandate_enabled(self.mode_override_path)
         if is_paper_mode:
+            # Sprint 46N (audit M3): same slippage simulation as the
+            # no-broker path above — the audit specifically called out
+            # paper fills as "always complete, at the exact signal
+            # price, no slippage" as a cause of paper/live divergence.
+            sim_fill_price = self._apply_paper_slippage(entry_price, direction)
             print(
                 f"[ExecutionNode] 🟡 PAPER MODE — orden {asset} {direction} "
-                f"simulada @ ${entry_price:.2f} via {asset_class} broker "
+                f"simulada @ ${sim_fill_price:.4f} via {asset_class} broker "
                 f"(NO enviada a broker real)"
             )
             status = "FILLED (PAPER)"
@@ -770,7 +824,8 @@ class ExecutionNode:
                         "asset": asset,
                         "direction": direction,
                         "qty": qty,
-                        "entry_price": entry_price,
+                        "entry_price": sim_fill_price,
+                        "requested_entry_price": entry_price,
                         "status": status,
                         "simulated": True,
                         "asset_class": asset_class,
@@ -787,7 +842,10 @@ class ExecutionNode:
                     },
                 )
             # Sprint 43 C5: persist position only after confirmed fill.
-            self._persist_filled_position(order_data, status)
+            # Sprint 46N (audit M3): actual_entry_price overrides
+            # order_data's requested price with the slippage-adjusted
+            # simulated fill.
+            self._persist_filled_position(order_data, status, actual_entry_price=sim_fill_price)
             return
 
         # === Dispatch to the right broker ===

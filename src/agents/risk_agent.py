@@ -91,6 +91,13 @@ class RiskManagerAgent:
         # happens to already hold that asset). Default OFF; see
         # config.yaml's comment for the live incident that surfaced this.
         allow_crypto_short: bool = False,
+        # Sprint 46N (audit M3): Alpaca cannot open a short position
+        # via notional/fractional orders (this bot's equity sizing
+        # always uses notional_usd) -- an equity "short" hypothesis
+        # simulates fine in paper mode and then fails outright in
+        # live. Default OFF, mirroring allow_crypto_short above. See
+        # config.yaml's allow_equity_short comment.
+        allow_equity_short: bool = False,
         # Sprint 46M: reject a new trade if an OPEN position already
         # exists on the same asset (any direction). This is what let the
         # bot open a simultaneous BTC-USD long + short every cycle,
@@ -163,6 +170,8 @@ class RiskManagerAgent:
         self.max_cvar_95_pct = max_cvar_95_pct
         # Sprint 46M.
         self.allow_crypto_short = allow_crypto_short
+        # Sprint 46N (audit M3).
+        self.allow_equity_short = allow_equity_short
         self.block_conflicting_asset_positions = block_conflicting_asset_positions
         # Sprint 46N.
         self.alpaca_broker = alpaca_broker
@@ -393,6 +402,42 @@ class RiskManagerAgent:
                         ),
                     })
                 print(f"  🚫 {asset:8} {direction:5} — crypto_short_not_supported (binance.us spot, no margin)")
+                continue
+
+            # --- Sprint 46N (audit M3): reject equity shorts (Alpaca
+            # rejects fractional/notional sell-to-open orders — you
+            # cannot short via `notional_usd`, only via whole-share
+            # `amount` combined with an actual borrow, which this bot
+            # never sets up). Before this gate, an equity "short"
+            # hypothesis passed every other gate and simulated a clean
+            # fill in PAPER mode (identical to a long, just inverted
+            # P&L math) — completely masking that the exact same trade
+            # is a guaranteed broker rejection in LIVE mode. Mirrors
+            # the Sprint 46M crypto-short gate above; see
+            # config.yaml's allow_equity_short comment.
+            if (
+                direction == "short"
+                and not self.allow_equity_short
+                and self._asset_to_class.get(asset) == "equity"
+            ):
+                rejected.append({"hypothesis": h, "reason": "equity_short_not_supported"})
+                if self.audit:
+                    self.audit.append("TRADE_REJECTED", {
+                        "asset": asset,
+                        "direction": direction,
+                        "reason": "equity_short_not_supported",
+                        "detail": (
+                            "Alpaca cannot open a short position via "
+                            "notional/fractional orders (this bot's sizing "
+                            "always uses notional_usd for equities). This "
+                            "hypothesis would pass paper-mode simulation "
+                            "cleanly and then fail outright in live mode. "
+                            "Set trading.allow_equity_short=true only if "
+                            "whole-share order sizing + margin/short "
+                            "eligibility is wired in for equities."
+                        ),
+                    })
+                print(f"  🚫 {asset:8} {direction:5} — equity_short_not_supported (Alpaca fractional/notional can't short)")
                 continue
 
             # --- Sprint 46M: reject if this asset already has an OPEN

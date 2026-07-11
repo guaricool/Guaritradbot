@@ -503,6 +503,9 @@ def main():
     # balance") that surfaced this. Keep off unless real margin/futures
     # trading is wired in.
     allow_crypto_short = bool(trading_cfg.get("allow_crypto_short", False))
+    # Sprint 46N (audit M3): Alpaca can't open a short via fractional/
+    # notional orders — see config.yaml's allow_equity_short comment.
+    allow_equity_short = bool(trading_cfg.get("allow_equity_short", False))
 
     broker_client = None
     exchange_cfg = config.get("exchange", {})
@@ -835,6 +838,10 @@ def main():
         # see src/execution/broker.py's OCO methods for the testing
         # caveat before enabling this in live mode).
         use_native_crypto_stops=bool(trading_cfg.get("use_native_crypto_stops", False)),
+        # Sprint 46N (audit M3): realistic slippage on simulated
+        # (paper/no-broker) fills — see config.yaml's
+        # paper_slippage_pct comment.
+        paper_slippage_pct=float(trading_cfg.get("paper_slippage_pct", 0.0005)),
     )
     def _fee_pct_for_asset(asset: str) -> float:
         """Sprint 46J: crypto assets (binance.us) get the real taker
@@ -908,6 +915,7 @@ def main():
             max_cvar_95_pct=max_cvar_95_pct,
             max_stress_drawdown_pct=max_stress_drawdown_pct,
             allow_crypto_short=allow_crypto_short,
+            allow_equity_short=allow_equity_short,
             # Sprint 46N (audit C1/C2): route replacement-closes by
             # asset class + never send a real order in paper mode.
             alpaca_broker=alpaca_broker,
@@ -1498,12 +1506,4 @@ def main():
             audit.append("WORKFLOW_START", {"mode": "daemon"})
             scheduler.start(run_once_for_test=False)
     except KeyboardInterrupt:
-        audit.append("BOT_STOP_KEYBOARDINT", {})
-        print("\nBot detenido por el usuario (Ctrl+C).")
-    except Exception as e:
-        audit.append("BOT_STOP_EXCEPTION", {"error": str(e)})
-        raise
-
-
-if __name__ == "__main__":
-    main()
+        a
