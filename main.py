@@ -62,7 +62,13 @@ def _build_mandate(config: dict, audit, position_repo=None, event_bus=None) -> t
     return (MandateGate(mc, audit_ledger=audit, position_repo=position_repo, event_bus=event_bus), mc)
 
 
-def _start_api_server(audit_path: str, positions_path: str, config_path: str = "config.yaml") -> None:
+def _start_api_server(
+    audit_path: str,
+    positions_path: str,
+    config_path: str = "config.yaml",
+    broker_client=None,
+    alpaca_broker=None,
+) -> None:
     """Sprint 46A: start the FastAPI/WebSocket dashboard backend as a
     daemon thread inside the bot process.
 
@@ -76,6 +82,12 @@ def _start_api_server(audit_path: str, positions_path: str, config_path: str = "
     which is why the dashboard could deploy successfully and still
     show no live data (every request to NEXT_PUBLIC_API_URL just
     connection-refused).
+
+    Sprint 46C: also registers `broker_client`/`alpaca_broker` (the
+    SAME instances the trading loop uses) with `src.api.state` so
+    `/api/state` can report real available cash per broker instead of
+    the hardcoded 0.0 it always returned before — see
+    `src/api/state.py::set_brokers()`.
 
     Best-effort: any failure here (missing dependency, port already
     bound, etc.) is caught and logged — it must NEVER take down the
@@ -93,6 +105,9 @@ def _start_api_server(audit_path: str, positions_path: str, config_path: str = "
     try:
         import uvicorn
         from src.api.server import app as api_app
+        from src.api.state import set_brokers as _api_set_brokers
+
+        _api_set_brokers(broker_client=broker_client, alpaca_broker=alpaca_broker)
 
         port = int(os.getenv("DASHBOARD_API_PORT", "8080"))
 
@@ -304,6 +319,8 @@ def main():
     _start_api_server(
         audit_path=_audit_path(config),
         positions_path="data_store/positions.json",
+        broker_client=broker_client,
+        alpaca_broker=alpaca_broker,
     )
 
     # Sprint 25 fix: ALWAYS show paper position count at startup.

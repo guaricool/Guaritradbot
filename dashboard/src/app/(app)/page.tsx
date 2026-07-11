@@ -12,6 +12,24 @@ import { useLive } from "@/lib/use-live";
 import { useEffect, useMemo, useState } from "react";
 import type { PositionSummary } from "@/lib/types";
 
+// Sprint 46C: short, human hint under each broker balance card explaining
+// WHY the value is "—" when it isn't a real live balance — a bare "$0.00"
+// could be misread as "your account really has zero dollars".
+function balanceHint(source: string): string {
+  switch (source) {
+    case "live":
+      return "live from broker";
+    case "cache":
+      return "cached (<15s old)";
+    case "not_configured":
+      return "no API keys set";
+    case "unavailable":
+      return "fetch failed — check keys/network";
+    default:
+      return "unknown";
+  }
+}
+
 export default function HomePage() {
   const { data, error, isLoading, mutate } = useSWR("state", () => api.state(), {
     refreshInterval: 10_000,
@@ -77,7 +95,29 @@ export default function HomePage() {
       </header>
 
       {/* KPIs */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
+        <KpiCard
+          label="Binance.US balance"
+          value={
+            data.binance_balance_usd !== null && data.binance_balance_usd !== undefined
+              ? fmtUsd(data.binance_balance_usd, { decimals: 2 })
+              : "—"
+          }
+          tone="gold"
+          hint={balanceHint(data.binance_balance_source)}
+          icon={<span>₿</span>}
+        />
+        <KpiCard
+          label="Alpaca balance"
+          value={
+            data.alpaca_balance_usd !== null && data.alpaca_balance_usd !== undefined
+              ? fmtUsd(data.alpaca_balance_usd, { decimals: 2 })
+              : "—"
+          }
+          tone="gold"
+          hint={balanceHint(data.alpaca_balance_source)}
+          icon={<span>📈</span>}
+        />
         <KpiCard
           label="Open positions"
           value={positions.length}

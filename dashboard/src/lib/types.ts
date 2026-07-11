@@ -30,10 +30,22 @@ export interface ModeInfo {
   mode_override_path: string;
 }
 
+// "live" = fetched from the broker just now (or cached within 15s).
+// "unavailable" = broker configured but the last fetch failed (network/auth).
+// "not_configured" = no credentials for this broker at all.
+export type BalanceSource = "live" | "cache" | "unavailable" | "not_configured" | "unknown" | "broker" | "testnet_sim";
+
 export interface StateSnapshot {
   mode: ModeInfo;
   balance_usd: number;
   balance_source: string;
+  // Sprint 46C: real per-broker available cash (binance.us via ccxt,
+  // Alpaca for equities/ETFs). null when the broker isn't configured
+  // or the last fetch failed — see `balance_source` for why.
+  binance_balance_usd: number | null;
+  binance_balance_source: BalanceSource;
+  alpaca_balance_usd: number | null;
+  alpaca_balance_source: BalanceSource;
   positions: PositionSummary[];
   open_count: number;
   total_unrealized_usd: number;
@@ -42,6 +54,21 @@ export interface StateSnapshot {
   daily_realized_pnl_usd: number;
   total_realized_pnl_usd: number;
   last_update_ts: number | null;
+}
+
+// Sprint 46C: read-only view of config.yaml's `trading:` section,
+// served by GET /api/config.
+export interface TradingConfig {
+  risk_per_trade_pct: number;
+  max_open_trades: number;
+  min_order_usd: number;
+  max_capital_per_trade_pct: number;
+  atr_stop_multiplier: number;
+  atr_take_profit_multiplier: number;
+  risk_reward_ratio: number;
+  enable_position_replacement: boolean;
+  replacement_score_threshold: number;
+  min_profit_to_protect: number;
 }
 
 export interface AuditEvent {

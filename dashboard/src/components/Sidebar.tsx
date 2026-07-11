@@ -12,6 +12,7 @@ const NAV = [
   { href: "/positions", label: "Positions", icon: "◉" },
   { href: "/audit", label: "Audit", icon: "▤" },
   { href: "/allocation", label: "Allocation & Risk", icon: "◊" },
+  { href: "/settings", label: "Settings", icon: "⚙" },
 ];
 
 function statusDot(s: WsStatus) {

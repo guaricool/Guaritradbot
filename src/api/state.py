@@ -96,6 +96,17 @@ class StateSnapshot(BaseModel):
     mode: ModeInfo
     balance_usd: float = 0.0
     balance_source: str = "unknown"                 # "broker" | "testnet_sim" | "live"
+    # Sprint 46C: per-broker available cash. `balance_usd` above was
+    # ALWAYS 0.0/"unknown" — nothing ever populated it, so the
+    # dashboard never showed real money available, even though both
+    # BINANCE_API_KEY/SECRET and ALPACA_API_KEY/SECRET_KEY were set.
+    # These two fields are populated from the SAME broker instances
+    # main.py already constructed for trading (passed in via
+    # `set_brokers()`), so no duplicate exchange connections are made.
+    binance_balance_usd: Optional[float] = None
+    binance_balance_source: str = "unavailable"      # "live" | "unavailable" | "not_configured"
+    alpaca_balance_usd: Optional[float] = None
+    alpaca_balance_source: str = "unavailable"       # "live" | "unavailable" | "not_configured"
     positions: List[PositionSummary] = Field(default_factory=list)
     open_count: int = 0
     total_unrealized_usd: float = 0.0
@@ -198,6 +209,90 @@ def invalidate_price_cache(asset: Optional[str] = None) -> None:
         _PRICE_CACHE.clear()
     else:
         _PRICE_CACHE.pop(asset, None)
+
+
+# ----------------------------------------------------------------------
+# Broker balances (Sprint 46C)
+# ----------------------------------------------------------------------
+#
+# The dashboard is supposed to show "how much money do I actually have
+# available" per broker (binance.us for crypto, Alpaca for equities).
+# Before this, `StateSnapshot.balance_usd` existed as a field but NO
+# caller ever set it to anything other than its 0.0 default — the API
+# never had a reference to the bot's actual broker connections. This
+# module registers the SAME BrokerClient/AlpacaBroker instances main.py
+# already built for trading (see `set_brokers()`, called once from
+# `main.py::_start_api_server`), so balance calls reuse the existing
+# authenticated connections instead of opening new ones with duplicate
+# credentials/rate-limit budget.
+#
+# Cached with a short TTL — balance doesn't need to be sub-second-live
+# and both `get_usdt_balance()`/`get_usd_balance()` are real network
+# calls to the exchange/broker.
+
+_BROKER_CLIENT = None      # BrokerClient (binance.us / ccxt) or None
+_ALPACA_BROKER = None      # AlpacaBroker or None (not configured if None)
+
+BALANCE_CACHE_TTL_S = 15.0
+_BALANCE_CACHE: Dict[str, Tuple[Optional[float], str, float]] = {}
+"""broker_name -> (balance_or_None, source, fetched_at)."""
+
+
+def set_brokers(broker_client=None, alpaca_broker=None) -> None:
+    """Register the bot's live broker instances for balance lookups.
+
+    Called once from `main.py::_start_api_server`, right before the
+    uvicorn thread starts, with the exact same `broker_client` /
+    `alpaca_broker` objects the trading loop uses. Safe to call with
+    both None (e.g. in tests, or if neither broker is configured) —
+    every consumer below treats a None broker as "not configured"
+    rather than raising.
+    """
+    global _BROKER_CLIENT, _ALPACA_BROKER
+    _BROKER_CLIENT = broker_client
+    _ALPACA_BROKER = alpaca_broker
+
+
+def _get_binance_balance() -> Tuple[Optional[float], str]:
+    """Return (balance, source) for the binance.us broker.
+
+    source is one of: "live" (fresh fetch), "cache" (within TTL),
+    "unavailable" (broker configured but the call failed — e.g.
+    network/API-key issue), "not_configured" (no broker instance
+    registered at all, e.g. exchange section missing from config).
+    """
+    if _BROKER_CLIENT is None:
+        return None, "not_configured"
+    now = time.time()
+    cached = _BALANCE_CACHE.get("binance")
+    if cached and (now - cached[2]) < BALANCE_CACHE_TTL_S:
+        return cached[0], "cache" if cached[1] == "live" else cached[1]
+    try:
+        bal = float(_BROKER_CLIENT.get_usdt_balance())
+        _BALANCE_CACHE["binance"] = (bal, "live", now)
+        return bal, "live"
+    except Exception:
+        # Don't cache failures — retry on the next request instead of
+        # being stuck showing "unavailable" for a full TTL window
+        # after a single transient network blip.
+        return None, "unavailable"
+
+
+def _get_alpaca_balance() -> Tuple[Optional[float], str]:
+    """Return (balance, source) for the Alpaca broker. See
+    `_get_binance_balance()` for the meaning of each source value."""
+    if _ALPACA_BROKER is None:
+        return None, "not_configured"
+    now = time.time()
+    cached = _BALANCE_CACHE.get("alpaca")
+    if cached and (now - cached[2]) < BALANCE_CACHE_TTL_S:
+        return cached[0], "cache" if cached[1] == "live" else cached[1]
+    try:
+        bal = float(_ALPACA_BROKER.get_usd_balance())
+        _BALANCE_CACHE["alpaca"] = (bal, "live", now)
+        return bal, "live"
+    except Exception:
+        return None, "unavailable"
 
 
 # ----------------------------------------------------------------------
@@ -412,10 +507,25 @@ def build_state_snapshot(
             daily_pnl += p.realized_pnl
 
     mode = read_mode(config=config, audit_path=audit_path)
+
+    # Sprint 46C: real per-broker balances. Best-effort — a broker
+    # not being configured, or a transient network error, must never
+    # break the whole /api/state response (the dashboard still needs
+    # positions/P&L even if a balance call fails).
+    binance_bal, binance_src = _get_binance_balance()
+    alpaca_bal, alpaca_src = _get_alpaca_balance()
+
     return StateSnapshot(
         mode=mode,
-        balance_usd=0.0,            # set by caller from broker (if available)
-        balance_source="unknown",
+        # Legacy field, kept for API back-compat: mirrors whichever
+        # broker actually has a live balance, preferring binance.us
+        # since that's the bot's primary/always-on broker.
+        balance_usd=binance_bal if binance_bal is not None else (alpaca_bal or 0.0),
+        balance_source=binance_src if binance_bal is not None else alpaca_src,
+        binance_balance_usd=binance_bal,
+        binance_balance_source=binance_src,
+        alpaca_balance_usd=alpaca_bal,
+        alpaca_balance_source=alpaca_src,
         positions=summaries,
         open_count=len(summaries),
         total_unrealized_usd=total_unrealized,

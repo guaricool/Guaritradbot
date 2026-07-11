@@ -357,6 +357,36 @@ def get_state() -> StateSnapshot:
     )
 
 
+@app.get("/api/config")
+def get_trading_config() -> Dict[str, Any]:
+    """Sprint 46C: expose the `trading:` section of config.yaml read-only.
+
+    Carlos asked for a way to see, at a glance, how many trades can be
+    open simultaneously, how much risk is taken per trade, and the
+    minimum order size — these all live in config.yaml's `trading:`
+    block (consumed by main.py/RiskManagerAgent at startup) but had no
+    way to be viewed from the dashboard. This is intentionally
+    READ-ONLY for now (mirrors /api/allocation, /api/risk/* — display
+    only, no POST counterpart) — editing config.yaml still requires a
+    file change + bot restart, this just answers "what is it set to
+    right now, in the config the running bot actually loaded".
+    """
+    config = APP_STATE.get("config") or {}
+    trading_cfg = config.get("trading", {}) or {}
+    return {
+        "risk_per_trade_pct": trading_cfg.get("risk_per_trade_pct", 1.0),
+        "max_open_trades": trading_cfg.get("max_open_trades", 5),
+        "min_order_usd": trading_cfg.get("min_order_usd", 10.0),
+        "max_capital_per_trade_pct": trading_cfg.get("max_capital_per_trade_pct", 10.0),
+        "atr_stop_multiplier": trading_cfg.get("atr_stop_multiplier", 2.0),
+        "atr_take_profit_multiplier": trading_cfg.get("atr_take_profit_multiplier", 4.0),
+        "risk_reward_ratio": trading_cfg.get("risk_reward_ratio", 2.0),
+        "enable_position_replacement": trading_cfg.get("enable_position_replacement", True),
+        "replacement_score_threshold": trading_cfg.get("replacement_score_threshold", 0.20),
+        "min_profit_to_protect": trading_cfg.get("min_profit_to_protect", 0.0),
+    }
+
+
 @app.get("/api/positions", response_model=List[PositionSummary])
 def get_positions() -> List[PositionSummary]:
     snap = build_state_snapshot(

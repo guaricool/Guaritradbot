@@ -13,6 +13,7 @@ import type {
   ModeInfo,
   StateSnapshot,
   StressResult,
+  TradingConfig,
 } from "./types";
 
 const API_BASE =
@@ -184,6 +185,10 @@ export const api = {
       total_realized_pnl_usd: number;
       ts: number | null;
     }>("/api/stats"),
+
+  // Trading config (Sprint 46C) — read-only view of config.yaml's
+  // `trading:` section: max simultaneous trades, risk %, min order $.
+  config: () => request<TradingConfig>("/api/config"),
 };
 
 export { ApiError };
