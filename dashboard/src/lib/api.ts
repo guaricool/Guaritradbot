@@ -13,7 +13,8 @@ import type {
   ModeInfo,
   StateSnapshot,
   StressResult,
-  TradingConfig,
+  TradingConfigResponse,
+  TradingConfigUpdate,
 } from "./types";
 
 const API_BASE =
@@ -186,9 +187,24 @@ export const api = {
       ts: number | null;
     }>("/api/stats"),
 
-  // Trading config (Sprint 46C) — read-only view of config.yaml's
-  // `trading:` section: max simultaneous trades, risk %, min order $.
-  config: () => request<TradingConfig>("/api/config"),
+  // Trading config (Sprint 46C/D) — max simultaneous trades, risk %,
+  // min order $, etc. Editable: updateConfig() saves a partial change
+  // (only changed fields need to be sent); the bot picks it up on its
+  // next restart (see `pending_restart` on the response) — call
+  // restart() to apply immediately.
+  config: () => request<TradingConfigResponse>("/api/config"),
+  updateConfig: (updates: TradingConfigUpdate) =>
+    request<TradingConfigResponse>("/api/config", {
+      method: "POST",
+      body: JSON.stringify(updates),
+    }),
+
+  // Restart (Sprint 46D use case: apply saved config changes now).
+  restart: () =>
+    request<{ ok: boolean; pid: number; signal: string; note: string }>(
+      "/api/restart",
+      { method: "POST" },
+    ),
 };
 
 export { ApiError };

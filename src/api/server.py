@@ -83,7 +83,9 @@ from src.api.state import (
     invalidate_price_cache,
     read_current_prices,
     read_mode,
+    read_trading_config,
     write_mode,
+    write_trading_config,
 )
 
 
@@ -202,6 +204,28 @@ class SetModeResponse(BaseModel):
             "If you need an immediate restart, use POST /api/restart."
         ),
     )
+
+
+# Sprint 46D: dashboard-editable trading settings. Every field is
+# Optional so the dashboard can PATCH just the one field the user
+# changed rather than resend the whole form. Bounds mirror what
+# RiskManagerAgent/the broker actually enforce or what's operationally
+# sane — these are NOT arbitrary: e.g. `min_order_usd` has a floor of
+# $10 because that's Binance.US's real exchange minimum (Carlos's own
+# words: "lo minimo para una entrada es $10") — letting the dashboard
+# save a lower value would just produce orders the exchange rejects.
+class UpdateTradingConfigRequest(BaseModel):
+    risk_per_trade_pct: Optional[float] = Field(default=None, gt=0, le=100)
+    max_open_trades: Optional[int] = Field(default=None, ge=1, le=50)
+    min_order_usd: Optional[float] = Field(default=None, ge=10.0)
+    max_capital_per_trade_pct: Optional[float] = Field(default=None, gt=0, le=100)
+    atr_stop_multiplier: Optional[float] = Field(default=None, gt=0)
+    atr_take_profit_multiplier: Optional[float] = Field(default=None, gt=0)
+    risk_reward_ratio: Optional[float] = Field(default=None, gt=0)
+    enable_position_replacement: Optional[bool] = None
+    replacement_score_threshold: Optional[float] = Field(default=None, ge=0, le=1)
+    min_profit_to_protect: Optional[float] = Field(default=None, ge=0)
+    updated_by: Optional[str] = "dashboard"
 
 
 # ----------------------------------------------------------------------
@@ -357,34 +381,78 @@ def get_state() -> StateSnapshot:
     )
 
 
+def _trading_config_response(effective: Dict[str, Any], note: Optional[str] = None) -> Dict[str, Any]:
+    """Shape `state.read_trading_config()`'s output for the API: strip
+    the internal `_override_*` bookkeeping keys and compute
+    `pending_restart` — True when a dashboard save happened AFTER this
+    process started, meaning the RUNNING bot hasn't picked it up yet
+    (main.py only reads trading config once at startup; see
+    state.py's Sprint 46D docstring for why).
+    """
+    updated_at = effective.get("_override_updated_at")
+    started_at = APP_STATE.get("started_at")
+    pending_restart = bool(updated_at and started_at and updated_at > started_at)
+    out = {k: v for k, v in effective.items() if not k.startswith("_")}
+    out["pending_restart"] = pending_restart
+    out["updated_at"] = updated_at
+    out["updated_by"] = effective.get("_override_updated_by")
+    if note:
+        out["note"] = note
+    return out
+
+
 @app.get("/api/config")
 def get_trading_config() -> Dict[str, Any]:
-    """Sprint 46C: expose the `trading:` section of config.yaml read-only.
-
-    Carlos asked for a way to see, at a glance, how many trades can be
-    open simultaneously, how much risk is taken per trade, and the
-    minimum order size — these all live in config.yaml's `trading:`
-    block (consumed by main.py/RiskManagerAgent at startup) but had no
-    way to be viewed from the dashboard. This is intentionally
-    READ-ONLY for now (mirrors /api/allocation, /api/risk/* — display
-    only, no POST counterpart) — editing config.yaml still requires a
-    file change + bot restart, this just answers "what is it set to
-    right now, in the config the running bot actually loaded".
+    """Sprint 46C/D: the *effective* trading config — config.yaml's
+    `trading:` section with any dashboard-saved override layered on
+    top (see state.read_trading_config). Carlos asked for a way to
+    see, at a glance, how many trades can be open simultaneously, how
+    much risk is taken per trade, and the minimum order size; Sprint
+    46D made these editable too (POST below), so this now also
+    reports whether a saved change is still waiting for a bot restart
+    to take effect (`pending_restart`).
     """
-    config = APP_STATE.get("config") or {}
-    trading_cfg = config.get("trading", {}) or {}
-    return {
-        "risk_per_trade_pct": trading_cfg.get("risk_per_trade_pct", 1.0),
-        "max_open_trades": trading_cfg.get("max_open_trades", 5),
-        "min_order_usd": trading_cfg.get("min_order_usd", 10.0),
-        "max_capital_per_trade_pct": trading_cfg.get("max_capital_per_trade_pct", 10.0),
-        "atr_stop_multiplier": trading_cfg.get("atr_stop_multiplier", 2.0),
-        "atr_take_profit_multiplier": trading_cfg.get("atr_take_profit_multiplier", 4.0),
-        "risk_reward_ratio": trading_cfg.get("risk_reward_ratio", 2.0),
-        "enable_position_replacement": trading_cfg.get("enable_position_replacement", True),
-        "replacement_score_threshold": trading_cfg.get("replacement_score_threshold", 0.20),
-        "min_profit_to_protect": trading_cfg.get("min_profit_to_protect", 0.0),
-    }
+    effective = read_trading_config(config=APP_STATE.get("config") or {}, audit_path=_audit_path())
+    return _trading_config_response(effective)
+
+
+@app.post("/api/config")
+def post_trading_config(
+    req: UpdateTradingConfigRequest,
+    _: None = Depends(auth.require_auth),
+) -> Dict[str, Any]:
+    """Sprint 46D: save a partial trading-config change from the
+    dashboard. Only fields the client actually set are applied
+    (everything else keeps its current effective value) — writes to
+    `audit/trading_config_override.json`, NEVER to config.yaml itself
+    (see state.py's module docstring for why: PyYAML isn't
+    comment-safe for round-trip edits).
+
+    IMPORTANT: this does NOT take effect immediately. `main.py` reads
+    trading config once at startup and hands the values to
+    RiskManagerAgent's constructor — it isn't re-read per cycle. The
+    response's `note` says so explicitly, and `pending_restart` will
+    be true until POST /api/restart (or a manual restart) picks up
+    the new values.
+    """
+    updates = req.model_dump(exclude_unset=True, exclude={"updated_by"})
+    if not updates:
+        raise HTTPException(status_code=400, detail="no fields provided to update")
+    effective = write_trading_config(
+        updates=updates,
+        updated_by=req.updated_by or "dashboard",
+        config=APP_STATE.get("config") or {},
+        audit_path=_audit_path(),
+    )
+    return _trading_config_response(
+        effective,
+        note=(
+            "Saved. These changes take effect after the bot restarts "
+            "(main.py reads trading config once at startup). Use "
+            "POST /api/restart to apply now (~10-30s downtime), or "
+            "they'll apply automatically on the next deploy/restart."
+        ),
+    )
 
 
 @app.get("/api/positions", response_model=List[PositionSummary])

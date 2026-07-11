@@ -56,8 +56,10 @@ export interface StateSnapshot {
   last_update_ts: number | null;
 }
 
-// Sprint 46C: read-only view of config.yaml's `trading:` section,
-// served by GET /api/config.
+// Sprint 46C/D: config.yaml's `trading:` section merged with any
+// dashboard-saved override, served by GET /api/config. Editable via
+// POST /api/config (Sprint 46D) — see `pending_restart` below for why
+// a save doesn't apply instantly.
 export interface TradingConfig {
   risk_per_trade_pct: number;
   max_open_trades: number;
@@ -70,6 +72,21 @@ export interface TradingConfig {
   replacement_score_threshold: number;
   min_profit_to_protect: number;
 }
+
+// Response shape for both GET and POST /api/config. `pending_restart`
+// is true when a dashboard save hasn't been picked up by the running
+// bot yet (main.py reads trading config once at startup, not per
+// cycle) — the Settings page uses this to prompt a restart.
+export interface TradingConfigResponse extends TradingConfig {
+  pending_restart: boolean;
+  updated_at: number | null;
+  updated_by: string | null;
+  note?: string;
+}
+
+// Partial update body for POST /api/config — only send the fields
+// that changed.
+export type TradingConfigUpdate = Partial<TradingConfig> & { updated_by?: string };
 
 export interface AuditEvent {
   ts: number;

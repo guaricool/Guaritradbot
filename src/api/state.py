@@ -44,7 +44,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -459,6 +459,117 @@ def write_mode(
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     tmp.replace(override_path)  # atomic on POSIX
     return read_mode(audit_path=audit_path)
+
+
+# ----------------------------------------------------------------------
+# Trading config (Sprint 46D) — dashboard-editable trading settings
+# ----------------------------------------------------------------------
+#
+# Same pattern as mode_override.json above: config.yaml is the file
+# Carlos edits by hand (with comments explaining every field), so the
+# API never rewrites it directly — PyYAML's dump() isn't round-trip
+# safe and would silently destroy every comment in the file. Instead,
+# dashboard edits go to `audit/trading_config_override.json`, a flat
+# JSON of {field: value} that OVERLAYS config.yaml's `trading:` section
+# at read time. Whatever's in the override file wins.
+#
+# IMPORTANT caveat (surfaced to the user via `pending_restart` in the
+# API response): `main.py` reads `trading_cfg` (config.yaml merged with
+# this override file) ONCE at startup and passes the individual values
+# into RiskManagerAgent's constructor — they are NOT re-read per cycle.
+# So a saved change here only takes effect after the bot restarts
+# (POST /api/restart). This mirrors the existing mode-toggle behavior
+# for the main loop's mandate check (see SetModeResponse.note in
+# server.py) — nothing new architecturally, just extended to cover all
+# of `trading:` instead of only `mandate.enabled`.
+
+TRADING_CONFIG_DEFAULTS: Dict[str, Any] = {
+    "risk_per_trade_pct": 1.0,
+    "max_open_trades": 5,
+    "min_order_usd": 10.0,
+    "max_capital_per_trade_pct": 10.0,
+    "atr_stop_multiplier": 2.0,
+    "atr_take_profit_multiplier": 4.0,
+    "risk_reward_ratio": 2.0,
+    "enable_position_replacement": True,
+    "replacement_score_threshold": 0.20,
+    "min_profit_to_protect": 0.0,
+}
+
+
+def _trading_override_path(audit_path: Optional[str] = None) -> Path:
+    if audit_path is None:
+        audit_path = os.getenv("DASHBOARD_AUDIT_PATH", "audit/audit.jsonl")
+    return Path(audit_path).parent / "trading_config_override.json"
+
+
+def read_trading_config(
+    config: Optional[dict] = None,
+    audit_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Effective trading config: config.yaml's `trading:` section with
+    any dashboard-saved override layered on top.
+
+    Returns the 10 trading fields plus two bookkeeping keys the caller
+    (server.py) uses to compute `pending_restart` and strips before
+    returning the response: `_override_updated_at` (unix ts of the
+    last dashboard save, or None) and `_override_updated_by`.
+    """
+    if config is None:
+        config = {}
+    merged: Dict[str, Any] = {**TRADING_CONFIG_DEFAULTS, **(config.get("trading", {}) or {})}
+    updated_at = None
+    updated_by = None
+    override_path = _trading_override_path(audit_path)
+    if override_path.exists():
+        try:
+            with open(override_path, "r", encoding="utf-8") as f:
+                ov = json.load(f)
+            if isinstance(ov, dict):
+                for k, v in ov.items():
+                    if k in TRADING_CONFIG_DEFAULTS:
+                        merged[k] = v
+                updated_at = ov.get("_updated_at")
+                updated_by = ov.get("_updated_by")
+        except Exception:
+            pass  # Malformed override file = ignore, use config.yaml fallback
+    merged["_override_updated_at"] = updated_at
+    merged["_override_updated_by"] = updated_by
+    return merged
+
+
+def write_trading_config(
+    updates: Dict[str, Any],
+    updated_by: str = "dashboard",
+    config: Optional[dict] = None,
+    audit_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Merge `updates` (a partial dict of trading fields) into
+    `audit/trading_config_override.json` and return the new effective
+    config (same shape as `read_trading_config`).
+
+    Only keys present in TRADING_CONFIG_DEFAULTS are persisted —
+    unknown keys are silently dropped (defense in depth; server.py's
+    Pydantic model should already reject them before this is called).
+    """
+    override_path = _trading_override_path(audit_path)
+    override_path.parent.mkdir(parents=True, exist_ok=True)
+    existing: Dict[str, Any] = {}
+    if override_path.exists():
+        try:
+            with open(override_path, "r", encoding="utf-8") as f:
+                existing = json.load(f) or {}
+        except Exception:
+            existing = {}
+    for k, v in updates.items():
+        if k in TRADING_CONFIG_DEFAULTS:
+            existing[k] = v
+    existing["_updated_at"] = time.time()
+    existing["_updated_by"] = updated_by
+    tmp = override_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    tmp.replace(override_path)  # atomic on POSIX
+    return read_trading_config(config=config, audit_path=audit_path)
 
 
 # ----------------------------------------------------------------------

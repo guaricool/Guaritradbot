@@ -191,7 +191,36 @@ def main():
 
     execution_mode = config.get("execution_mode", "auto")
     optimize_on_start = config.get("optimize_on_start", False)
-    trading_cfg = config.get("trading", {})
+
+    trading_cfg = dict(config.get("trading", {}) or {})
+    # Sprint 46D: dashboard-editable trading settings. The dashboard's
+    # Settings page can now save changes (max simultaneous trades, risk
+    # per trade, min order size, etc.) via POST /api/config, but it
+    # never touches config.yaml directly (PyYAML's dump() would wipe
+    # every comment in that file — see src/api/state.py's module
+    # docstring). Instead it writes to a small JSON override file, same
+    # pattern as mode_override.json for the LIVE/PAPER toggle. We merge
+    # it in here, BEFORE the individual risk_per_trade_pct/etc. locals
+    # are read below — those are only read ONCE at startup and handed
+    # to RiskManagerAgent's constructor (not re-read per cycle), so
+    # this merge is what makes a saved dashboard change actually apply
+    # on the bot's next restart.
+    _trading_override_path = os.path.join(
+        config.get("mandate", {}).get("audit_log_dir", "audit"),
+        "trading_config_override.json",
+    )
+    if os.path.exists(_trading_override_path):
+        try:
+            with open(_trading_override_path, "r", encoding="utf-8") as f:
+                _trading_overrides = json.load(f)
+            if isinstance(_trading_overrides, dict):
+                _applied = {k: v for k, v in _trading_overrides.items() if not k.startswith("_")}
+                trading_cfg.update(_applied)
+                if _applied:
+                    print(f"[Init] Trading config override applied from {_trading_override_path}: {_applied}")
+        except Exception as e:
+            print(f"[Init] trading_config_override.json parse error (ignored): {e}")
+
     risk_per_trade_pct = trading_cfg.get("risk_per_trade_pct", 1.0)
     atr_stop_multiplier = trading_cfg.get("atr_stop_multiplier", 2.0)
     atr_take_profit_multiplier = trading_cfg.get("atr_take_profit_multiplier", 4.0)
@@ -586,25 +615,66 @@ def main():
     _pupdate_scheduler = None
 
     def job_with_monitor():
-        # Sprint 43 H3 fix: drawdown kill switch check. If the
-        # account has dropped more than the configured threshold
-        # from its peak equity, the bot is in "revenge trading"
-        # territory — it should stop opening new positions until
-        # the cooldown elapses. The check uses realized PnL +
-        # unrealized PnL of open positions as the current
-        # equity, peak is tracked internally.
+        # Sprint 46D fix (was Sprint 43 H3, but never actually worked):
+        # the drawdown check below used to read `prices` in its very
+        # first expression (`if (prices and (prices := {...})) else ...`)
+        # while ALSO assigning `prices` later in this same function (in
+        # the monitor block, further down). Python's scoping rule makes
+        # any name assigned anywhere in a function local to the WHOLE
+        # function — so that first read of `prices` ran before `prices`
+        # had ever been bound in this call's frame, raising
+        # UnboundLocalError on literally every single cycle, silently
+        # swallowed by the bare `except Exception` around it (logged to
+        # stdout only). Net effect: `drawdown_kill_switch.update()` was
+        # NEVER called — the "revenge trading" safety net had been
+        # completely dead since it was added, with no audit trail
+        # showing it was broken.
+        #
+        # Fix: fetch current prices for open positions ONCE, right here
+        # at the top (this used to happen only inside the monitor block
+        # below) — both the drawdown check and the monitor need the
+        # same prices, so there's no reason to fetch twice.
+        opens = position_repo.open()
+        prices = {}  # asset -> last close; populated below if there are open positions
+        if opens:
+            from src.agents.market_analyst import MarketAnalystAgent as _MA
+            ma = _MA()
+            for pos in opens:
+                try:
+                    df = ma.fetch_one(pos.asset, interval="1d", period="1mo")
+                    if df is not None and len(df) > 0:
+                        prices[pos.asset] = float(df["Close"].iloc[-1])
+                except Exception:
+                    continue
+
+        # Sprint 43 H3 (fixed for real in 46D): drawdown kill switch
+        # check. If the account has dropped more than the configured
+        # threshold from its peak equity, the bot is in "revenge
+        # trading" territory — it should stop opening NEW positions
+        # until the cooldown elapses. The check uses realized PnL +
+        # unrealized PnL of open positions (using the prices fetched
+        # above; falls back to realized-only if a price is missing)
+        # as the current equity; peak is tracked internally by
+        # DrawdownKillSwitch.
+        #
+        # Sprint 46D fix: previously this did `return` immediately on
+        # trigger, which — despite the comment directly above it
+        # claiming otherwise — skipped the position-monitor block
+        # entirely (it's later in the same function). That meant a
+        # drawdown pause would ALSO freeze SL/TP protection on already-
+        # open positions, the opposite of what you want during a
+        # drawdown. Now we only set a flag that skips step 2 (the
+        # normal workflow / new entries) at the very end; step 1
+        # (monitor) always runs below regardless.
+        dd_triggered = False
         try:
             current_equity = position_repo.total_realized_pnl_usd() + sum(
                 pos.unrealized_pnl(prices.get(pos.asset, 0.0))
-                for pos in position_repo.open()
-            ) if (prices and (prices := {p.asset: 0 for p in position_repo.open()})) else position_repo.total_realized_pnl_usd()
-            # The above is a one-liner that handles the case where
-            # we have no prices — fall back to realized-only equity.
-            # For a more accurate drawdown we'd want the price for
-            # each open position, but the realized PnL is the
-            # conservative input (no unrealized gains count).
+                for pos in opens
+            )
             dd_state = drawdown_kill_switch.update(current_equity)
             if dd_state.triggered:
+                dd_triggered = True
                 if audit:
                     audit.append("BOT_DRAWDOWN_KILL_ACTIVE", {
                         "drawdown_pct": round(dd_state.drawdown_pct, 3),
@@ -621,27 +691,28 @@ def main():
                                   f"Bot NO abre nuevas posiciones por "
                                   f"{dd_state.cooldown_remaining_hours:.1f}h."),
                     })
-                # Skip the workflow this cycle. The position
-                # monitor still runs (so SL/TP can still close
-                # positions), but no new trades.
-                return
+                # Skip step 2 (new entries) this cycle — step 1 (monitor,
+                # right below) still runs so SL/TP can still close.
         except Exception as e:
             print(f"[DrawdownKill] check failed (continuing): {e}")
+            # Sprint 46D fix: a crashing safety check must be as loud as
+            # a triggered one — previously this was print-only, so a
+            # broken check and a passing check looked identical in the
+            # logs/dashboard. Now it's visible in the audit trail too.
+            if audit:
+                audit.append("DRAWDOWN_CHECK_ERROR", {"error": str(e)[:300]})
+            if event_bus:
+                try:
+                    event_bus.publish("SYSTEM_ERROR", {
+                        "kind": "DRAWDOWN_CHECK_ERROR",
+                        "error": f"⚠️ Drawdown kill-switch check falló (bot sigue operando): {e}",
+                    })
+                except Exception:
+                    pass
 
         # 1. Monitor: cierra stops/TPs antes que la nueva ronda
         try:
-            opens = position_repo.open()
             if opens:
-                from src.agents.market_analyst import MarketAnalystAgent as _MA
-                ma = _MA()
-                prices = {}
-                for pos in opens:
-                    try:
-                        df = ma.fetch_one(pos.asset, interval="1d", period="1mo")
-                        if df is not None and len(df) > 0:
-                            prices[pos.asset] = float(df["Close"].iloc[-1])
-                    except Exception:
-                        continue
                 if prices:
                     # 1a. SL/TP mechanical check
                     closed = position_monitor.check(prices)
@@ -741,8 +812,15 @@ def main():
         except Exception as e:
             print(f"[PositionMonitor] check falló: {e}")
 
-        # 2. Workflow normal
-        original_job()
+        # 2. Workflow normal — skipped while the drawdown kill switch is
+        # active (dd_triggered above), so the bot stops opening NEW
+        # positions during the cooldown. Step 1 (monitor) already ran
+        # unconditionally, so SL/TP protection on existing positions is
+        # never paused.
+        if not dd_triggered:
+            original_job()
+        else:
+            print("[DrawdownKill] Ciclo de nuevas entradas SALTADO (cooldown activo). Monitor de SL/TP sigue corriendo normalmente.")
 
     scheduler.job = job_with_monitor
 
