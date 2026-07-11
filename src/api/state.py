@@ -253,6 +253,69 @@ def set_brokers(broker_client=None, alpaca_broker=None) -> None:
     _ALPACA_BROKER = alpaca_broker
 
 
+# Sprint 46N (audit C8): the bot's own live PositionRepository, shared
+# with the dashboard API instead of each request building its own
+# disk-backed copy. See `set_position_repo`'s docstring for the full
+# "resurrected position" bug this fixes.
+_POSITION_REPO: Optional[PositionRepository] = None
+
+
+def set_position_repo(position_repo) -> None:
+    """Register the bot's live PositionRepository for the dashboard
+    API to share, instead of every request constructing its own
+    disk-backed copy.
+
+    Called once from `main.py::_start_api_server`, right before the
+    uvicorn thread starts, with the EXACT SAME `position_repo` object
+    the trading loop (fast_monitor_tick / job_with_monitor /
+    ExecutionNode) uses.
+
+    The bug this fixes ("resurrected" positions): before this, every
+    mutating API request (`close_position`, `close_all_positions`)
+    built a FRESH `PositionRepository(path=positions_path)` — read
+    whatever was on disk at that instant, closed the target position
+    on THAT throwaway copy, and saved. The bot's own long-lived
+    in-memory repo never learned about that close — it still held the
+    position as OPEN in its `self.positions` list. The next time
+    ANYTHING triggered the bot's own `_save()` (opening a new
+    position, `fast_monitor_tick` closing a different position, an OCO
+    reconciliation, etc.), it overwrote `positions.json` with its
+    stale in-memory state — silently undoing the dashboard's close and
+    bringing the "closed" position back as open on disk.
+
+    Because the dashboard API runs in a background thread INSIDE THE
+    SAME PROCESS as the bot (see `main.py::_start_api_server`'s
+    docstring), there's no need for cross-process IPC to fix this —
+    both sides can safely share the literal same Python object. Once
+    shared, a dashboard close mutates the EXACT list the bot's own
+    scheduler will later save, so there is no second stale copy left
+    to resurrect anything from. `PositionRepository`'s internal
+    `threading.RLock` (also Sprint 46N C8) makes concurrent access
+    from the bot's scheduler thread and uvicorn's request-handling
+    thread(s) safe.
+
+    Safe to call with None (e.g. in tests, or the API running without
+    a live bot process) — every consumer below falls back to
+    constructing its own disk-backed instance via `get_position_repo`,
+    same behavior as before this existed.
+    """
+    global _POSITION_REPO
+    _POSITION_REPO = position_repo
+
+
+def get_position_repo(positions_path: str = "data_store/positions.json") -> PositionRepository:
+    """Return the bot's shared PositionRepository if one was
+    registered via `set_position_repo`, otherwise a fresh disk-backed
+    instance. See `set_position_repo`'s docstring for the rationale.
+    Used by every PositionRepository consumer in this module and in
+    `server.py` so reads/writes are consistent with whichever mode
+    (shared live instance vs. standalone disk read) is active.
+    """
+    if _POSITION_REPO is not None:
+        return _POSITION_REPO
+    return PositionRepository(path=positions_path)
+
+
 def _get_binance_balance() -> Tuple[Optional[float], str]:
     """Return (balance, source) for the binance.us broker.
 
@@ -717,7 +780,7 @@ def build_state_snapshot(
 
     Pure read-only — does NOT mutate any state file.
     """
-    repo = PositionRepository(path=positions_path)
+    repo = get_position_repo(positions_path)
     opens = repo.open()
     assets = [p.asset for p in opens if p.asset]
     prices = read_current_prices(assets) if assets else {}
@@ -836,7 +899,7 @@ def close_position(
     still-held asset), or None if the position doesn't exist or was
     already closed.
     """
-    repo = PositionRepository(path=positions_path)
+    repo = get_position_repo(positions_path)
     target = None
     for p in repo.open():
         if p.position_id == position_id:
@@ -913,7 +976,7 @@ def close_all_positions(
     Returns the list of closed-position dicts (same shape as
     `close_position`'s return value), in the order they were closed.
     """
-    repo = PositionRepository(path=positions_path)
+    repo = get_position_repo(positions_path)
     position_ids = [p.position_id for p in repo.open()]
     closed_list: List[Dict] = []
     for pid in position_ids:

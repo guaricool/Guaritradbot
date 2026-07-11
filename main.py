@@ -230,6 +230,7 @@ def _start_api_server(
     config_path: str = "config.yaml",
     broker_client=None,
     alpaca_broker=None,
+    position_repo=None,
 ) -> None:
     """Sprint 46A: start the FastAPI/WebSocket dashboard backend as a
     daemon thread inside the bot process.
@@ -251,6 +252,15 @@ def _start_api_server(
     the hardcoded 0.0 it always returned before — see
     `src/api/state.py::set_brokers()`.
 
+    Sprint 46N (audit C8): also registers `position_repo` (the SAME
+    long-lived PositionRepository instance the trading loop uses) with
+    `src.api.state` via `set_position_repo()`, instead of every
+    dashboard request building its own disposable disk-backed copy.
+    That per-request copy is what let a dashboard "close position"
+    action get silently undone the next time the bot's own in-memory
+    repo saved — see `set_position_repo`'s docstring for the full
+    "resurrected position" bug this fixes.
+
     Best-effort: any failure here (missing dependency, port already
     bound, etc.) is caught and logged — it must NEVER take down the
     trading loop. The dashboard is observability, not core function.
@@ -268,8 +278,10 @@ def _start_api_server(
         import uvicorn
         from src.api.server import app as api_app
         from src.api.state import set_brokers as _api_set_brokers
+        from src.api.state import set_position_repo as _api_set_position_repo
 
         _api_set_brokers(broker_client=broker_client, alpaca_broker=alpaca_broker)
+        _api_set_position_repo(position_repo)
 
         port = int(os.getenv("DASHBOARD_API_PORT", "8080"))
 
@@ -620,11 +632,18 @@ def main():
     # after `audit`/`position_repo` exist (it reads the same on-disk
     # state) and before the main loop, so the dashboard has data from
     # the very first cycle.
+    #
+    # Sprint 46N (audit C8): pass `position_repo` too, so the dashboard
+    # shares this EXACT instance instead of building its own disposable
+    # copy per request — see _start_api_server's docstring / set_
+    # position_repo's docstring for the "resurrected position" bug
+    # this fixes.
     _start_api_server(
         audit_path=_audit_path(config),
         positions_path="data_store/positions.json",
         broker_client=broker_client,
         alpaca_broker=alpaca_broker,
+        position_repo=position_repo,
     )
 
     # Sprint 25 fix: ALWAYS show paper position count at startup.

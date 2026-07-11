@@ -16,6 +16,7 @@ Inspirado en NautilusTrader's `Position` class + el concepto de
 """
 from __future__ import annotations
 import json
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
@@ -117,16 +118,31 @@ class PositionRepository:
         # nothing happened.
         self.load_error: Optional[str] = None
         self.quarantined_path: Optional[Path] = None
+        # Sprint 46N (audit C8): guards every read-modify-write on
+        # `self.positions` + every `_save()`. Before this, a single
+        # PositionRepository instance was never touched from more than
+        # one thread, so a lock wasn't needed. That's no longer true:
+        # the dashboard API now shares this exact instance with the
+        # bot's main loop (see `src.api.state.set_position_repo`'s
+        # docstring for the full "resurrected position" bug this
+        # fixes) -- the bot's own scheduler thread and uvicorn's
+        # request-handling thread(s) can now call `add_open`/
+        # `close_position`/`close_for_asset` concurrently on the SAME
+        # object. An RLock (not a plain Lock) because
+        # `close_for_asset` calls `close_position` on the same thread
+        # while already holding the lock.
+        self._lock = threading.RLock()
         self._load()
 
     def _load(self):
-        if not self.path.exists():
-            return
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-            self.positions = [Position(**p) for p in data.get("positions", [])]
-        except Exception as e:
-            self._quarantine_corrupt_file(e)
+        with self._lock:
+            if not self.path.exists():
+                return
+            try:
+                data = json.loads(self.path.read_text(encoding="utf-8"))
+                self.positions = [Position(**p) for p in data.get("positions", [])]
+            except Exception as e:
+                self._quarantine_corrupt_file(e)
 
     def _quarantine_corrupt_file(self, error: Exception) -> None:
         """Sprint 46N (audit C7): a corrupt/unparseable positions.json
@@ -171,33 +187,44 @@ class PositionRepository:
             )
 
     def _save(self):
-        data = {"positions": [asdict(p) for p in self.positions], "saved_at": time.time()}
-        # Atomic write: temp + replace
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
-        tmp.replace(self.path)
-        # Sprint 11: también escribir al volumen compartido (audit/) para
-        # que el dashboard container pueda ver las posiciones. El bot
-        # container NO comparte data_store/ con el dashboard, pero sí
-        # comparte audit/.
-        try:
-            mirror = Path("audit/positions.json")
-            mirror.parent.mkdir(parents=True, exist_ok=True)
-            mirror.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
-        except Exception as e:
-            # No fatal — el bot sigue funcionando, solo el dashboard no
-            # podrá ver las posiciones en este ciclo.
-            print(f"[PositionRepo] mirror to audit/ failed: {e}")
+        with self._lock:
+            data = {"positions": [asdict(p) for p in self.positions], "saved_at": time.time()}
+            # Atomic write: temp + replace
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+            tmp.replace(self.path)
+            # Sprint 11: también escribir al volumen compartido (audit/) para
+            # que el dashboard container pueda ver las posiciones. El bot
+            # container NO comparte data_store/ con el dashboard, pero sí
+            # comparte audit/.
+            try:
+                mirror = Path("audit/positions.json")
+                mirror.parent.mkdir(parents=True, exist_ok=True)
+                mirror.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+            except Exception as e:
+                # No fatal — el bot sigue funcionando, solo el dashboard no
+                # podrá ver las posiciones en este ciclo.
+                print(f"[PositionRepo] mirror to audit/ failed: {e}")
 
     # --- queries ---
+    # Sprint 46N (audit C8): also lock reads. Now that this instance
+    # can be shared across the bot's main thread and the dashboard
+    # API's request thread(s) (see `close_position`/`add_open` below
+    # and `src.api.state.set_position_repo`), a read must not run
+    # concurrently with a `close_position`/`add_open` that's
+    # mid-mutation — the RLock makes each read an atomic snapshot of
+    # `self.positions` instead of a torn read.
     def all(self) -> List[Position]:
-        return list(self.positions)
+        with self._lock:
+            return list(self.positions)
 
     def open(self) -> List[Position]:
-        return [p for p in self.positions if p.is_open]
+        with self._lock:
+            return [p for p in self.positions if p.is_open]
 
     def open_for_asset(self, asset: str) -> List[Position]:
-        return [p for p in self.positions if p.is_open and p.asset == asset]
+        with self._lock:
+            return [p for p in self.positions if p.is_open and p.asset == asset]
 
     def total_exposure_usd(self) -> float:
         return sum(p.notional_usd for p in self.open())
@@ -206,12 +233,14 @@ class PositionRepository:
         return len(self.open())
 
     def total_realized_pnl_usd(self) -> float:
-        return sum(p.realized_pnl or 0.0 for p in self.positions if p.realized_pnl is not None)
+        with self._lock:
+            return sum(p.realized_pnl or 0.0 for p in self.positions if p.realized_pnl is not None)
 
     # --- mutations ---
     def add_open(self, position: Position) -> None:
-        self.positions.append(position)
-        self._save()
+        with self._lock:
+            self.positions.append(position)
+            self._save()
 
     def close_position(
         self,
@@ -231,30 +260,32 @@ class PositionRepository:
                 callers that know the asset's real fee (see main.py's
                 `fee_pct_for_asset`) opt in explicitly.
         """
-        for p in self.positions:
-            if p.position_id == position_id and p.is_open:
-                p.closed_ts = time.time()
-                p.closed_price = close_price
-                p.close_reason = reason
-                direction_sign = 1.0 if p.direction == "long" else -1.0
-                gross_pnl = direction_sign * (close_price - p.entry_price) * p.qty
-                fees = 0.0
-                if fee_pct:
-                    entry_notional = abs(p.entry_price * p.qty)
-                    exit_notional = abs(close_price * p.qty)
-                    fees = (entry_notional + exit_notional) * fee_pct
-                p.fees_paid_usd = fees
-                p.realized_pnl = gross_pnl - fees
-                self._save()
-                return p
-        return None
+        with self._lock:
+            for p in self.positions:
+                if p.position_id == position_id and p.is_open:
+                    p.closed_ts = time.time()
+                    p.closed_price = close_price
+                    p.close_reason = reason
+                    direction_sign = 1.0 if p.direction == "long" else -1.0
+                    gross_pnl = direction_sign * (close_price - p.entry_price) * p.qty
+                    fees = 0.0
+                    if fee_pct:
+                        entry_notional = abs(p.entry_price * p.qty)
+                        exit_notional = abs(close_price * p.qty)
+                        fees = (entry_notional + exit_notional) * fee_pct
+                    p.fees_paid_usd = fees
+                    p.realized_pnl = gross_pnl - fees
+                    self._save()
+                    return p
+            return None
 
     def close_for_asset(
         self, asset: str, close_price: float, reason: str, fee_pct: float = 0.0
     ) -> List[Position]:
-        closed = []
-        for p in list(self.positions):
-            if p.is_open and p.asset == asset:
-                if self.close_position(p.position_id, close_price, reason, fee_pct=fee_pct):
-                    closed.append(p)
-        return closed
+        with self._lock:
+            closed = []
+            for p in list(self.positions):
+                if p.is_open and p.asset == asset:
+                    if self.close_position(p.position_id, close_price, reason, fee_pct=fee_pct):
+                        closed.append(p)
+            return closed

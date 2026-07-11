@@ -101,6 +101,7 @@ from src.api.state import (
     build_state_snapshot,
     close_all_positions,
     close_position,
+    get_position_repo,
     invalidate_price_cache,
     read_current_prices,
     read_mode,
@@ -590,7 +591,7 @@ def get_position_candles(
     """
     from src.data_store.positions import PositionRepository
     from src.data.yf_safe import safe_yf_download
-    repo = PositionRepository(path=_positions_path())
+    repo = get_position_repo(_positions_path())
     asset = None
     entry = None
     sl = None
@@ -778,7 +779,7 @@ def get_allocation(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
             )
         except Exception:
             policy = DEFAULT_POLICY
-    repo = PositionRepository(path=_positions_path())
+    repo = get_position_repo(_positions_path())
     opens = repo.open()
     actual = current_actual_weights(opens)
     drift = compute_drift(actual, policy)
@@ -800,7 +801,7 @@ def get_risk_stress(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
         DEFAULT_SCENARIOS, stress_portfolio_all_scenarios, worst_case_drawdown,
     )
     from src.data_store.positions import PositionRepository
-    repo = PositionRepository(path=_positions_path())
+    repo = get_position_repo(_positions_path())
     opens = repo.open()
     if not opens:
         return {"scenarios": [], "worst_case": None, "note": "no open positions"}
@@ -817,7 +818,7 @@ def get_risk_correlation(_: None = Depends(auth.require_auth)) -> Dict[str, Any]
     """Asset correlation matrix of the open positions."""
     from src.analysis.asset_correlation import analyze_assets
     from src.data_store.positions import PositionRepository
-    repo = PositionRepository(path=_positions_path())
+    repo = get_position_repo(_positions_path())
     assets = sorted({p.asset for p in repo.open() if p.asset})
     if len(assets) < 2:
         return {"assets": assets, "matrix": [], "avg_correlation": 0.0, "well_diversified": True, "note": "need >=2 assets"}
@@ -830,7 +831,7 @@ def get_risk_cvar(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     """Portfolio-level CVaR (Expected Shortfall) at 95% and 99%."""
     from src.analysis.tail_risk import compute_portfolio_tail_risk
     from src.data_store.positions import PositionRepository
-    repo = PositionRepository(path=_positions_path())
+    repo = get_position_repo(_positions_path())
     weights: Dict[str, float] = {}
     for p in repo.open():
         weights[p.asset] = weights.get(p.asset, 0.0) + p.notional_usd
@@ -858,7 +859,7 @@ def get_equity(
     from src.safety.audit_ledger import AuditLedger
     from src.data_store.positions import PositionRepository
     audit = AuditLedger(path=_audit_path())
-    repo = PositionRepository(path=_positions_path())
+    repo = get_position_repo(_positions_path())
     now = time.time()
     cutoff = now - window_days * 24 * 3600
     rows = audit.read_since(cutoff)
