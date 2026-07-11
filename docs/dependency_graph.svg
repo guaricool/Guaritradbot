@@ -1,6 +1,6 @@
 <svg viewBox="0 0 1200 760" xmlns="http://www.w3.org/2000/svg" role="img">
   <title>Grafo de dependencias de código — tradbot (src/)</title>
-  <desc>Paquetes bajo src/ y de qué paquetes internos depende cada uno, derivado de un análisis AST de imports. main.py importa los 9 paquetes de primer nivel para orquestar el arranque; este grafo muestra las dependencias entre esos paquetes.</desc>
+  <desc>Paquetes bajo src/ y de qué paquetes internos depende cada uno, derivado de un análisis AST de imports. main.py importa los 9 paquetes de primer nivel para orquestar el arranque; este grafo muestra las dependencias entre esos paquetes. Re-verificado 2026-07-11 tras Sprint 46N (auditoría fable5, hallazgos hasta M3): 2 dependencias nuevas hacia execution vía broker_routing.py, marcadas en ámbar.</desc>
   <defs>
     <marker id="dg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/>
@@ -16,7 +16,7 @@
     <rect x="40" y="80" width="260" height="70" rx="8" fill="#171a21" stroke="#4b5563"/>
     <text x="170" y="106" text-anchor="middle" font-size="13" fill="#f1ede4">src.agents</text>
     <text x="170" y="124" text-anchor="middle" font-size="10.5" fill="#9ca3af">usa: analysis, data,</text>
-    <text x="170" y="138" text-anchor="middle" font-size="10.5" fill="#9ca3af">data_store, ml</text>
+    <text x="170" y="138" text-anchor="middle" font-size="10.5" fill="#9ca3af">data_store, ml, execution*</text>
 
     <rect x="320" y="80" width="260" height="70" rx="8" fill="#171a21" stroke="#4b5563"/>
     <text x="450" y="106" text-anchor="middle" font-size="13" fill="#f1ede4">src.execution</text>
@@ -43,7 +43,7 @@
 
     <rect x="320" y="240" width="260" height="70" rx="8" fill="#171a21" stroke="#4b5563"/>
     <text x="450" y="266" text-anchor="middle" font-size="13" fill="#f1ede4">src.data_store</text>
-    <text x="450" y="284" text-anchor="middle" font-size="10.5" fill="#9ca3af">sin deps internas</text>
+    <text x="450" y="284" text-anchor="middle" font-size="10.5" fill="#9ca3af">usa: execution*</text>
     <text x="450" y="298" text-anchor="middle" font-size="10.5" fill="#9ca3af">positions.json en disco</text>
 
     <rect x="600" y="240" width="260" height="70" rx="8" fill="#171a21" stroke="#4b5563"/>
@@ -96,5 +96,17 @@
   <path d="M730,460 C730,500 320,470 320,396" stroke="#4b5563" stroke-width="1.6" marker-end="url(#dg-arrow)" fill="none"/>
   <path d="M450,460 L450,536" stroke="#4b5563" stroke-width="1.6" marker-end="url(#dg-arrow)" fill="none"/>
 
+  <!-- Sprint 46N (audit C1/C2, M2/M3): src/execution/broker_routing.py was
+       extracted as a shared module so position CLOSES (not just entries)
+       route by asset class and respect paper mode. agents/ (risk_agent.py's
+       _try_replace_position) and data_store/ (position_monitor.py) both
+       import it now — two new edges into execution that didn't exist when
+       this diagram was first drawn. Marked with * above and dashed/amber
+       here so they're visually distinct from the original edge set. -->
+  <path d="M260,95 C285,95 300,95 318,105" stroke="#d97706" stroke-width="1.6" stroke-dasharray="4,3" marker-end="url(#dg-arrow)" fill="none"/>
+  <path d="M450,236 L450,154" stroke="#d97706" stroke-width="1.6" stroke-dasharray="4,3" marker-end="url(#dg-arrow)" fill="none"/>
+  <text x="1010" y="176" text-anchor="middle" font-size="10" fill="#d97706">* nuevo (broker_routing.py)</text>
+
   <text x="24" y="700" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#6b7280">Flechas = las dependencias más estructurales; cada caja lista "usa:" completo en el subtítulo. dashboard/ (Next.js/TS) es un proyecto aparte, no incluido aquí.</text>
+  <text x="24" y="716" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#d97706">Actualizado 2026-07-11 (Sprint 46N, hasta M3): flechas punteadas ámbar = 2 dependencias nuevas hacia execution vía broker_routing.py.</text>
 </svg>
