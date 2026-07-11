@@ -107,6 +107,110 @@ def _classify_fill_status(broker_order) -> str:
     return "unknown"
 
 
+def _extract_crypto_fill(broker_order: dict, symbol: str):
+    """Sprint 46N (audit C4): pull the REAL filled qty/price out of a
+    ccxt order dict, and net out any fee binance.us charged in the
+    BASE asset (e.g. buying BTC-USD, fee taken in BTC) so the
+    persisted position's ``qty`` matches what the account actually
+    holds.
+
+    Why this matters: `_persist_filled_position` used to always use
+    the REQUESTED qty/price (what RiskManagerAgent asked for), never
+    what the broker actually filled. binance.us (like most exchanges)
+    deducts the taker fee from the BASE asset by default on a BUY —
+    buy 0.001 BTC, the fee is ~0.1% of BTC, so the account actually
+    receives ~0.000999 BTC, not 0.001. The bot would then try to SELL
+    the full requested 0.001 later (to close the position) and get
+    "insufficient balance" — this was the root cause of the
+    CLOSE_FAILED loop from the 2026-07-10/11 live incident, not just
+    the long+short bug Sprint 46M fixed.
+
+    Returns ``(qty, price)`` — either may be ``None`` if the broker's
+    response doesn't have usable data (caller should fall back to the
+    requested qty/price in that case, e.g. paper-mode simulated fills
+    that don't go through ccxt at all).
+    """
+    if not isinstance(broker_order, dict):
+        return None, None
+    try:
+        filled = float(broker_order.get("filled") or 0)
+    except (TypeError, ValueError):
+        filled = 0.0
+    if filled <= 0:
+        return None, None
+
+    price = None
+    for key in ("average", "price"):
+        val = broker_order.get(key)
+        if val is not None:
+            try:
+                price = float(val)
+                if price > 0:
+                    break
+            except (TypeError, ValueError):
+                price = None
+
+    # Net out a base-asset fee (binance.us default: taker fee deducted
+    # from the asset you're BUYING, unless paid via a separate BNB
+    # balance). ccxt normalizes this as either a single `fee` dict or
+    # a `fees` list — handle both, summing every entry whose currency
+    # matches the base asset of `symbol` (e.g. "BTC" in "BTC/USD").
+    base_asset = symbol.split("/")[0] if symbol and "/" in symbol else symbol
+    fee_in_base = 0.0
+    fee_entries = []
+    single_fee = broker_order.get("fee")
+    if isinstance(single_fee, dict):
+        fee_entries.append(single_fee)
+    fees_list = broker_order.get("fees")
+    if isinstance(fees_list, list):
+        fee_entries.extend(f for f in fees_list if isinstance(f, dict))
+    for fee in fee_entries:
+        if fee.get("currency") == base_asset:
+            try:
+                fee_in_base += float(fee.get("cost") or 0)
+            except (TypeError, ValueError):
+                pass
+
+    net_qty = filled - fee_in_base
+    if net_qty <= 0:
+        # Fee math went wrong somewhere (shouldn't happen) — fall back
+        # to the raw filled qty rather than persisting a non-positive
+        # or negative position size.
+        net_qty = filled
+
+    return net_qty, price
+
+
+def _extract_alpaca_fill(broker_order: dict):
+    """Sprint 46N (audit C4): pull the real filled qty/avg price out
+    of an AlpacaBroker order dict (see alpaca_broker.py's
+    ``create_market_order``/``get_order`` return shape). Alpaca is
+    commission-free, so there's no fee-netting concern here — this
+    exists mainly so equities get the ACTUAL filled qty (which can
+    legitimately differ from the requested notional/qty by a rounding
+    fraction of a fractional share) instead of always trusting the
+    request.
+    """
+    if not isinstance(broker_order, dict):
+        return None, None
+    try:
+        filled = float(broker_order.get("filled") or 0)
+    except (TypeError, ValueError):
+        filled = 0.0
+    if filled <= 0:
+        return None, None
+    price = None
+    val = broker_order.get("filled_avg_price")
+    if val is not None:
+        try:
+            price = float(val)
+            if price <= 0:
+                price = None
+        except (TypeError, ValueError):
+            price = None
+    return filled, price
+
+
 def _is_mandate_enabled(override_path: str = "audit/mode_override.json") -> bool:
     """Read mode_override.json and return True if mandate_enabled is on.
 
@@ -202,6 +306,8 @@ class ExecutionNode:
         status: str,
         broker_oco_order_id: str = None,
         protection_mode: str = "polling",
+        actual_qty: float = None,
+        actual_entry_price: float = None,
     ):
         """
         Register a position in the repo AFTER the broker (or paper-mode
@@ -225,6 +331,20 @@ class ExecutionNode:
         thresholds. Defaults preserve the original "polling" behavior
         for every other call site (equities, paper mode, OCO placement
         failures).
+
+        Sprint 46N (audit C4): `actual_qty`/`actual_entry_price` let
+        the caller pass the REAL filled qty/price the broker reported
+        (see `_extract_crypto_fill`/`_extract_alpaca_fill`), instead of
+        always trusting `order_data`'s REQUESTED qty/price. This was
+        the actual root cause of the CLOSE_FAILED "insufficient
+        balance" loop from the 2026-07-10/11 live incident: binance.us
+        deducts its taker fee from the BASE asset on a buy, so the
+        account holds slightly LESS than what was requested — trying
+        to sell the full requested qty later fails. Both default to
+        None (no override), which preserves the exact pre-46N
+        behavior for callers that don't have real fill data (paper
+        mode / simulated / no-broker fills, where there IS no broker
+        response to read from).
         """
         if self.position_repo is None:
             # Repos weren't injected (e.g. unit tests that only exercise
@@ -232,11 +352,25 @@ class ExecutionNode:
             # silently; tests that need persistence inject their own repo.
             return
         try:
-            qty = float(order_data.get("position_size", 0) or 0)
+            requested_qty = float(order_data.get("position_size", 0) or 0)
             risk_usd = float(order_data.get("risk_usd", 0) or 0)
-            entry_price = float(order_data.get("entry_price", 0) or 0)
+            requested_entry_price = float(order_data.get("entry_price", 0) or 0)
             stop_loss = float(order_data.get("stop_loss", 0) or 0)
             take_profit = float(order_data.get("take_profit", 0) or 0)
+
+            qty = requested_qty
+            if actual_qty is not None and actual_qty > 0:
+                qty = float(actual_qty)
+            entry_price = requested_entry_price
+            if actual_entry_price is not None and actual_entry_price > 0:
+                entry_price = float(actual_entry_price)
+            # Scale risk_usd proportionally if the fill qty differs
+            # from what RiskManagerAgent sized (fee deduction, minor
+            # rounding) — keeps risk accounting consistent with what's
+            # actually held rather than silently drifting stale.
+            if requested_qty > 0 and qty != requested_qty:
+                risk_usd = risk_usd * (qty / requested_qty)
+
             pos = Position(
                 asset=order_data.get("asset", "?"),
                 direction=order_data.get("direction", "long"),
@@ -757,6 +891,15 @@ class ExecutionNode:
         # max_open_trades / mandate caps remain consistent with
         # ground truth.
         if fill_verdict == "filled":
+            # Sprint 46N (audit C4): read the REAL filled qty/price the
+            # exchange reported, netting out any base-asset fee — see
+            # `_extract_crypto_fill`'s docstring for why the requested
+            # `amount` can no longer be trusted as what the account
+            # actually holds after this fill (root cause of the
+            # CLOSE_FAILED "insufficient balance" loop).
+            actual_qty, actual_price = _extract_crypto_fill(broker_order, symbol)
+            oco_amount = actual_qty if actual_qty is not None and actual_qty > 0 else amount
+
             # Sprint 46I: place a REAL protective OCO order on the
             # exchange right after the entry fills — only for LONG
             # positions (a sell-OCO protects a long; spot exchanges
@@ -775,9 +918,13 @@ class ExecutionNode:
                 take_profit = float(order_data.get("take_profit", 0) or 0)
                 if stop_loss > 0 and take_profit > 0 and take_profit > stop_loss:
                     try:
+                        # Sprint 46N (audit C4): sell exactly what we
+                        # actually hold (oco_amount), not the requested
+                        # amount — selling more than the fee-netted
+                        # balance would reject the OCO order outright.
                         oco_response = broker.create_oco_sell_order(
                             symbol=symbol,
-                            amount=amount,
+                            amount=oco_amount,
                             take_profit_price=take_profit,
                             stop_price=stop_loss,
                         )
@@ -807,6 +954,8 @@ class ExecutionNode:
                 order_data, status,
                 broker_oco_order_id=broker_oco_order_id,
                 protection_mode=protection_mode,
+                actual_qty=actual_qty,
+                actual_entry_price=actual_price,
             )
         elif fill_verdict == "partial":
             # Sprint 43 H7: a partial fill is a real money event —
@@ -958,7 +1107,16 @@ class ExecutionNode:
         # Sprint 43 C5 + H7: only persist on a full fill. See
         # _classify_fill_status for the exact rule.
         if fill_verdict == "filled":
-            self._persist_filled_position(order_data, status)
+            # Sprint 46N (audit C4): use the REAL filled qty/avg price
+            # Alpaca reported (see _extract_alpaca_fill) instead of
+            # always trusting the requested qty — a fractional-share
+            # notional order can fill a hair off the requested amount.
+            actual_qty, actual_price = _extract_alpaca_fill(broker_order)
+            self._persist_filled_position(
+                order_data, status,
+                actual_qty=actual_qty,
+                actual_entry_price=actual_price,
+            )
         elif fill_verdict == "partial":
             if self.event_bus:
                 self.event_bus.publish("SYSTEM_ERROR", {
