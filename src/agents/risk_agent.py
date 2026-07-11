@@ -147,11 +147,57 @@ class RiskManagerAgent:
         self.mode_override_path = mode_override_path
         self._asset_to_class = build_asset_to_class_map(self.brokers_config)
 
-    def get_account_balance(self) -> tuple:
-        if self.broker is None:
+    def get_account_balance(self, asset: Optional[str] = None) -> tuple:
+        """Return (balance_usd, source) to size a trade against.
+
+        Sprint 46N (audit A4) — two fixes bundled here:
+
+        1. Per-asset-class balance lookup: previously this always read
+           `self.broker` (the crypto/binance.us client), even when
+           sizing an equity hypothesis (SPY/QQQ/GLD/USO) — so an SPY
+           trade was sized against the binance.us USDT balance, not
+           Alpaca's actual buying power. Now, when `asset` is given,
+           the SAME asset→broker routing table used for closes/
+           replacements (`broker_routing.resolve_broker_for_close`) is
+           used to pick `self.alpaca_broker` (equity) vs `self.broker`
+           (crypto/unknown, matching the pre-46N default). Omitting
+           `asset` preserves the exact old behavior: always resolve to
+           `self.broker`.
+        2. The $100 simulated-balance fallback (`no_broker_sim` when no
+           broker is configured, or the `GUARICO_ALLOW_SIMULATED_BALANCE`
+           gated fallback when a fetch fails/returns non-finite) is now
+           NEVER used while the bot is in LIVE mode
+           (`is_mandate_enabled(self.mode_override_path)` True) — both
+           paths raise instead. Before this fix, neither fallback path
+           checked live-vs-paper at all: a broker outage in LIVE mode
+           would silently size real orders against a fabricated $100
+           balance. The simulated fallback remains available in PAPER
+           mode only, where it exists to let the bot run in dev/demo
+           setups with no broker credentials configured at all.
+        """
+        live = is_mandate_enabled(self.mode_override_path)
+        if asset is not None:
+            broker, asset_class = resolve_broker_for_close(
+                asset, self._asset_to_class, self.broker, self.alpaca_broker,
+            )
+        else:
+            broker, asset_class = self.broker, "crypto"
+
+        if broker is None:
+            if live:
+                raise RuntimeError(
+                    f"No hay broker configurado para asset_class={asset_class!r} "
+                    f"(asset={asset!r}) mientras el bot está en modo LIVE -- "
+                    f"rechazando en vez de simular un balance de $100 contra "
+                    f"una cuenta real (audit A4)."
+                )
             return (100.0, "no_broker_sim")
+
         try:
-            bal = self.broker.get_usdt_balance()
+            # Sprint 46N (audit A4): equity balance comes from Alpaca's
+            # USD cash (`get_usd_balance`), never from the crypto
+            # broker's USDT balance.
+            bal = broker.get_usd_balance() if asset_class == "equity" else broker.get_usdt_balance()
             # Sprint 43 C3 fix: defend against NaN/Inf in the broker's
             # balance response. Some ccxt error paths (e.g. transient
             # network, sandbox returning None coerced to NaN) can return
@@ -160,9 +206,22 @@ class RiskManagerAgent:
             # and can fail-open downstream comparisons in mandate_gate.
             if not math.isfinite(float(bal)):
                 raise ValueError(f"non_finite_balance:{bal!r}")
-            source = self.broker.exchange.options.get("sandboxMode", False)
-            return (float(bal), "testnet_sim" if source else "live")
+            sandbox = False
+            if hasattr(broker, "exchange"):
+                try:
+                    sandbox = bool(broker.exchange.options.get("sandboxMode", False))
+                except Exception:
+                    sandbox = False
+            return (float(bal), "testnet_sim" if sandbox else "live")
         except Exception as e:
+            if live:
+                raise RuntimeError(
+                    f"Balance no disponible para asset_class={asset_class!r} "
+                    f"({e}) mientras el bot está en modo LIVE -- simulación "
+                    f"deshabilitada por seguridad, incluso si "
+                    f"GUARICO_ALLOW_SIMULATED_BALANCE=1 (audit A4: nunca "
+                    f"fingir un balance contra una cuenta real)."
+                ) from e
             if os.getenv("GUARICO_ALLOW_SIMULATED_BALANCE", "1") == "1":
                 print(f"[RiskManagerAgent] ⚠️ Balance indisponible ({e}). SIMULATED fallback $100.")
                 return (100.0, "testnet_sim")
@@ -191,14 +250,22 @@ class RiskManagerAgent:
             print(f"[RiskManagerAgent] usando {len(hypotheses)} hipótesis post-debate")
         else:
             hypotheses = state.get("generate_hypotheses", {}).get("hypotheses", [])
-        account_balance, balance_source = self.get_account_balance()
+        # Sprint 46N (audit A4): this "headline" balance (crypto broker,
+        # or the no-broker/no-mode-aware fallback) is used ONLY for the
+        # per-cycle log line below and to seed the per-asset-class cache
+        # so a crypto hypothesis doesn't refetch it. Actual per-trade
+        # sizing below now looks up the balance for THAT hypothesis's
+        # asset class (see `balance_cache` / `get_account_balance(asset=...)`),
+        # not this single aggregate.
+        cycle_balance, cycle_balance_source = self.get_account_balance()
+        balance_cache: Dict[str, Tuple[float, str]] = {"crypto": (cycle_balance, cycle_balance_source)}
 
         # Sprint 2: cuántas posiciones abiertas ya tenemos
         open_count = self.position_repo.count_open() if self.position_repo else 0
         slots_left = max(0, self.max_open_trades - open_count)
         print(
             f"[RiskManagerAgent] {len(hypotheses)} hipótesis | "
-            f"Balance ${account_balance:.2f} ({balance_source}) | "
+            f"Balance ${cycle_balance:.2f} ({cycle_balance_source}) | "
             f"Posiciones abiertas {open_count}/{self.max_open_trades} | "
             f"Riesgo {self.risk_per_trade_pct}% | R:R {self.risk_reward_ratio}:1"
         )
@@ -228,6 +295,24 @@ class RiskManagerAgent:
             atr = float(h.get("atr_at_signal", 0))
             direction = h.get("direction", "long")
             asset = h.get("asset", "")
+
+            # --- Sprint 46N (audit A4): resolve THIS hypothesis's
+            # balance from the broker that actually services its asset
+            # class (Alpaca for equities, crypto broker otherwise),
+            # cached per class so we don't refetch the same broker
+            # balance for every hypothesis in the cycle. A raise here
+            # (e.g. live mode + broker unreachable) intentionally
+            # propagates out of validate_and_size rather than being
+            # caught per-hypothesis — sizing on a guessed balance is
+            # worse than aborting the cycle (the outer scheduler
+            # already logs/notifies on an uncaught step exception).
+            _, _asset_class_for_balance = resolve_broker_for_close(
+                asset, self._asset_to_class, self.broker, self.alpaca_broker,
+            )
+            _balance_key = _asset_class_for_balance if _asset_class_for_balance in ("crypto", "equity") else "crypto"
+            if _balance_key not in balance_cache:
+                balance_cache[_balance_key] = self.get_account_balance(asset=asset)
+            account_balance, balance_source = balance_cache[_balance_key]
 
             # --- Sprint 46M: reject crypto shorts (binance.us spot has
             # no margin/borrow — a "short" here was never a real
@@ -649,8 +734,16 @@ class RiskManagerAgent:
         return {
             "approved_trades": approved,
             "rejected_trades": rejected,
-            "account_balance": account_balance,
-            "balance_source": balance_source,
+            # Sprint 46N (audit A4): this is the cycle-level "headline"
+            # balance (crypto broker), same as before this fix — NOT
+            # the per-asset-class balance actually used to size each
+            # individual trade (see each approved trade's own
+            # "balance_source", and account_balance/balance_source in
+            # `trade` are per-hypothesis now). Kept as the crypto figure
+            # here for backward compatibility with any dashboard/log
+            # consumer of this top-level field.
+            "account_balance": cycle_balance,
+            "balance_source": cycle_balance_source,
             "open_positions_after": self.position_repo.count_open() if self.position_repo else 0,
         }
 
