@@ -42,35 +42,32 @@ ENV HOSTNAME=0.0.0.0
 
 # Non-root user — same rationale as Dockerfile.bot (Sprint 43 M8).
 #
-# THIS WAS BROKEN: the flags below (--system, --gid, --uid, --ingroup)
-# are GNU shadow-utils syntax (groupadd/useradd on Debian, which is
-# what Dockerfile.bot's python:3.11-slim uses). This stage is
-# node:20-alpine, whose `addgroup`/`adduser` are BusyBox applets that
-# only understand SHORT flags (-g, -S, -u, -G, -D, -H) — the GNU
-# long-form flags are unrecognized, so both commands failed. The
-# `2>/dev/null || true` on each line silently swallowed that failure,
-# so the image built "successfully" with no `app` user ever created.
-# The failure only surfaced later, at container START (not build),
-# when Docker tried to resolve `USER app` and found no matching entry
-# in /etc/passwd — which is exactly the error Coolify's deploy logs
-# showed: "Error response from daemon: unable to find user app: no
-# matching entries in passwd file", and why the whole deploy failed.
-# Fixed with the correct BusyBox syntax, and dropped the `|| true`
-# masking — if user creation fails, the build should fail loudly here
-# instead of deferring a cryptic failure to container start.
-RUN addgroup -g 1000 -S app \
- && adduser -S -D -H -u 1000 -G app app
-
-# next.config.mjs has `output: 'standalone'`, so the build produces
-# .next/standalone/ which is a self-contained Node app (server.js
-# + node_modules + .next). We just copy the whole thing.
-COPY --from=builder --chown=app:app /app/.next/standalone ./
+# ATTEMPT 1 was broken: used GNU shadow-utils flags (--system, --gid,
+# --uid, --ingroup) on Alpine's BusyBox addgroup/adduser, which only
+# understand short flags. Both commands failed silently (masked by
+# `|| true`), so the image built with no `app` user, and the container
+# failed at START with "unable to find user app: no matching entries
+# in passwd file".
+#
+# ATTEMPT 2 fixed the flag syntax (`addgroup -g 1000 -S app` /
+# `adduser -S -D -H -u 1000 -G app app`) but hit a NEW failure:
+# `addgroup: gid '1000' in use`. Reason: the official node:*-alpine
+# base images already ship a built-in non-root user for exactly this
+# purpose — `node`, uid=1000 gid=1000 — created by the upstream
+# Dockerfile. Trying to create a second group at the same gid
+# collides with it.
+#
+# FIX: stop creating a redundant user entirely. Just use the `node`
+# user that's already there — same uid/gid (1000) that Dockerfile.bot
+# uses for its own non-root `app` user, so the shared `bot_audit`
+# volume still has consistent ownership across both containers.
+COPY --from=builder --chown=node:node /app/.next/standalone ./
 # Static assets (the client-side JS chunks) live next to .next but
 # OUTSIDE the standalone dir — the standalone server references them
 # via .next/static at runtime, so copy the .next/static dir too.
-COPY --from=builder --chown=app:app /app/.next/static ./.next/static
+COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 
-USER app
+USER node
 EXPOSE 3000
 
 # Healthcheck — the app's middleware bounces unauthed users to /login,
