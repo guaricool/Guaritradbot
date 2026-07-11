@@ -16,26 +16,26 @@ class BrokerClient:
     """
     def __init__(self, exchange_name="binance", use_testnet=True):
         load_dotenv()
-        
+
         # Sprint 0 fix: align with .env.example (which already declares BINANCE_*)
         api_key = os.getenv("BINANCE_API_KEY")
         secret = os.getenv("BINANCE_API_SECRET")
-        
+
         # Instanciar el exchange dinámicamente desde ccxt
         exchange_class = getattr(ccxt, exchange_name)
-        
+
         self.exchange = exchange_class({
             'apiKey': api_key,
             'secret': secret,
             'enableRateLimit': True,
         })
-        
+
         if use_testnet:
             self.exchange.set_sandbox_mode(True)
             print(f"[BrokerClient] Conectado a {exchange_name.upper()} en modo TESTNET (Sandbox).")
         else:
             print(f"[BrokerClient] ⚠️ Conectado a {exchange_name.upper()} en modo LIVE (Dinero Real).")
-            
+
     def get_usdt_balance(self) -> float:
         """
         Obtiene el balance disponible. binance global usa USDT,
@@ -84,11 +84,39 @@ class BrokerClient:
                 if free > 0:
                     return free
         return 0.0
-            
+
     def create_market_order(self, symbol: str, side: str, amount: float):
         """
         Ejecuta una orden de mercado en el exchange.
+
+        Sprint 46N (audit A3): quantize `amount` to the exchange's real
+        lot step-size via `amount_to_precision` before sending — the
+        native-OCO path (`create_oco_sell_order` below) already does
+        this, but this entry/close path never did, so a caller could
+        send a raw float quantity the exchange truncates on its own
+        side, silently changing the executed size from what the caller
+        (and the audit trail) believes was sent. RiskManagerAgent
+        (Sprint 46N audit A3) already quantizes+re-verifies notional at
+        SIZING time using this same `amount_to_precision` call, so this
+        is defense-in-depth for every OTHER caller of this method
+        (position closes, replacements) that pass an already-quantized
+        qty through unchanged — it should be a no-op for those, and a
+        safety net for anything that isn't.
+
+        Best-effort: if quantization itself fails for any reason
+        (markets not loaded, symbol not recognized, network hiccup),
+        falls back to the original raw `amount` rather than blocking
+        the order — a quantization problem must not be worse than the
+        truncation problem it's meant to prevent.
         """
+        try:
+            if not getattr(self.exchange, "markets", None):
+                self.exchange.load_markets()
+            quantized = float(self.exchange.amount_to_precision(symbol, amount))
+            if quantized > 0:
+                amount = quantized
+        except Exception as e:
+            print(f"[BrokerClient] ⚠️ amount_to_precision falló para {symbol} ({e}); usando cantidad sin cuantizar.")
         try:
             print(f"[BrokerClient] Enviando orden {side.upper()} {amount} {symbol}...")
             # En un entorno de simulación sin API Keys válidas, esto fallará.

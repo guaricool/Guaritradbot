@@ -474,6 +474,102 @@ class RiskManagerAgent:
                       f"⚠️ FIX config.yaml: increase max_capital_per_trade_pct or risk_per_trade_pct, "
                       f"or lower min_order_usd.")
 
+            # --- Sprint 46N (audit A3): quantize to the exchange's real
+            # lot step-size and re-buffer above its true min-notional,
+            # crypto only (Alpaca equities trade fractional/notional
+            # shares — no step-size/min-notional problem there).
+            #
+            # Without this, a trade sized to EXACTLY $10.00 (the stable-
+            # state config: 50% of a $20 balance) can get truncated by
+            # binance.us's lot step-size down to a notional just under
+            # its real MIN_NOTIONAL -> the exchange rejects the order
+            # outright at send time, after all the sizing work above
+            # already happened. The native-OCO protection path already
+            # quantizes via `exchange.amount_to_precision` (broker.py);
+            # the entry-order path never did.
+            #
+            # Fix (matches the audit's suggested correction exactly):
+            # 1. Look up the exchange's real min-notional for this
+            #    symbol (if the exchange publishes one) and re-size to
+            #    max(min_order_usd, min_notional_exchange) x 1.05 if the
+            #    current notional is below that buffered floor — the 5%
+            #    buffer is headroom so step-size truncation in step 2
+            #    can't push us back under the exchange's true minimum.
+            # 2. Quantize the quantity with `exchange.amount_to_precision`
+            #    (the same call the OCO path already trusts) and re-
+            #    verify the notional AFTER quantization.
+            # 3. If, even after all that, the quantized notional is
+            #    still below the exchange's real minimum, reject the
+            #    trade rather than send an order we already know the
+            #    exchange will bounce.
+            #
+            # Best-effort: any failure here (broker not configured,
+            # markets not loaded, network hiccup, symbol not found) logs
+            # a warning and falls back to the pre-existing 8-decimal
+            # rounding — a quantization problem must never silently
+            # block an otherwise-valid trade, same fail-open philosophy
+            # as every other best-effort gate in this file.
+            if self.broker is not None and get_asset_class(h.get("asset", "")) == AssetClass.CRYPTO:
+                try:
+                    ccxt_symbol = asset_symbol = h.get("asset", "")
+                    if "-" in ccxt_symbol:
+                        ccxt_symbol = ccxt_symbol.replace("-", "/")
+                    elif "/" not in ccxt_symbol:
+                        ccxt_symbol = f"{ccxt_symbol}/USDT"
+                    exch = self.broker.exchange
+                    if not getattr(exch, "markets", None):
+                        exch.load_markets()
+                    market = exch.market(ccxt_symbol)
+                    min_notional_exchange = (
+                        ((market or {}).get("limits", {}) or {}).get("cost", {}) or {}
+                    ).get("min")
+                    buffered_floor = max(self.min_order_usd, float(min_notional_exchange or 0.0)) * 1.05
+                    if notional < buffered_floor:
+                        quantity = buffered_floor / entry_price
+                        notional = quantity * entry_price
+                    quantized_amount = float(exch.amount_to_precision(ccxt_symbol, quantity))
+                    if quantized_amount <= 0:
+                        raise ValueError(
+                            f"amount_to_precision produced non-positive qty "
+                            f"({quantized_amount}) for {ccxt_symbol}"
+                        )
+                    quantity = quantized_amount
+                    notional = quantity * entry_price
+                    exchange_min_floor = max(self.min_order_usd, float(min_notional_exchange or 0.0))
+                    if notional < exchange_min_floor:
+                        rejected.append({
+                            "hypothesis": h,
+                            "reason": "below_exchange_min_notional_after_quantize",
+                        })
+                        if self.audit:
+                            self.audit.append("TRADE_REJECTED", {
+                                "asset": h.get("asset"),
+                                "reason": "below_exchange_min_notional_after_quantize",
+                                "notional_after_quantize": round(notional, 4),
+                                "exchange_min_notional": min_notional_exchange,
+                                "min_order_usd": self.min_order_usd,
+                            })
+                        print(
+                            f"  🚫 {h['asset']:8} {direction:5} — notional "
+                            f"${notional:.4f} still below the exchange's real "
+                            f"minimum ${exchange_min_floor:.2f} AFTER step-size "
+                            f"quantization. Rejecting — sending this would just "
+                            f"bounce off the exchange."
+                        )
+                        continue
+                except Exception as _quantize_err:
+                    print(
+                        f"  ⚠️ {h.get('asset', '?'):8} {direction:5} — lot-size/"
+                        f"min-notional quantization skipped ({_quantize_err}); "
+                        f"using unquantized sizing (8-decimal rounding at order "
+                        f"time only)."
+                    )
+                    if self.audit:
+                        self.audit.append("QUANTIZE_SKIPPED", {
+                            "asset": h.get("asset"),
+                            "error": str(_quantize_err)[:200],
+                        })
+
             risk_amount_usd_eff = quantity * stop_distance
 
             # --- Sprint 46N (audit A2): cap risk multiplication from the
