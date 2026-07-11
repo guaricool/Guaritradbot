@@ -79,15 +79,18 @@ from src.api.state import (
     StateSnapshot,
     build_audit,
     build_state_snapshot,
+    close_all_positions,
     close_position,
     invalidate_price_cache,
     read_current_prices,
     read_mode,
     read_risk_config,
     read_trading_config,
+    read_trading_pause,
     write_mode,
     write_risk_config,
     write_trading_config,
+    write_trading_pause,
 )
 
 
@@ -622,6 +625,50 @@ def post_close_position(
     if closed is None:
         raise HTTPException(status_code=404, detail=f"position {position_id!r} not found or already closed")
     return closed
+
+
+@app.post("/api/positions/close-all")
+def post_close_all_positions(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
+    """Sprint 46H: flatten every open position in one click. Carlos's
+    ask: a way to make sure NO positions are left open while in paper
+    mode, so the transition to live can't be corrupted by a "ghost"
+    position the bot thinks it has. See state.close_all_positions'
+    docstring for the repo-only-close trade-off (same as the single
+    close endpoint above, just applied to all open positions).
+    """
+    closed = close_all_positions(audit_path=_audit_path(), positions_path=_positions_path())
+    return {"closed_count": len(closed), "closed": closed}
+
+
+# ----------------------------------------------------------------------
+# Manual trading pause (Sprint 46H) — dashboard Stop/Start toggle
+# ----------------------------------------------------------------------
+
+class TradingPauseRequest(BaseModel):
+    paused: bool
+    updated_by: Optional[str] = "dashboard"
+
+
+@app.get("/api/trading-pause")
+def get_trading_pause() -> Dict[str, Any]:
+    """Current Stop/Start state. `paused=true` means main.py's
+    job_with_monitor() is skipping NEW entries every cycle — existing
+    open positions keep their SL/TP protection regardless (see
+    state.read_trading_pause's docstring for why this is a separate,
+    softer mechanism than the filesystem KillSwitch)."""
+    return read_trading_pause(audit_path=_audit_path())
+
+
+@app.post("/api/trading-pause")
+def post_trading_pause(
+    req: TradingPauseRequest,
+    _: None = Depends(auth.require_auth),
+) -> Dict[str, Any]:
+    return write_trading_pause(
+        paused=req.paused,
+        updated_by=req.updated_by or "dashboard",
+        audit_path=_audit_path(),
+    )
 
 
 # ----------------------------------------------------------------------

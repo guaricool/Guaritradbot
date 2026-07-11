@@ -841,3 +841,115 @@ def close_position(
         "close_price": closed.entry_price,
         "realized_pnl_usd": closed.realized_pnl or 0.0,
     }
+
+
+def close_all_positions(
+    audit_path: str = "audit/audit.jsonl",
+    positions_path: str = "data_store/positions.json",
+) -> List[Dict]:
+    """Sprint 46H: bulk version of `close_position` — Carlos's ask:
+    "que se puedan detener las entradas que están abiertas, y así
+    quede la sesión completamente limpia" before flipping from paper
+    to live. Loops the SAME per-position close logic `close_position`
+    already uses (repo-only close at entry_price, audit-logged as
+    MANUAL_CLOSE) — no new order logic, just applied to every open
+    position instead of one.
+
+    Same trade-off as `close_position`: this clears the LOCAL repo
+    (correct and sufficient in PAPER mode, where paper positions never
+    existed on a real exchange anyway). In LIVE mode this does NOT
+    place real exchange orders — see `close_position`'s docstring.
+    Carlos's stated use case is specifically "mientras esté en paper",
+    so the dashboard should only surface this action prominently in
+    paper mode (still callable in live, just not the intended flow).
+
+    Returns the list of closed-position dicts (same shape as
+    `close_position`'s return value), in the order they were closed.
+    """
+    repo = PositionRepository(path=positions_path)
+    position_ids = [p.position_id for p in repo.open()]
+    closed_list: List[Dict] = []
+    for pid in position_ids:
+        closed = close_position(pid, audit_path=audit_path, positions_path=positions_path)
+        if closed is not None:
+            closed_list.append(closed)
+    return closed_list
+
+
+# ----------------------------------------------------------------------
+# Manual trading pause (Sprint 46H) — dashboard Stop/Start toggle
+# ----------------------------------------------------------------------
+#
+# Carlos: "en el dashboard hay manera de tener como un stop y un start?
+# para que mientras esté en paper se puedan detener las entradas que
+# están abiertas, y así quede la sesión completamente limpia y a la
+# hora de pasarlo a live el sistema pueda correr limpio, sin la
+# posibilidad de un bug que el sistema crea que tiene alguna posición
+# abierta."
+#
+# Same override-file pattern as mode_override.json / *_config_override
+# .json — but checked EVERY CYCLE (not just at startup), same as
+# mode_override.json's mandate_enabled flag: main.py's job_with_monitor
+# reads this file each cycle and, if paused, skips ONLY step 2 (new
+# entries via the normal workflow). Step 1 (PositionMonitor — SL/TP,
+# smart profit-take) ALWAYS runs regardless, exactly like the existing
+# drawdown-kill-switch and capital-routing gates — pausing new entries
+# must never also pause protection on positions already open.
+#
+# This does NOT touch the filesystem KillSwitch (src/safety/kill_switch
+# .py) on purpose: that one is checked at bot STARTUP too and refuses
+# to even boot the trading loop while armed (main.py's kill_switch.
+# is_triggered() gate) — a much harder stop than "pause new entries,
+# keep monitoring what's open," and arming it while positions are open
+# would leave them unprotected across a restart. This pause flag never
+# affects startup at all.
+
+def _trading_pause_path(audit_path: Optional[str] = None) -> Path:
+    if audit_path is None:
+        audit_path = os.getenv("DASHBOARD_AUDIT_PATH", "audit/audit.jsonl")
+    return Path(audit_path).parent / "trading_pause.json"
+
+
+def read_trading_pause(audit_path: Optional[str] = None) -> Dict[str, Any]:
+    """Current pause state: {"paused": bool, "paused_at": float|None,
+    "paused_by": str|None}. Defaults to not-paused if the file doesn't
+    exist or is malformed (fail-open — same rationale as every other
+    override file in this codebase: a missing/corrupt override file
+    must fall back to normal operation, not an unexpected halt)."""
+    path = _trading_pause_path(audit_path)
+    if not path.exists():
+        return {"paused": False, "paused_at": None, "paused_by": None}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {"paused": False, "paused_at": None, "paused_by": None}
+        return {
+            "paused": bool(data.get("paused", False)),
+            "paused_at": data.get("paused_at"),
+            "paused_by": data.get("paused_by"),
+        }
+    except Exception:
+        return {"paused": False, "paused_at": None, "paused_by": None}
+
+
+def write_trading_pause(
+    paused: bool,
+    updated_by: str = "dashboard",
+    audit_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Set the pause flag. Atomic write (tmp file + `.replace()`), same
+    as every other override file here. Takes effect on the bot's NEXT
+    cycle — no restart needed, unlike trading_config_override.json /
+    risk_config_override.json (which main.py only reads at startup)."""
+    path = _trading_pause_path(audit_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "paused": bool(paused),
+        "paused_at": time.time() if paused else None,
+        "paused_by": updated_by,
+    }
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(path)  # atomic on POSIX
+    return read_trading_pause(audit_path)

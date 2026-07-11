@@ -112,6 +112,30 @@ export interface RiskConfigResponse extends RiskConfig {
 
 export type RiskConfigUpdate = Partial<RiskConfig> & { updated_by?: string };
 
+// Sprint 46H: dashboard Stop/Start toggle for new entries (see
+// src/api/state.py::read_trading_pause / write_trading_pause docstrings
+// for why this is intentionally separate from the mode LIVE/PAPER
+// toggle and from the filesystem KillSwitch — pausing new entries
+// never pauses SL/TP protection on positions already open).
+export interface TradingPauseState {
+  paused: boolean;
+  paused_at: number | null;
+  paused_by: string | null;
+}
+
+// Sprint 46H: response shape for POST /api/positions/close-all.
+export interface CloseAllPositionsResponse {
+  closed_count: number;
+  closed: Array<{
+    position_id: string;
+    asset: string;
+    direction: string;
+    entry_price: number;
+    close_price: number;
+    realized_pnl_usd: number;
+  }>;
+}
+
 export interface AuditEvent {
   ts: number;
   iso: string;

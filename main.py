@@ -133,6 +133,39 @@ def _get_active_asset_classes(broker_client, alpaca_broker, min_usd: float = 10.
     return active
 
 
+def _is_trading_paused(audit_dir: str = "audit") -> bool:
+    """Sprint 46H — dashboard 'Stop trading' toggle.
+
+    Carlos: "en el dashboard hay manera de tener como un stop y un
+    start? para que mientras esté en paper se puedan detener las
+    entradas que están abiertas, y así quede la sesión completamente
+    limpia... a la hora de pasarlo a live el sistema pueda correr
+    limpio, sin la posibilidad de un bug que el sistema crea que
+    tiene alguna posición abierta."
+
+    Reads `<audit_dir>/trading_pause.json`, written by
+    POST /api/trading-pause (see src/api/state.py::write_trading_pause
+    for the full rationale, including why this is intentionally
+    SEPARATE from the filesystem KillSwitch). Cheap disk read, same
+    pattern as `_is_mandate_enabled` in execution_node.py — checked
+    EVERY cycle (not just at startup) so a dashboard click takes
+    effect on the bot's next cycle, no restart needed.
+
+    Fail-open: a missing or corrupt pause file means NOT paused
+    (normal operation) — a broken override file must not become an
+    unexplained full stop.
+    """
+    path = os.path.join(audit_dir, "trading_pause.json")
+    try:
+        if not os.path.exists(path):
+            return False
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return bool(data.get("paused", False))
+    except Exception:
+        return False
+
+
 def _start_api_server(
     audit_path: str,
     positions_path: str,
@@ -1012,17 +1045,33 @@ def main():
         except Exception as e:
             print(f"[CapitalRouting] check falló (continuando sin filtrar): {e}")
 
+        # Sprint 46H: manual Stop/Start toggle from the dashboard.
+        # Checked every cycle (see _is_trading_paused's docstring) so a
+        # dashboard click takes effect on the NEXT cycle — no restart
+        # needed. Only gates step 2 (new entries) below, same as the
+        # drawdown/capital gates above; step 1 (monitor) already ran.
+        manual_paused = False
+        try:
+            manual_paused = _is_trading_paused(
+                config.get("mandate", {}).get("audit_log_dir", "audit")
+            )
+        except Exception as e:
+            print(f"[TradingPause] check falló (continuando sin pausar): {e}")
+
         # 2. Workflow normal — skipped while the drawdown kill switch is
-        # active (dd_triggered above) OR while no broker has enough
-        # capital to trade (capital_blocked above). Step 1 (monitor)
-        # already ran unconditionally, so SL/TP protection on existing
-        # positions is never paused by either gate.
-        if not dd_triggered and not capital_blocked:
+        # active (dd_triggered), while no broker has enough capital to
+        # trade (capital_blocked), OR while manually paused from the
+        # dashboard (manual_paused). Step 1 (monitor) already ran
+        # unconditionally, so SL/TP protection on existing positions is
+        # never paused by any of these three gates.
+        if not dd_triggered and not capital_blocked and not manual_paused:
             original_job()
         elif dd_triggered:
             print("[DrawdownKill] Ciclo de nuevas entradas SALTADO (cooldown activo). Monitor de SL/TP sigue corriendo normalmente.")
-        else:
+        elif capital_blocked:
             print("[CapitalRouting] Ciclo de nuevas entradas SALTADO (sin capital disponible). Monitor de SL/TP sigue corriendo normalmente.")
+        else:
+            print("[TradingPause] Ciclo de nuevas entradas SALTADO (pausado manualmente desde el dashboard). Monitor de SL/TP sigue corriendo normalmente.")
 
     scheduler.job = job_with_monitor
 

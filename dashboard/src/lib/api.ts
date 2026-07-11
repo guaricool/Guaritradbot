@@ -5,6 +5,7 @@ import type {
   Allocation,
   AuditEvent,
   CandlesResponse,
+  CloseAllPositionsResponse,
   CorrelationResult,
   CVaRResult,
   EquityPoint,
@@ -17,6 +18,7 @@ import type {
   StressResult,
   TradingConfigResponse,
   TradingConfigUpdate,
+  TradingPauseState,
 } from "./types";
 
 const API_BASE =
@@ -163,6 +165,20 @@ export const api = {
       close_price: number;
       realized_pnl_usd: number;
     }>(`/api/positions/${id}/close`, { method: "POST" }),
+
+  // Sprint 46H: flatten every open position (Carlos's "clean session
+  // before going live" use case).
+  closeAllPositions: () =>
+    request<CloseAllPositionsResponse>("/api/positions/close-all", { method: "POST" }),
+
+  // Sprint 46H: Stop/Start toggle — pauses/resumes NEW entries only;
+  // SL/TP protection on open positions is never affected.
+  getTradingPause: () => request<TradingPauseState>("/api/trading-pause"),
+  setTradingPause: (paused: boolean, updatedBy?: string) =>
+    request<TradingPauseState>("/api/trading-pause", {
+      method: "POST",
+      body: JSON.stringify({ paused, updated_by: updatedBy || "dashboard" }),
+    }),
 
   // Risk + allocation
   allocation: () => request<Allocation>("/api/allocation"),

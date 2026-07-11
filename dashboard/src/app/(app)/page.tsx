@@ -5,12 +5,14 @@ import { api } from "@/lib/api";
 import { KpiCard } from "@/components/KpiCard";
 import { PositionTable } from "@/components/PositionTable";
 import { ModeToggle } from "@/components/ModeToggle";
+import { TradingPauseToggle } from "@/components/TradingPauseToggle";
 import { EquityChart } from "@/components/EquityChart";
 import { PageSpinner } from "@/components/Spinner";
 import { fmtPct, fmtUsd } from "@/lib/format";
 import { useLive } from "@/lib/use-live";
 import { useEffect, useMemo, useState } from "react";
 import type { PositionSummary } from "@/lib/types";
+import { ApiError } from "@/lib/api";
 
 // Sprint 46C: short, human hint under each broker balance card explaining
 // WHY the value is "—" when it isn't a real live balance — a bare "$0.00"
@@ -35,6 +37,8 @@ export default function HomePage() {
     refreshInterval: 10_000,
   });
   const [livePositions, setLivePositions] = useState<PositionSummary[] | null>(null);
+  const [closingAll, setClosingAll] = useState(false);
+  const [closeAllMsg, setCloseAllMsg] = useState<string | null>(null);
 
   // Live updates via WS — when we get a positions update, refresh KPI math
   const { status } = useLive({
@@ -79,6 +83,34 @@ export default function HomePage() {
   const dailyPnl = data.daily_realized_pnl_usd ?? 0;
   const totalPnl = data.total_realized_pnl_usd ?? 0;
 
+  // Sprint 46H: "clean session" helper before flipping paper → live.
+  // Closes every open position in the LOCAL repo (correct for paper —
+  // see api.closeAllPositions' JSDoc for the live-mode caveat).
+  async function handleCloseAll() {
+    if (positions.length === 0) return;
+    if (
+      !confirm(
+        `Close all ${positions.length} open position(s)? This clears the local repo ` +
+          `(correct in PAPER mode). In LIVE mode this does NOT place real exchange orders.`,
+      )
+    ) {
+      return;
+    }
+    setCloseAllMsg(null);
+    setClosingAll(true);
+    try {
+      const res = await api.closeAllPositions();
+      setCloseAllMsg(`Closed ${res.closed_count} position(s).`);
+      setLivePositions(null);
+      await mutate();
+    } catch (e: unknown) {
+      const err = e instanceof ApiError ? e.message : String((e as { message?: string })?.message ?? e);
+      setCloseAllMsg(`Failed: ${err}`);
+    } finally {
+      setClosingAll(false);
+    }
+  }
+
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Header */}
@@ -91,7 +123,10 @@ export default function HomePage() {
             Live snapshot of the bot&apos;s positions, P&amp;L, and exposure.
           </p>
         </div>
-        <ModeToggle mode={data.mode} />
+        <div className="flex items-start gap-3">
+          <TradingPauseToggle />
+          <ModeToggle mode={data.mode} />
+        </div>
       </header>
 
       {/* KPIs */}
@@ -157,10 +192,27 @@ export default function HomePage() {
       <section className="card overflow-hidden">
         <div className="card-header">
           <span>Open Positions</span>
-          <span className="text-xs text-muted">
-            P&amp;L recomputed every 2s via WebSocket
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-muted">
+              P&amp;L recomputed every 2s via WebSocket
+            </span>
+            {positions.length > 0 && (
+              <button
+                onClick={handleCloseAll}
+                disabled={closingAll}
+                className="btn-ghost text-xs text-loss disabled:opacity-50"
+                title="Force-close every open position (repo-only in live — see docs)"
+              >
+                {closingAll ? "Closing…" : "Close all"}
+              </button>
+            )}
+          </div>
         </div>
+        {closeAllMsg && (
+          <div className="border-b border-ink-700 px-4 py-2 text-xs text-muted">
+            {closeAllMsg}
+          </div>
+        )}
         <div className="p-4">
           <PositionTable
             positions={positions}
