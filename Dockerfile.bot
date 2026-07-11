@@ -32,12 +32,26 @@ RUN groupadd -r app && useradd -r -g app -u 1000 app \
     && chown -R app:app /app
 USER app
 
-# Healthcheck: check that the bot process is alive and the audit
-# log is being written. The exact command depends on the bot's
-# output (--once mode for one-off healthcheck, daemon for prod).
-# For now, a simple liveness check: is the process running?
+# Healthcheck: actually hit the bot's /api/health endpoint instead of
+# just pgrep'ing for the process. Three reasons:
+#   1. python:3.11-slim has no `pgrep` (procps not installed), so the
+#      original `pgrep -f "python -u main.py"` ALWAYS failed and the
+#      container showed "unhealthy" forever even when the bot was
+#      running perfectly — see the deploy log of 2026-07-11 22:47:49
+#      where the bot started clean (3/3 self-tests OK, API on :8080)
+#      but Coolify marked it unhealthy.
+#   2. pgrep tells you the process exists, not that the bot is
+#      actually serving requests. A hung Python process (GIL deadlock,
+#      blocked on yfinance, etc.) would still match pgrep.
+#   3. Mirrors the dashboard's pattern: `node -e "require('http')..."`
+#      hits its own port. Same shape, same intent.
+# /api/health is the only public (no-auth) GET endpoint per Sprint 46N
+# audit C5 (see src/api/server.py:11-25), so the healthcheck can hit
+# it without a bearer token. The healthcheck runs in the same
+# container as the bot, so it talks to localhost:8080 — no network
+# exposure of the healthcheck to the outside.
 HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
-    CMD pgrep -f "python -u main.py" > /dev/null || exit 1
+    CMD python -c "import urllib.request as u; u.urlopen('http://localhost:8080/api/health', timeout=2).read()" || exit 1
 
 # Run the bot in background daemon mode
 CMD ["python", "-u", "main.py"]

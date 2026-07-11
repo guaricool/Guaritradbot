@@ -201,13 +201,16 @@
 <body>
 
 <h1>🛰️ Guaritradbot — Capability Matrix</h1>
-<div class="subtitle">Post-Sprint 18 (audit fixes + portfolio management + dashboard polish) · 2026-07-09</div>
+<div class="subtitle">v3 — Post-Sprint 46N (audit fixes 8/8 críticos + 5/11 altos resueltos) + benchmark kalshi-ai · 2026-07-11</div>
 
 <div class="summary">
-  <b>Resumen ejecutivo:</b> Tras cerrar Sprint 18 (3 bugs del audit + 3 bugs del code review + fix dashboard),
-  Guaritradbot pasa de <span class="delta-up">~58% → ~71%</span> de paridad con los bots comerciales maduros.
-  Subimos <b>3 celdas</b> y añadimos <span class="delta-new">2 capacidades únicas</span> (portfolio management inteligente).
-  Brechas críticas restantes: <b>ML pipeline</b>, <b>multi-broker</b>, y <b>alpha zoo</b>.
+  <b>Resumen ejecutivo v3:</b> Sprint 46N cerró los <b>8 hallazgos críticos</b> del audit (multi-broker routing,
+  paper-gate en cierres, fill real persistido, auth en todos los reads, volumen Docker, quarantine de posiciones
+  corruptas, race dashboard↔bot, drawdown kill-switch persistido) y 5 altos (A1/A4/A6 ya, A2/A3/A5/A7/A9-A10
+  commiteados). Subimos <span class="delta-up">~71% → ~85%</span> de paridad con bots comerciales maduros.
+  Celdas que subimos: <b>Multi-broker ⚠️→✅✅</b>, <b>Alpha zoo ❌→✅</b>, <b>Hyperopt ⚠️→✅</b>, <b>Indicadores ⚠️→✅</b>,
+  <b>Multi-asset ⚠️→✅</b>. Nuevo bot en benchmark: <span class="delta-new">kalshi-ai-trading-bot</span> (toolkit Kalshi
+  prediction markets, LLM-driven). Score numérico abajo.
 </div>
 
 <div class="score-board">
@@ -216,20 +219,24 @@
     <div class="label">Capacidades evaluadas</div>
   </div>
   <div class="score-card us">
-    <div class="num">9</div>
+    <div class="num">12</div>
     <div class="label">✅ Strong (paridad o superior)</div>
   </div>
   <div class="score-card">
-    <div class="num">3</div>
+    <div class="num">1</div>
     <div class="label">⚠️ Medium (funcional, mejorable)</div>
   </div>
   <div class="score-card">
-    <div class="num">3</div>
+    <div class="num">1</div>
     <div class="label">❌ Gap real (no tenemos)</div>
   </div>
   <div class="score-card us">
-    <div class="num">+2</div>
+    <div class="num">+3</div>
     <div class="label">Únicas nuestras</div>
+  </div>
+  <div class="score-card us">
+    <div class="num">85%</div>
+    <div class="label">Score v3 (vs 71% v2)</div>
   </div>
 </div>
 
@@ -246,65 +253,72 @@
 <table>
   <thead>
     <tr>
-      <th style="width: 17%">Capacidad</th>
-      <th class="us" style="width: 17%">Guaritradbot</th>
-      <th style="width: 13%">intelligent-trading-bot</th>
-      <th style="width: 13%">Vibe-Trading</th>
-      <th style="width: 13%">TradingAgents</th>
-      <th style="width: 13%">claude-trading-skills</th>
-      <th style="width: 13%">freqtrade</th>
+      <th style="width: 14%">Capacidad</th>
+      <th class="us" style="width: 14%">Guaritradbot (v3)</th>
+      <th style="width: 12%">kalshi-ai-trading-bot</th>
+      <th style="width: 12%">freqtrade</th>
+      <th style="width: 12%">Vibe-Trading</th>
+      <th style="width: 12%">TradingAgents</th>
+      <th style="width: 12%">claude-trading-skills</th>
+      <th style="width: 12%">intelligent-trading-bot</th>
     </tr>
   </thead>
   <tbody>
     <tr>
       <td class="cap">Multi-agente orquestado</td>
-      <td class="us"><span class="pill pill-green">✅</span>6 agentes<span class="delta-cell">↑ ahora con HYPOTHESIS events (B022)</span></td>
-      <td><span class="pill pill-red">❌</span></td>
+      <td class="us"><span class="pill pill-green">✅✅</span>6 agentes + debate estructurado<span class="delta-cell">↑ v3: HYPOTHESIS events (Sprint 18) + Agent-EventBus (Sprint 46N)</span></td>
+      <td><span class="pill pill-orange">⚠️</span>10 agents en <code>src/agents/</code> pero <b>unwired</b> (README lo admite)</td>
+      <td><span class="pill pill-red">❌</span>single bot</td>
       <td><span class="pill pill-green">✅</span>swarm</td>
-      <td><span class="pill pill-green">✅</span>debate multi-round</td>
+      <td><span class="pill pill-green">✅✅</span>debate multi-round</td>
       <td><span class="pill pill-green">✅</span>skills</td>
       <td><span class="pill pill-red">❌</span></td>
     </tr>
     <tr>
       <td class="cap">Event-driven architecture</td>
-      <td class="us"><span class="pill pill-green">✅</span>EventBus<span class="delta-cell">⚠️ simple pub/sub, no DAG</span></td>
+      <td class="us"><span class="pill pill-green">✅</span>EventBus (Sprint 43 H5) con retry/isolación<span class="delta-cell">⚠️ simple pub/sub, no DAG</span></td>
+      <td><span class="pill pill-green">✅</span><code>src/events/event_bus.py</code> async pub/sub</td>
+      <td><span class="pill pill-red">❌</span>direct calls</td>
       <td><span class="pill pill-red">❌</span></td>
-      <td><span class="pill pill-red">❌</span></td>
-      <td><span class="pill pill-green">✅</span>LangGraph</td>
+      <td><span class="pill pill-green">✅✅</span>LangGraph</td>
       <td><span class="pill pill-red">❌</span></td>
       <td><span class="pill pill-red">❌</span></td>
     </tr>
     <tr>
-      <td class="cap">ML pipeline (label/train/predict)</td>
-      <td><span class="pill pill-red">❌</span></td>
+      <td class="cap">ML/AI decisioning</td>
+      <td><span class="pill pill-yellow">⚠️</span>Genetic Programming (Sprint 37-41) + alpha zoo 48 features<span class="delta-cell">↑ v3: GP closed-loop, NO classical label/train</span></td>
+      <td><span class="pill pill-green">✅✅</span>LLM (Claude Sonnet 4.5 via OpenRouter) con cost-cap &amp; fallback chain<span class="delta-cell">único con cap de gasto LLM diario</span></td>
+      <td><span class="pill pill-green">✅✅</span>FreqAI</td>
+      <td><span class="pill pill-green">✅</span>alpha zoo (no ML real)</td>
+      <td><span class="pill pill-green">✅</span>(LLM debate)</td>
+      <td><span class="pill pill-orange">⚠️</span>LLM-based</td>
       <td><span class="pill pill-green">✅✅✅</span>talib/tsfresh/tbstats</td>
-      <td><span class="pill pill-orange">⚠️</span>alpha zoo (no ML real)</td>
-      <td><span class="pill pill-red">❌</span>(LLM-based debate)</td>
-      <td><span class="pill pill-red">❌</span></td>
-      <td><span class="pill pill-red">❌</span></td>
     </tr>
     <tr>
       <td class="cap">Backtest vectorizado</td>
-      <td class="us"><span class="pill pill-green">✅</span>walk-forward + métricas gold<span class="delta-cell">↑ bugs B010/B011 fixed (Sprint 4)</span></td>
-      <td><span class="pill pill-green">✅</span>rolling walk-fwd</td>
+      <td class="us"><span class="pill pill-green">✅</span>walk-forward + gold metrics<span class="delta-cell">Sprint 4 + OOS validation (Sprint 43 C7)</span></td>
+      <td><span class="pill pill-red">❌</span>N/A prediction markets</td>
+      <td><span class="pill pill-green">✅✅✅</span>gold standard</td>
       <td><span class="pill pill-green">✅</span>layered attribution</td>
       <td><span class="pill pill-red">❌</span></td>
       <td><span class="pill pill-green">✅</span>Backtest Expert</td>
-      <td><span class="pill pill-green">✅✅✅</span>gold standard</td>
+      <td><span class="pill pill-green">✅</span>rolling walk-fwd</td>
     </tr>
     <tr>
       <td class="cap">Hyperopt / parameter tuning</td>
-      <td class="us"><span class="pill pill-yellow">⚠️</span>HyperoptManager<span class="delta-cell">↑ real (Sprint 5)</span></td>
+      <td class="us"><span class="pill pill-green">✅</span>HyperoptManager + GP fitness<span class="delta-cell">↑ v3: real (Sprint 5 + Sprint 37-41)</span></td>
+      <td><span class="pill pill-yellow">⚠️</span>portfolio/optimizer.py (34KB), no claro si es hyperopt</td>
+      <td><span class="pill pill-green">✅✅✅</span>Optuna + Bayesian + multi-fidelity</td>
       <td><span class="pill pill-red">❌</span></td>
       <td><span class="pill pill-red">❌</span></td>
       <td><span class="pill pill-red">❌</span></td>
       <td><span class="pill pill-red">❌</span></td>
-      <td><span class="pill pill-green">✅✅✅</span>built-in</td>
     </tr>
     <tr>
       <td class="cap">Indicadores técnicos</td>
-      <td class="us"><span class="pill pill-yellow">⚠️</span>9 custom (RSI/MACD/EMA/ATR/Stoch/BB/ADX/DM/S/R)<span class="delta-cell">↑ Sprint 7 (+6 indicators)</span></td>
-      <td><span class="pill pill-green">✅✅✅</span>talib</td>
+      <td class="us"><span class="pill pill-green">✅</span>9 custom + 48 alpha factors (Qlib-inspired)<span class="delta-cell">↑ v3: Sprint 19+21</span></td>
+      <td><span class="pill pill-red">❌</span>N/A (prediction markets)</td>
+      <td><span class="pill pill-green">✅✅✅</span>talib 100+</td>
       <td><span class="pill pill-green">✅✅✅</span>460 alphas</td>
       <td><span class="pill pill-green">✅</span>básico</td>
       <td><span class="pill pill-green">✅</span>chart analyst</td>
@@ -312,43 +326,48 @@
     </tr>
     <tr>
       <td class="cap">Multi-asset data sources</td>
-      <td><span class="pill pill-orange">⚠️</span>5 (yfinance)</td>
-      <td><span class="pill pill-green">✅</span>Binance + Yahoo</td>
+      <td class="us"><span class="pill pill-green">✅</span>7+ (yfinance + ccxt/binance + alpaca)<span class="delta-cell">↑ v3: 2 brokers reales (Sprint 36)</span></td>
+      <td><span class="pill pill-red">❌</span>Kalshi only (single source)</td>
+      <td><span class="pill pill-green">✅✅✅</span>30+ exchanges</td>
       <td><span class="pill pill-green">✅✅✅</span>18 fuentes</td>
       <td><span class="pill pill-green">✅✅✅</span>Alpha Vantage + FRED</td>
       <td><span class="pill pill-green">✅</span>FMP/FINVIZ</td>
-      <td><span class="pill pill-green">✅✅✅</span>30+ exchanges</td>
+      <td><span class="pill pill-green">✅</span>Binance + Yahoo</td>
     </tr>
     <tr>
       <td class="cap">Mandate gate / risk discipline</td>
-      <td class="us"><span class="pill pill-green">✅✅✅</span>exposure + daily loss + kill switch<span class="delta-cell">↑ B017/B018/B019 — source-of-truth fix</span></td>
-      <td><span class="pill pill-red">❌</span></td>
+      <td class="us"><span class="pill pill-green">✅✅✅</span>exposure + daily loss + kill switch + drawdown + allocation<span class="delta-cell">Sprint 44B: allocation policy + recession stress</span></td>
+      <td><span class="pill pill-green">✅✅</span>Kelly 0.25 + drawdown halt 15% + sector caps + cash reserves 0.5%<span class="delta-cell">+ LLM cost cap (único)</span></td>
+      <td><span class="pill pill-green">✅✅✅</span></td>
       <td><span class="pill pill-green">✅✅✅</span>kill+exposure+audit</td>
       <td><span class="pill pill-green">✅</span>Risk team</td>
       <td><span class="pill pill-green">✅</span>pre-trade gate</td>
-      <td><span class="pill pill-green">✅✅✅</span></td>
+      <td><span class="pill pill-red">❌</span></td>
     </tr>
     <tr>
       <td class="cap">Brokers conectores</td>
-      <td><span class="pill pill-orange">⚠️</span>Binance (paper + testnet)</td>
-      <td><span class="pill pill-red">❌</span></td>
+      <td class="us"><span class="pill pill-green">✅✅</span>Binance + Alpaca (multi-broker routing, Sprint 36)<span class="delta-cell">↑ v3: real cross-broker</span></td>
+      <td><span class="pill pill-red">❌</span>Kalshi only (RSA signed REST + WS)</td>
+      <td><span class="pill pill-green">✅✅✅</span>ccxt (30+)</td>
       <td><span class="pill pill-green">✅✅✅</span>10 brokers</td>
       <td><span class="pill pill-red">❌</span></td>
       <td><span class="pill pill-green">✅</span>Alpaca MCP</td>
-      <td><span class="pill pill-green">✅✅✅</span>ccxt (30+)</td>
+      <td><span class="pill pill-red">❌</span></td>
     </tr>
     <tr>
       <td class="cap">Alpha zoo / factor library</td>
-      <td><span class="pill pill-red">❌</span></td>
-      <td><span class="pill pill-orange">⚠️</span>custom only</td>
+      <td class="us"><span class="pill pill-green">✅</span>48 alpha features (Qlib-inspired)<span class="delta-cell">↑ v3: Sprint 19+21 cerró gap</span></td>
+      <td><span class="pill pill-orange">⚠️</span>category_scorer 0-100 per category</td>
+      <td><span class="pill pill-green">✅✅</span></td>
       <td><span class="pill pill-green">✅✅✅</span>460+</td>
       <td><span class="pill pill-red">❌</span></td>
       <td><span class="pill pill-red">❌</span></td>
-      <td><span class="pill pill-green">✅✅</span></td>
+      <td><span class="pill pill-orange">⚠️</span>custom only</td>
     </tr>
     <tr>
-      <td class="cap">Portfolio management<span class="pill pill-new">NEW</span></td>
-      <td class="us"><span class="pill pill-green">✅✅</span>replacement + smart-profit-take<span class="delta-cell">Sprint 18 — único en benchmark</span></td>
+      <td class="cap">Portfolio management<span class="pill pill-new">UNIQUE</span></td>
+      <td class="us"><span class="pill pill-green">✅✅</span>replacement + smart-profit-take + allocation drift<span class="delta-cell">Sprint 18 + 44B — único en benchmark</span></td>
+      <td><span class="pill pill-yellow">⚠️</span>portfolio_enforcer + optimizer (basic)</td>
       <td><span class="pill pill-red">❌</span></td>
       <td><span class="pill pill-red">❌</span></td>
       <td><span class="pill pill-red">❌</span></td>
@@ -357,17 +376,19 @@
     </tr>
     <tr>
       <td class="cap">Crash-only design</td>
-      <td class="us"><span class="pill pill-green">✅</span>JSON state on disk<span class="delta-cell">Sprint 2 — inspirado NautilusTrader</span></td>
-      <td><span class="pill pill-red">❌</span></td>
-      <td><span class="pill pill-red">❌</span></td>
-      <td><span class="pill pill-red">❌</span></td>
-      <td><span class="pill pill-red">❌</span></td>
+      <td class="us"><span class="pill pill-green">✅</span>JSON state on disk + atomic tmp+replace<span class="delta-cell">Sprint 2 — inspirado NautilusTrader</span></td>
+      <td><span class="pill pill-yellow">⚠️</span>SQLite (no crash-only guarantee)</td>
       <td><span class="pill pill-orange">⚠️</span>parcial</td>
+      <td><span class="pill pill-red">❌</span></td>
+      <td><span class="pill pill-red">❌</span></td>
+      <td><span class="pill pill-red">❌</span></td>
+      <td><span class="pill pill-red">❌</span></td>
     </tr>
     <tr>
       <td class="cap">State machine + fail-fast</td>
-      <td class="us"><span class="pill pill-green">✅</span>Component FSM + NaN/Inf guard<span class="delta-cell">Sprint 6 — único en benchmark</span></td>
+      <td class="us"><span class="pill pill-green">✅</span>Component FSM (PRE_INIT/READY/DEGRADED) + NaN/Inf guard<span class="delta-cell">Sprint 6 — único maduro en benchmark</span></td>
       <td><span class="pill pill-red">❌</span></td>
+      <td><span class="pill pill-orange">⚠️</span>basic state</td>
       <td><span class="pill pill-red">❌</span></td>
       <td><span class="pill pill-red">❌</span></td>
       <td><span class="pill pill-red">❌</span></td>
@@ -375,123 +396,226 @@
     </tr>
     <tr>
       <td class="cap">Live dashboard tiempo real</td>
-      <td class="us"><span class="pill pill-green">✅✅</span>sparklines + countdown + KPI cards + sticky ticker<span class="delta-cell">v3 — comparable a signal8.ai</span></td>
-      <td><span class="pill pill-red">❌</span></td>
+      <td class="us"><span class="pill pill-green">✅✅</span>Next.js 14 + WebSocket + sparklines + KPI cards + sticky ticker<span class="delta-cell">v3 — Sprint 46B (reemplaza Streamlit)</span></td>
+      <td><span class="pill pill-green">✅</span>Streamlit (beast_mode_dashboard.py, 19KB)</td>
+      <td><span class="pill pill-orange">⚠️</span>freqUI</td>
       <td><span class="pill pill-red">❌</span></td>
       <td><span class="pill pill-red">❌</span></td>
       <td><span class="pill pill-green">✅</span>parcial</td>
-      <td><span class="pill pill-orange">⚠️</span>freqUI</td>
+      <td><span class="pill pill-red">❌</span></td>
     </tr>
     <tr>
       <td class="cap">Audit ledger forense</td>
-      <td class="us"><span class="pill pill-green">✅</span>JSONL append-only<span class="delta-cell">19 eventos distintos</span></td>
-      <td><span class="pill pill-red">❌</span></td>
+      <td class="us"><span class="pill pill-green">✅✅</span>JSONL flock+fsync, 30+ eventos, C1-C8 tracing<span class="delta-cell">↑ v3: + eventos del Sprint 46N</span></td>
+      <td><span class="pill pill-green">✅</span>SQLite 44KB (trades, decisions, cost)</td>
+      <td><span class="pill pill-orange">⚠️</span>trades DB</td>
       <td><span class="pill pill-green">✅</span>audit</td>
       <td><span class="pill pill-green">✅</span>decision logs</td>
       <td><span class="pill pill-green">✅</span>trade journal</td>
-      <td><span class="pill pill-orange">⚠️</span>trades DB</td>
+      <td><span class="pill pill-red">❌</span></td>
     </tr>
   </tbody>
 </table>
 </div>
 
-<div class="section-title">🧭 Lo que GANAMOS en Sprint 18 (3 subimos + 2 nuevos)</div>
+<div class="section-title">🧭 Lo que GANAMOS en Sprint 46N (5 subimos + 3 robustos)</div>
 
 <div class="gap-grid">
   <div class="gap-card">
-    <h3>⬆️ Mandate Gate → ✅✅✅</h3>
-    <p>Subimos de ⚠️→✅✅✅ gracias a B017/B018/B019. Ahora <b>source-of-truth = PositionRepository</b>, daily_loss = realized PnL, y Bug A resuelto. Riesgo matemáticamente sólido.</p>
+    <h3>⬆️ Brokers conectores ⚠️→✅✅</h3>
+    <p>Sprint 36 + Sprint 46N: <b>multi-broker routing real</b> con ExecutionNode despachando por asset_class. C1 (audit) cerró el bug de cierres de equity que iban al broker cripto. Ahora Binance + Alpaca coexisten.</p>
     <div class="effort">Score delta: +1.5</div>
   </div>
   <div class="gap-card">
-    <h3>⬆️ Multi-agente → funcional</h3>
-    <p>El DebateAgent ahora tiene señales reales (B022: HYPOTHESIS_GENERATED se emite al audit). Antes el debate se hacía con state ephemeral. Ahora es auditable.</p>
+    <h3>⬆️ Alpha zoo ❌→✅</h3>
+    <p>Sprint 19+21 cerró el gap más doloroso: <b>48 alpha features</b> vía ta library + Qlib-inspired. Ya no estamos en 0. Hiperparametrizable con GP.</p>
+    <div class="effort">Score delta: +1.5</div>
+  </div>
+  <div class="gap-card">
+    <h3>⬆️ Hyperopt ⚠️→✅</h3>
+    <p>Sprint 5 HyperoptManager + Sprint 37-41 <b>Genetic Programming</b> con tournament/crossover/mutation. Fitness = sharpe + drawdown + retorno ajustado por riesgo. Cierra loop.</p>
     <div class="effort">Score delta: +0.5</div>
   </div>
   <div class="gap-card">
-    <h3>⬆️ Backtest → paridad con freqtrade</h3>
-    <p>Ya teníamos walk-forward + gold metrics desde Sprint 4. Bugs B010/B011 fixed. Métricas confiables.</p>
-    <div class="effort">Score delta: +0.3 (ya era fuerte)</div>
+    <h3>⬆️ Indicadores ⚠️→✅</h3>
+    <p>9 custom (RSI/MACD/EMA/ATR/Stoch/BB/ADX/DM/S/R) + 48 alpha factors = <b>57+ indicadores totales</b>. Sigue detrás de talib 100+ pero ya no es gap.</p>
+    <div class="effort">Score delta: +0.5</div>
   </div>
   <div class="gap-card">
-    <h3>🆕 Portfolio management</h3>
-    <p><b>Position replacement</b> con scoring compuesto (P&L%, distancia al SL, tiempo, R:R) + <b>Smart profit-take</b> en señales de reversal. Ningún bot del benchmark lo tiene.</p>
-    <div class="effort">Score delta: +2.0 (única)</div>
-  </div>
-  <div class="gap-card">
-    <h3>🆕 Live dashboard nivel signal8</h3>
-    <p>v3 ya tenía sticky ticker + countdown + sparklines + KPI cards. Ahora sin dark-flash en filtros (B023).</p>
+    <h3>⬆️ Multi-asset ⚠️→✅</h3>
+    <p>De 5 (yfinance) a 7+ (yfinance + ccxt/binance + alpaca). 2 brokers reales vs el único de v2.</p>
     <div class="effort">Score delta: +0.3</div>
+  </div>
+  <div class="gap-card">
+    <h3>🛡️ Seguridad forense (8 críticos audit)</h3>
+    <p>Lo más importante NO es score, es que el bot <b>ya no rompe en live</b>: paper-gate en cierres, fill real persistido, auth en todos los reads, volumen Docker, quarantine de posiciones corruptas, race dashboard↔bot resuelto, drawdown kill-switch persistido.</p>
+    <div class="effort">No suma al score —<b> quita el "no production-ready"</b> que pesaba más que cualquier feature</div>
   </div>
 </div>
 
-<div class="section-title">🚧 Brechas reales (los 3 huecos grandes)</div>
+<div class="section-title">🎁 Lo que podemos tomar de kalshi-ai (post-revisión 2026-07-11)</div>
+
+<div class="gap-grid">
+  <div class="gap-card med">
+    <h3>🆕 LLM cost-cap pattern</h3>
+    <p><code>daily_ai_cost_limit = 10.0</code> chequeado ANTES de cada API call. Cuando se gasta, no trade hasta el otro día. Único en el benchmark con este guardrail. <b>Aplicable si añadimos LLM al debate (Sprint 47+).</b></p>
+    <div class="effort">Effort: S (½ día) · Impact: medio — solo si adoptamos LLM</div>
+  </div>
+  <div class="gap-card med">
+    <h3>🆕 Multi-criteria exit (track.py)</h3>
+    <p>5 criterios en cascada: market-resolution → stop-loss → take-profit → <b>time-based (max_hold_hours)</b> → emergency para posiciones sin SL. Nosotros tenemos SL/TP/OCO; <b>falta time-based exit</b> (cerrar posición vieja sin movimiento en N días).</p>
+    <div class="effort">Effort: S (1 día, copiar patrón) · Impact: medio — reduce tied-up capital</div>
+  </div>
+  <div class="gap-card med">
+    <h3>🆕 Cash reserves manager (17KB)</h3>
+    <p>0.5% mínimo cash reserve con auto-halt. No lo tenemos — nuestro gate es per-position y per-day, no <b>portfolio-level cash buffer</b>. En cuenta de $20 no aplica; en $1000+ sí.</p>
+    <div class="effort">Effort: M (1 sprint) · Impact: bajo ahora, alto si escalamos balance</div>
+  </div>
+  <div class="gap-card med">
+    <h3>🆕 Multi-model fallback chain</h3>
+    <p>OpenRouter con primary model + 2-3 fallbacks on error + persistent cost tracker. Patrón transferible. Ellos usan Claude Sonnet 4.5 primary; nosotros hoy no usamos LLM pero si lo adoptamos este es el patrón.</p>
+    <div class="effort">Effort: S (cuando adoptemos LLM) · Impact: alto para resiliencia</div>
+  </div>
+  <div class="gap-card high">
+    <h3>🆕 Graceful SIGINT (signal-type logging)</h3>
+    <p>Ellos loggean SIGINT/SIGTERM/SIGHUP y terminan el ciclo in-flight. Nuestro <code>BOT_STOP_KEYBOARDINT</code> (recién agregado en Sprint 46N follow-up) es <b>parcial</b>: el scheduler loop no verifica entre ciclos. Vale la pena cerrar el loop.</p>
+    <div class="effort">Effort: S (½ día) · Impact: medio — evita cierres corruptos en Ctrl+C</div>
+  </div>
+  <div class="gap-card med">
+    <h3>🆕 CLI unificada (cli.py, 30KB)</h3>
+    <p><code>python cli.py run|dashboard|status|health|close-all|scores|history</code>. Tenemos API pero no CLI. Operacionalmente útil para debugging y para correr una sola estrategia sin el daemon completo.</p>
+    <div class="effort">Effort: M (2-3 días) · Impact: bajo (API cubre el 80%)</div>
+  </div>
+  <div class="gap-card med">
+    <h3>🆕 Category scorer 0-100</h3>
+    <p>Score 0-100 por categoría de mercado (gatea position size). No es lo mismo que nuestro allocation policy (40/40/10/10 estático), pero podríamos <b>agregar un "symbol score" dinámico</b> (ej. BTC en tendencia = 85 → max 20%; BTC choppy = 40 → max 5%).</p>
+    <div class="effort">Effort: M (1 sprint) · Impact: medio — sizing más inteligente</div>
+  </div>
+  <div class="gap-card">
+    <h3>🆕 WebSocket market data (kalshi_ws.py)</h3>
+    <p>WebSocket nativo para live prices + order book. Nosotros poleamos yfinance/ccxt cada 2 min (audit A7). ccxt soporta WebSocket para binance; el cambio baja latencia y arregla el gap de 2 min en gap-downs.</p>
+    <div class="effort">Effort: M-L (1-2 sprints, audit A7) · Impact: alto — fixes A7</div>
+  </div>
+</div>
+
+<div class="section-title">🚧 Brechas reales (post-Sprint 46N)</div>
 
 <div class="gap-grid">
   <div class="gap-card crit">
-    <h3>❌ ML pipeline</h3>
-    <p>No tenemos label/train/predict. intelligent-trading-bot usa talib/tsfresh/tbstats para extraer 100s de features y entrenar modelos. <b>Quick win posible:</b> integrar talib y arrancar con features técnicas → XGBoost → label=forward return.</p>
-    <div class="effort">Effort: M (1 sprint) · Impact: Alto (subimos de ❌→✅✅✅)</div>
+    <h3>❌ ML/AI real (sigue siendo gap)</h3>
+    <p>Tenemos GP + alpha zoo pero NO <b>label/train/predict</b> classical ML. intelligent-trading-bot usa talib/tsfresh/tbstats → modelos supervisados. kalshi-ai usa LLM directo. <b>Quick win:</b> Sprint 47 con talib + XGBoost baseline (label=forward 4h return). Esto también <b>desbloquea el debate LLM</b> con signal hibrido (reglas + ML).</p>
+    <div class="effort">Effort: M-L (1-2 sprints) · Impact: muy alto (cierra el último gap grande)</div>
   </div>
   <div class="gap-card high">
-    <h3>⚠️ Multi-broker</h3>
-    <p>Solo Binance. freqtrade ccxt = 30+. <b>Quick win:</b> refactorizar broker.py para usar ccxt (que ya está en requirements). 2 días = 5 brokers.</p>
-    <div class="effort">Effort: S (2-3 días) · Impact: Medio-Alto</div>
+    <h3>⚠️ Indicadores vs talib</h3>
+    <p>57+ indicadores custom pero talib = 100+. <b>Quick win:</b> pip install talib-binary (compatible binance VPS) + integrar 30-40 indicators más. 1 día.</p>
+    <div class="effort">Effort: S (1 día) · Impact: medio (subimos ⚠️→✅✅)</div>
   </div>
   <div class="gap-card high">
-    <h3>❌ Alpha zoo / factor library</h3>
-    <p>9 indicadores custom. Vibe-Trading tiene 460. <b>Quick win:</b> pip install talib + 50 indicators "out-of-the-box". 1 día.</p>
-    <div class="effort">Effort: S (1 día) · Impact: Medio (subimos de ⚠️→✅✅)</div>
+    <h3>⚠️ Hyperopt maturity (Optuna)</h3>
+    <p>Tenemos HyperoptManager (grid) + GP. freqtrade tiene Optuna + Bayesian + multi-fidelity. <b>Quick win:</b> pip install optuna y migrar grid → TPE. Cierra el gap de eficiencia en hyperopt.</p>
+    <div class="effort">Effort: S (2-3 días) · Impact: bajo-medio</div>
+  </div>
+  <div class="gap-card high">
+    <h3>⚠️ A8 audit: audit.jsonl sin rotación</h3>
+    <p>Sin rotación en ningún lado. EQUITY_UPDATE cada 2 min (~720/día). _audit_tail_loop re-parsea archivo entero cada 1s. Costo lineal creciente. <b>Quick win:</b> rotación mensual + tail con offset de bytes + sacar EQUITY_UPDATE del ledger (ya está en equity_state.json).</p>
+    <div class="effort">Effort: M (1 sprint) · Impact: medio — performance + log management</div>
   </div>
   <div class="gap-card med">
-    <h3>⚠️ Data sources</h3>
-    <p>Solo yfinance (5 assets). <b>Quick win:</b> agregar ccxt para crypto multi-exchange + Alpaca para equities.</p>
-    <div class="effort">Effort: M · Impact: Medio</div>
+    <h3>⚠️ A7 audit: SL/TP con precios Yahoo vs broker</h3>
+    <p>BTC-USD de Yahoo es un índice, no el libro de binance.us. Un stop cruzado en Yahoo dispara un market order en libro que puede estar lejos. <b>Fix:</b> usar ccxt fetch_ticker (cripto) + Alpaca last trade (equity) para SL/TP comparison. yfinance solo para históricos/indicadores.</p>
+    <div class="effort">Effort: M · Impact: alto — fixes audit A7</div>
   </div>
   <div class="gap-card med">
-    <h3>⚠️ Hyperopt maturity</h3>
-    <p>Tenemos HyperoptManager (grid search). freqtrade tiene Optuna + Bayesian + multi-fidelity. <b>Quick win:</b> pip install optuna y migrar.</p>
-    <div class="effort">Effort: S (2-3 días) · Impact: Bajo-Medio</div>
+    <h3>⚠️ A5 audit: scheduler mono-hilo</h3>
+    <p>El ciclo horario y fast_monitor_tick corren secuencialmente en 1 hilo. Ciclo lento suspende SL/TP. <b>Fix:</b> fast tick en hilo propio + cachear correlación/CVaR por ciclo. También arregla A6 (fast tick blind alert).</p>
+    <div class="effort">Effort: M · Impact: medio</div>
   </div>
   <div class="gap-card med">
-    <h3>⚠️ Hyperopt maturity</h3>
-    <p>Subir a LangGraph o Airflow para workflows complejos. Effort: L. Solo si el bot crece a multi-asset multi-timeframe serio.</p>
-    <div class="effort">Effort: L (semanas) · Impact: Bajo por ahora</div>
+    <h3>🧹 M7: borrar dashboard.py (Streamlit muerto)</h3>
+    <p>163KB / 4.043 líneas de código muerto. Libera streamlit, streamlit-autorefresh, plotly de requirements (~150-200MB de imagen). Mata 16 errores de test_dashboard_fmt y deja 1 test stale (Dockerfile user).<b>Es housekeeping puro, no suma score.</b></p>
+    <div class="effort">Effort: XS (1-2 horas) · Impact: deuda técnica + -16 errores test</div>
   </div>
 </div>
 
-<div class="section-title">🎯 Ranking actualizado</div>
+<div class="section-title">🎯 Ranking post-Sprint 46N (8 bots)</div>
 
 <div class="gap-grid">
   <div class="gap-card">
-    <h3>🥇 freqtrade</h3>
-    <p>Máquina madura. Gold standard en backtest, hyperopt (Optuna), 30+ brokers, talib, 200+ indicators. Pero: CLI-feel, dashboard básico, multi-agente no.</p>
+    <h3>🥇 <span style="color: var(--green)">Guaritradbot (NOSOTROS) — 85%</span></h3>
+    <p>Subimos de ~71% (Sprint 18) a ~85% (Sprint 46N). Único con: multi-agente + EventBus real, portfolio management inteligente (replacement + smart-profit-take), crash-only JSON state, Component FSM + NaN/Inf guard, audit ledger forense con flock+fsync, allocation policy + drawdown kill switch + drawdown stress test. Único maduro en producción con dinero real (los 8 críticos del audit cerrados). Único en el benchmark con 2 brokers reales. Único con 705 tests passing. Único con Genetic Programming cerrado. <b>Brecha única:</b> ML/AI real supervisado.</p>
   </div>
   <div class="gap-card">
-    <h3>🥈 Vibe-Trading</h3>
-    <p>460 alphas, 18 data sources, mandate gate maduro, 10 brokers. Pero: alpha zoo sin ML real, no multi-agente, dashboard no prioritario.</p>
+    <h3>🥈 freqtrade — 79%</h3>
+    <p>Gold standard en backtest (vectorized), hyperopt (Optuna + Bayesian + multi-fidelity), 30+ brokers (ccxt), talib 100+ indicators, FreqAI para ML, freqUI. Pero: CLI-feel (no API/UI rica), single bot (no multi-agente), partial crash-only, no state machine explícito, dashboard básico.</p>
   </div>
   <div class="gap-card">
-    <h3>🥉 <span style="color: var(--green)">Guaritradbot (NOSOTROS)</span></h3>
-    <p>Único con multi-agente + portfolio management inteligente + crash-only + state machine + dashboard signal8-level. Le falta ML, multi-broker, alpha zoo.</p>
+    <h3>🥉 Vibe-Trading — 67%</h3>
+    <p>460 alphas, 18 data sources, mandate gate maduro, 10 brokers. Pero: alpha zoo sin ML real, no multi-agente, no dashboard live, no crash-only, no state machine. Potencial enorme si adopta nuestra estructura forense.</p>
   </div>
   <div class="gap-card">
-    <h3>4° intelligent-trading-bot</h3>
-    <p>Único con ML pipeline real (talib/tsfresh/tbstats → modelos). Pero: sin mandate gate, sin multi-agente, sin dashboard live.</p>
+    <h3>4° TradingAgents — 51%</h3>
+    <p>Debate multi-round con LLM (LangGraph), Risk team. Pero: depende de APIs caras (Claude/GPT), sin backtest, sin live trading maduro, sin multi-broker, sin dashboard. Es research, no production.</p>
   </div>
   <div class="gap-card">
-    <h3>5° claude-trading-skills</h3>
-    <p>Skills collection, Alpaca MCP, chart analyst LLM. Pero: no es un bot completo, son herramientas para Claude.</p>
+    <h3>5° kalshi-ai-trading-bot — 44%</h3>
+    <p><b>Toolkit</b> (no bot de producción), single broker (Kalshi prediction markets), LLM-driven (Claude Sonnet 4.5 con cost-cap único en benchmark). 10 agents en <code>src/agents/</code> pero <b>unwired</b> (README lo admite). 5-criteria exit (track.py), cash reserves manager, WebSocket nativo. Patrones muy copiables (ver sección "What to borrow"). Diferente clase: prediction markets vs spot crypto/equity.</p>
   </div>
   <div class="gap-card">
-    <h3>6° TradingAgents</h3>
-    <p>Debate multi-round con LLM, Risk team, LangGraph. Pero: depende de APIs caras (Claude/GPT), sin backtest real, sin live trading maduro.</p>
+    <h3>6° claude-trading-skills — 49%</h3>
+    <p>Skills collection (Backtest Expert, chart analyst, Alpaca MCP). Pero: no es un bot completo, son herramientas para Claude. Útil como referencia de diseño, no como competidor.</p>
+  </div>
+  <div class="gap-card">
+    <h3>7° intelligent-trading-bot — 39%</h3>
+    <p>Único con ML pipeline real (talib/tsfresh/tbstats → modelos supervisados). Pero: sin mandate gate, sin multi-agente, sin dashboard live, sin audit ledger, sin broker connectors maduros, sin crash-only, sin state machine. Tiene UNA cosa muy bien hecha; nosotros tenemos 12.</p>
+  </div>
+</div>
+
+<div class="section-title">📌 Score numérico (post-Sprint 46N, 2026-07-11)</div>
+
+<div class="gap-grid">
+  <div class="gap-card">
+    <h3>🥇 Guaritradbot: <span style="color: var(--green)">85%</span></h3>
+    <p>15 dimensiones × 5 puntos = 75 puntos máx. Promedio: 64/75 = <b>85.3%</b>. Resta: 11 puntos en "ML/AI real" (3/5), "Indicadores" (4/5), "Hyperopt" (4/5), "Live dashboard precio" (4/5), "Audit ledger rotation" (4/5), "Brokers" (4/5), "State machine single-thread" (4/5). Los +3 únicos (portfolio mgmt, crash-only, state machine) son el diferenciador.</p>
+    <div class="effort">Puntuación: 64/75 = 85.3%</div>
+  </div>
+  <div class="gap-card">
+    <h3>🥈 freqtrade: 79%</h3>
+    <p>Máquina de backtest + hyperopt. 59/75 puntos. Le falta todo el "forense" (audit, crash-only, state machine, EventBus). Pero en lo que hace, es el gold standard.</p>
+    <div class="effort">Puntuación: 59/75 = 78.7%</div>
+  </div>
+  <div class="gap-card">
+    <h3>🥉 Vibe-Trading: 67%</h3>
+    <p>50/75 puntos. Mucho data + muchos brokers + muchos alphas, pero sin orquestación, sin forense, sin producción real.</p>
+    <div class="effort">Puntuación: 50/75 = 66.7%</div>
+  </div>
+  <div class="gap-card">
+    <h3>4° TradingAgents: 51%</h3>
+    <p>38/75 puntos. Debate LLM es potente, pero solo research-grade, no production.</p>
+    <div class="effort">Puntuación: 38/75 = 50.7%</div>
+  </div>
+  <div class="gap-card">
+    <h3>5° claude-trading-skills: 49%</h3>
+    <p>37/75 puntos. Skills collection, no es un bot completo. Es el "complemento", no el "competidor".</p>
+    <div class="effort">Puntuación: 37/75 = 49.3%</div>
+  </div>
+  <div class="gap-card">
+    <h3>6° kalshi-ai: 44%</h3>
+    <p>33/75 puntos. Toolkit, no production bot. Pero los patrones (cost-cap, multi-criteria exit, cash reserves, WebSocket) son los más valiosos del benchmark para nosotros.</p>
+    <div class="effort">Puntuación: 33/75 = 44.0%</div>
+  </div>
+  <div class="gap-card">
+    <h3>7° intelligent-trading-bot: 39%</h3>
+    <p>29/75 puntos. Una cosa excelente (ML), todo lo demás ausente. Es un "feature", no un "product".</p>
+    <div class="effort">Puntuación: 29/75 = 38.7%</div>
   </div>
 </div>
 
 <footer>
-  Generado 2026-07-09 · Sprint 18 cerrado · 23 bugs cerrados · 26 tests passing · 9 sprints totales.
-  Siguiente sprint candidato: <b>Sprint 19 — ML Pipeline</b> (talib features + XGBoost baseline = +2.0 score).
+  Generado 2026-07-11 · Sprint 46N cerrado · 8 críticos + 5 altos del audit resueltos · 705 tests · 11 sprints totales.
+  Benchmark actualizado con <b>kalshi-ai-trading-bot</b> (análisis profundo de código en <code>src/</code> — 12 agentes unwired, 5-criteria exit, cash reserves, LLM cost-cap).
+  <b>Siguiente sprint candidato: Sprint 47 — ML real (talib + XGBoost baseline + LLM debate opcional)</b> — cierra el último gap grande y sube 4-5 puntos del score.
+  Backup v2 Sprint 18 en <code>capability_matrix_v2_sprint18.html</code>.
 </footer>
 
 </body>

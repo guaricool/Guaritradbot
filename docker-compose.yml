@@ -63,7 +63,16 @@ services:
           cpus: '0.25'
           memory: 256M
     healthcheck:
-      test: ["CMD", "pgrep", "-f", "python -u main.py"]
+      # Same rationale as the healthcheck in Dockerfile.bot: hit the
+      # actual /api/health endpoint (public per Sprint 46N audit C5)
+      # instead of relying on `pgrep`, which is not installed in the
+      # python:3.11-slim base image. The bot's main.py starts the
+      # FastAPI/uvicorn server on :8080 from a background thread, so
+      # by the time start_period=120s elapses, the endpoint is up.
+      # This docker-compose entry OVERRIDES the one in Dockerfile.bot
+      # (docker-compose has the last word on healthcheck per
+      # docs.docker.com/compose/compose-file/05-services/#healthcheck).
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8080/api/health', timeout=2).read()"]
       interval: 60s
       timeout: 10s
       retries: 3
