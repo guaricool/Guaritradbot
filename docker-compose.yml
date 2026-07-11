@@ -25,8 +25,29 @@ services:
     volumes:
       # Sprint 8 fix: NO montar /app entero (eso congela source code + config.yaml
       # en el volume y bloquea updates del repo). Solo persistir audit/ (runtime state).
-      # data_store/*.csv vienen de la imagen (tracked in git), runtime state se regenera.
+      #
+      # Sprint 46N (audit C6) fix: data_store/ was NOT a volume, only
+      # audit/ was. The old comment here claimed "runtime state se
+      # regenera", but that's wrong for two files that live in this
+      # same directory: data_store/positions.json (every OPEN
+      # position — the bot's only record of what it currently holds)
+      # and data_store/equity_state.json (the drawdown kill switch's
+      # peak-equity tracker, see src/safety/equity_tracker.py). Both
+      # are explicitly .gitignore'd (data_store/*.json) specifically
+      # BECAUSE they're runtime state, not image content — which is
+      # exactly why they need a named volume: without one, every
+      # redeploy (new image build + container recreate) started the
+      # bot with a truly empty data_store/, silently forgetting every
+      # open position and resetting the drawdown peak, with no error
+      # of any kind. Only the *.csv historical-price caches are
+      # actually meant to come from the image (tracked in git, used
+      # for reproducible backtests) — those still get baked into the
+      # image layer AND initially copied into this volume on first
+      # creation (Docker's default behavior: a brand-new named volume
+      # is seeded from whatever already exists at the mount path in
+      # the image), so this change doesn't lose that reproducibility.
       - bot_audit:/app/audit
+      - bot_data_store:/app/data_store
     # Sprint 43 M8 fix: cap CPU + memory so a runaway loop can't
     # starve the host. The audit flagged "ausencia de límites de
     # recursos". 1 CPU + 1GB is enough for the bot (it's mostly
@@ -92,3 +113,7 @@ services:
 
 volumes:
   bot_audit:
+  # Sprint 46N (audit C6): persists data_store/ (open positions +
+  # equity/drawdown tracker state) across redeploys — see the
+  # comment on guaritradbot's volumes: above for the full rationale.
+  bot_data_store:
