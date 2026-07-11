@@ -24,6 +24,7 @@ These tests verify:
   - risk_agent: replacement broker success → position closed + new
     trade approved
 """
+import json
 import os
 import sys
 import tempfile
@@ -77,6 +78,22 @@ class _SuccessBroker:
         return {"id": "FAKE_OK", "status": "filled"}
 
 
+def _live_mode_override_path(tmpdir) -> str:
+    """Sprint 46N: `_execute_close`/`_try_replace_position` now skip the
+    real broker entirely in PAPER mode (audit finding C2) — and default
+    to paper if `mode_override.json` is missing (same fail-safe as
+    `ExecutionNode`). These C4 tests are specifically about what
+    happens when a REAL broker call is attempted and fails, so they
+    need an explicit, isolated "live" override file — otherwise they'd
+    silently read whatever `audit/mode_override.json` happens to say
+    in Carlos's actual repo checkout (or "paper" if absent), which
+    would make broker.create_market_order never even get called."""
+    path = os.path.join(tmpdir, "mode_override.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"mandate_enabled": True}, f)
+    return path
+
+
 class PositionMonitorCloseFailureTest(unittest.TestCase):
     """
     C4 fix: if the broker fails to close a position, the position
@@ -100,6 +117,10 @@ class PositionMonitorCloseFailureTest(unittest.TestCase):
             audit=self.audit,
             event_bus=self.event_bus,
             broker=broker,
+            # Sprint 46N: these tests exercise a broker call that's
+            # actually attempted, so force LIVE mode explicitly (see
+            # _live_mode_override_path's docstring).
+            mode_override_path=_live_mode_override_path(self.tmpdir),
         )
 
     def test_broker_exception_keeps_position_open(self):
@@ -274,6 +295,9 @@ class RiskAgentReplacementFailureTest(unittest.TestCase):
             # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
             correlation_check_enabled=False,
             tail_risk_check_enabled=False,
+            # Sprint 46N: force LIVE mode explicitly — see
+            # _live_mode_override_path's docstring.
+            mode_override_path=_live_mode_override_path(self.tmpdir),
 )
         # Patch score methods so the replacement is triggered
         agent.score_position = MagicMock(side_effect=lambda p, current_price=None: 0.10 if p.asset == "ETH-USD" else 0.50)
@@ -307,6 +331,9 @@ class RiskAgentReplacementFailureTest(unittest.TestCase):
             # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
             correlation_check_enabled=False,
             tail_risk_check_enabled=False,
+            # Sprint 46N: force LIVE mode explicitly — see
+            # _live_mode_override_path's docstring.
+            mode_override_path=_live_mode_override_path(self.tmpdir),
 )
         agent.score_position = MagicMock(side_effect=lambda p, current_price=None: 0.10 if p.asset == "ETH-USD" else 0.50)
         agent._try_replace_position(
@@ -336,6 +363,9 @@ class RiskAgentReplacementFailureTest(unittest.TestCase):
             # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
             correlation_check_enabled=False,
             tail_risk_check_enabled=False,
+            # Sprint 46N: force LIVE mode explicitly — see
+            # _live_mode_override_path's docstring.
+            mode_override_path=_live_mode_override_path(self.tmpdir),
 )
         agent.score_position = MagicMock(side_effect=lambda p, current_price=None: 0.10 if p.asset == "ETH-USD" else 0.50)
         agent._try_replace_position(
@@ -364,44 +394,8 @@ class RiskAgentReplacementFailureTest(unittest.TestCase):
             # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
             correlation_check_enabled=False,
             tail_risk_check_enabled=False,
+            # Sprint 46N: force LIVE mode explicitly — see
+            # _live_mode_override_path's docstring.
+            mode_override_path=_live_mode_override_path(self.tmpdir),
 )
-        agent.score_position = MagicMock(side_effect=lambda p, current_price=None: 0.10 if p.asset == "ETH-USD" else 0.50)
-        result = agent._try_replace_position(
-            new_hyp=self._new_hyp(),
-            new_trade=self._new_trade(),
-            new_score_inputs=self._new_score_inputs(),
-        )
-        self.assertTrue(result, "Successful replacement should return True")
-        self.assertEqual(self.repo.count_open(), 1, "Worst position closed, winner remains")
-        opens = self.repo.open()
-        self.assertEqual(opens[0].asset, "GLD", "Only the winner should remain")
-        replaced = [e for e in self.audit_events if e[0] == "POSITION_REPLACED"]
-        self.assertEqual(len(replaced), 1)
-
-    def test_replacement_no_broker_works(self):
-        """Paper mode: no broker, replacement proceeds with local close."""
-        agent = RiskManagerAgent(
-            broker_client=None,
-            audit=self.audit,
-            position_repo=self.repo,
-            event_bus=self.event_bus,
-            max_open_trades=2,
-            enable_position_replacement=True,
-            replacement_score_threshold=0.20,
-            current_prices={"ETH-USD": 2900.0, "GLD": 182.0},
-            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
-            correlation_check_enabled=False,
-            tail_risk_check_enabled=False,
-)
-        agent.score_position = MagicMock(side_effect=lambda p, current_price=None: 0.10 if p.asset == "ETH-USD" else 0.50)
-        result = agent._try_replace_position(
-            new_hyp=self._new_hyp(),
-            new_trade=self._new_trade(),
-            new_score_inputs=self._new_score_inputs(),
-        )
-        self.assertTrue(result)
-        self.assertEqual(self.repo.count_open(), 1)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        

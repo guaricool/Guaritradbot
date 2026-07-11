@@ -722,6 +722,11 @@ def main():
         broker=broker_client,
         min_profit_to_protect=min_profit_to_protect,
         fee_pct_for_asset=_fee_pct_for_asset,
+        # Sprint 46N (audit C1/C2): route closes by asset class + never
+        # send a real order in paper mode.
+        alpaca_broker=alpaca_broker,
+        brokers_config=brokers_config,
+        mode_override_path=override_path,
     )
 
     strategy_params = None
@@ -770,6 +775,11 @@ def main():
             max_cvar_95_pct=max_cvar_95_pct,
             max_stress_drawdown_pct=max_stress_drawdown_pct,
             allow_crypto_short=allow_crypto_short,
+            # Sprint 46N (audit C1/C2): route replacement-closes by
+            # asset class + never send a real order in paper mode.
+            alpaca_broker=alpaca_broker,
+            brokers_config=brokers_config,
+            mode_override_path=override_path,
         ),
         "DebateAgent": DebateAgent(position_repo=position_repo, audit=audit),
         "ExecutionAgent": ExecutionAgent(event_bus=event_bus),

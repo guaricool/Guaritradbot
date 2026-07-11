@@ -34,6 +34,12 @@ dispara cierre temprano.
 """
 from typing import Dict, Optional, List, Any
 from src.data_store.positions import PositionRepository, Position
+from src.execution.broker_routing import (
+    build_asset_to_class_map,
+    is_mandate_enabled,
+    resolve_broker_for_close,
+    send_close_order,
+)
 
 
 class PositionMonitor:
@@ -45,13 +51,22 @@ class PositionMonitor:
         broker=None,
         min_profit_to_protect: float = 0.0,
         fee_pct_for_asset=None,
+        # Sprint 46N (audit C1/C2): route closes by asset class instead
+        # of always hitting `broker` (the crypto client), and never send
+        # a real order while in paper mode. See broker_routing.py.
+        alpaca_broker=None,
+        brokers_config: Optional[dict] = None,
+        mode_override_path: str = "audit/mode_override.json",
     ):
         """
         Args:
             repo: position repository
             audit: optional audit ledger
             event_bus: optional event bus
-            broker: optional broker client
+            broker: optional CRYPTO broker client (ccxt/binance.us). Kept
+                as the name `broker` for backward compatibility — this
+                is ONLY used now for crypto-class assets; see
+                `alpaca_broker` below for equities.
             min_profit_to_protect: minimum unrealized PnL (USD) required to
                 trigger an early close on reversal. 0 = always protect if in
                 profit. Default 0 (any profit triggers if reversal signal).
@@ -66,6 +81,23 @@ class PositionMonitor:
                 = always 0.0, i.e. every position closed through this
                 monitor keeps the exact original gross-only P&L unless
                 the caller explicitly opts in.
+            alpaca_broker: Sprint 46N — optional Alpaca broker client,
+                used for closing EQUITY-class positions. Before this,
+                every close (regardless of asset) was sent to `broker`
+                (the ccxt client), so equity closes silently failed
+                forever (CLOSE_FAILED loop) — audit finding C1.
+            brokers_config: Sprint 46N — config.yaml's `brokers:`
+                section, used to build an asset→class map so we know
+                which of `broker`/`alpaca_broker` to call for a given
+                position's asset. None/empty ⇒ every asset resolves to
+                "unknown" ⇒ closes fall back to a local/simulated close
+                (same as if no broker were configured at all) rather
+                than guessing.
+            mode_override_path: Sprint 46N — path to `mode_override.json`.
+                In PAPER mode, closes are now ALWAYS simulated locally
+                (repo mutation only, no real order) — audit finding C2.
+                Previously there was no paper/live check at all here,
+                unlike the entry side (`ExecutionNode`).
         """
         self.repo = repo
         self.audit = audit
@@ -73,6 +105,10 @@ class PositionMonitor:
         self.broker = broker
         self.min_profit_to_protect = min_profit_to_protect
         self.fee_pct_for_asset = fee_pct_for_asset
+        self.alpaca_broker = alpaca_broker
+        self.brokers_config = brokers_config or {}
+        self.mode_override_path = mode_override_path
+        self._asset_to_class = build_asset_to_class_map(self.brokers_config)
 
     def _fee_pct(self, asset: str) -> float:
         if self.fee_pct_for_asset is None:
@@ -284,9 +320,10 @@ class PositionMonitor:
         was still live on the exchange (or never opened in the first
         place after a failed close attempt).
 
-        For paper mode (no broker), the existing behavior is preserved
-        (close_position is called directly) because there is no real
-        exchange to talk to.
+        Sprint 46N: "no real broker call" now happens for TWO reasons —
+        no broker resolved for this asset's class at all (as before),
+        OR we're in paper mode (new) — either way we fall through to
+        `_finalize_close` and simulate the close locally.
 
         Sprint 46I: this is also the path `check_with_signals`
         (SMART_PROFIT_TAKE) uses for ANY open position, including ones
@@ -316,12 +353,21 @@ class PositionMonitor:
                     f"ejecutado — continuando con el cierre)"
                 )
 
-        # If we have a real broker, try to close on the exchange first.
-        if self.broker is not None:
+        # Sprint 46N (audit C1/C2): resolve the broker for THIS asset's
+        # class (crypto → self.broker, equity → self.alpaca_broker,
+        # unknown → None) instead of always calling self.broker, and
+        # never place a real order while in paper mode — both fall
+        # through to the same "close locally, no real order" path that
+        # already existed for "no broker configured at all".
+        close_broker, asset_class = resolve_broker_for_close(
+            pos.asset, self._asset_to_class, self.broker, self.alpaca_broker
+        )
+        is_paper = not is_mandate_enabled(self.mode_override_path)
+        if close_broker is not None and not is_paper:
             try:
                 side = "sell" if pos.direction == "long" else "buy"
-                symbol = pos.asset.replace("-", "/") if "-" in pos.asset else pos.asset
-                broker_order = self.broker.create_market_order(symbol, side, pos.qty)
+                symbol = pos.asset.replace("-", "/") if "-" in pos.asset and asset_class == "crypto" else pos.asset
+                broker_order = send_close_order(close_broker, asset_class, symbol, side, pos.qty)
                 # Some broker adapters return a dict with a status;
                 # if it explicitly says "failed", treat as failure.
                 if isinstance(broker_order, dict) and broker_order.get("status") == "failed":

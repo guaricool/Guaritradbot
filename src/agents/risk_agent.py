@@ -22,6 +22,12 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from src.data_store.positions import Position, PositionRepository
 from src.data.asset_class import get_asset_class, AssetClass
+from src.execution.broker_routing import (
+    build_asset_to_class_map,
+    is_mandate_enabled,
+    resolve_broker_for_close,
+    send_close_order,
+)
 from src.data.asset_allocation import (
     AllocationPolicy,
     DEFAULT_POLICY,
@@ -90,6 +96,13 @@ class RiskManagerAgent:
         # bot open a simultaneous BTC-USD long + short every cycle,
         # committing the whole account and producing unclosable pairs.
         block_conflicting_asset_positions: bool = True,
+        # Sprint 46N (audit C1/C2): route position-REPLACEMENT closes by
+        # asset class (crypto → broker_client, equity → alpaca_broker)
+        # instead of always calling broker_client, and never place a
+        # real order while in paper mode. See broker_routing.py.
+        alpaca_broker=None,
+        brokers_config: Optional[dict] = None,
+        mode_override_path: str = "audit/mode_override.json",
     ):
         self.broker = broker_client
         self.risk_per_trade_pct = risk_per_trade_pct
@@ -128,6 +141,11 @@ class RiskManagerAgent:
         # Sprint 46M.
         self.allow_crypto_short = allow_crypto_short
         self.block_conflicting_asset_positions = block_conflicting_asset_positions
+        # Sprint 46N.
+        self.alpaca_broker = alpaca_broker
+        self.brokers_config = brokers_config or {}
+        self.mode_override_path = mode_override_path
+        self._asset_to_class = build_asset_to_class_map(self.brokers_config)
 
     def get_account_balance(self) -> tuple:
         if self.broker is None:
@@ -1036,11 +1054,25 @@ class RiskManagerAgent:
         # first and the broker failure was a silent no-op — the repo
         # thought the position was closed and stopped watching it,
         # while the exchange had no idea we wanted to close.
-        if self.broker is not None:
+        # Sprint 46N (audit C1/C2): resolve the broker for THIS asset's
+        # class instead of always calling self.broker (the crypto
+        # client) — equity replacement-closes were silently failing
+        # forever before this — and skip the real order entirely in
+        # paper mode (previously there was no paper/live check here at
+        # all, unlike the entry side).
+        close_broker, asset_class = resolve_broker_for_close(
+            worst_pos.asset, self._asset_to_class, self.broker, self.alpaca_broker
+        )
+        is_paper = not is_mandate_enabled(self.mode_override_path)
+        if close_broker is not None and not is_paper:
             try:
                 side = "sell" if worst_pos.direction == "long" else "buy"
-                symbol = worst_pos.asset.replace("-", "/") if "-" in worst_pos.asset else worst_pos.asset
-                broker_order = self.broker.create_market_order(symbol, side, worst_pos.qty)
+                symbol = (
+                    worst_pos.asset.replace("-", "/")
+                    if "-" in worst_pos.asset and asset_class == "crypto"
+                    else worst_pos.asset
+                )
+                broker_order = send_close_order(close_broker, asset_class, symbol, side, worst_pos.qty)
                 if isinstance(broker_order, dict) and broker_order.get("status") == "failed":
                     raise RuntimeError(
                         f"broker_rejected:{broker_order.get('error', 'unknown')}"
