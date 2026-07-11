@@ -2,10 +2,16 @@ version: '3.8'
 
 services:
   # Servicio 1: El cerebro del bot (orquestador)
-  # Sprint 46: added a public port mapping for 8080 so the Next.js
-  # dashboard (separate service, same compose) can reach the FastAPI
-  # HTTP/WebSocket layer from the browser. The bot already had
-  # audit/ as a volume; no other changes.
+  # Sprint 46: added a public port mapping so the Next.js dashboard
+  # (separate service, same compose) can reach the FastAPI HTTP/WebSocket
+  # layer from the browser. The bot already had audit/ as a volume;
+  # no other changes.
+  #
+  # Host port 8088 — port 8080 is held by Coolify's own Traefik
+  # proxy (coolify-proxy), so we map 8088 → 8080 to avoid the
+  # "port is already allocated" error at container start. The
+  # browser-facing URL is http://13.140.181.29:8088, which
+  # docker-proxy routes to the bot's internal 8080.
   guaritradbot:
     build:
       context: .
@@ -15,7 +21,7 @@ services:
     env_file:
       - .env
     ports:
-      - "8080:8080"
+      - "8088:8080"
     volumes:
       # Sprint 8 fix: NO montar /app entero (eso congela source code + config.yaml
       # en el volume y bloquea updates del repo). Solo persistir audit/ (runtime state).
@@ -63,7 +69,10 @@ services:
       - PORT=3000
       - HOSTNAME=0.0.0.0
     ports:
-      - "3000:3000"
+      # Host port 3050 — port 3000 is already in use on the host by
+      # the IUL project's next-server (left over from manual dev).
+      # Container still listens on 3000 internally.
+      - "3050:3000"
     depends_on:
       - guaritradbot
     deploy:
