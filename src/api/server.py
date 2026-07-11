@@ -9,7 +9,13 @@ reads it via `state.py` and exposes it as REST + WebSocket.
 Endpoints
 ---------
 Public (no auth):
-  GET  /api/health
+  GET  /api/health                (Docker/Coolify healthcheck; no
+                                    sensitive data, must work without
+                                    a token since the healthcheck
+                                    process can't log in)
+  POST /api/auth/login            (password -> token)
+
+Authenticated (Bearer token in Authorization header):
   GET  /api/state
   GET  /api/positions
   GET  /api/positions/{id}
@@ -18,17 +24,31 @@ Public (no auth):
   GET  /api/signals              (heuristic scan of audit; not perfect)
   GET  /api/stats                (alias of /api/state; for Streamlit compat)
   GET  /api/mode
+  GET  /api/config
+  GET  /api/risk-config
+  GET  /api/trading-pause
   GET  /api/allocation           (from src/data/asset_allocation.py)
   GET  /api/risk/stress
   GET  /api/risk/correlation
   GET  /api/risk/cvar
   GET  /api/equity               (equity curve, downsampled)
-
-Authenticated (Bearer token in Authorization header):
-  POST /api/auth/login           (password -> token)
   POST /api/mode                 (set LIVE/PAPER)
+  POST /api/config
+  POST /api/risk-config
+  POST /api/trading-pause
   POST /api/positions/{id}/close (manual close)
+  POST /api/positions/close-all
   POST /api/restart              (graceful bot restart)
+
+Sprint 46N (audit C5): every read endpoint used to be public — the
+entire trading state (open positions, entry/SL/TP prices, realized
+P&L, the audit ledger, risk/mandate config, even the LIVE/PAPER mode)
+was readable by anyone who found the API's URL on the open internet,
+no token required. Only the mutating endpoints were ever gated. Now
+every endpoint that exposes account or trading data requires the same
+Bearer token as the mutating endpoints; only /api/health (used by the
+container healthcheck, which never sends a token) and
+POST /api/auth/login (which HANDS OUT the token) remain public.
 
 WebSocket:
   WS   /ws/live?token=...        (audit event tail + position P&L updates)
@@ -354,7 +374,7 @@ def health() -> Dict[str, Any]:
 # ----------------------------------------------------------------------
 
 @app.get("/api/mode", response_model=ModeInfo)
-def get_mode() -> ModeInfo:
+def get_mode(_: None = Depends(auth.require_auth)) -> ModeInfo:
     return read_mode(
         config=APP_STATE.get("config") or {},
         audit_path=_audit_path(),
@@ -397,7 +417,7 @@ def login(req: LoginRequest) -> LoginResponse:
 # ----------------------------------------------------------------------
 
 @app.get("/api/state", response_model=StateSnapshot)
-def get_state() -> StateSnapshot:
+def get_state(_: None = Depends(auth.require_auth)) -> StateSnapshot:
     return build_state_snapshot(
         config=APP_STATE.get("config") or {},
         audit_path=_audit_path(),
@@ -426,7 +446,7 @@ def _trading_config_response(effective: Dict[str, Any], note: Optional[str] = No
 
 
 @app.get("/api/config")
-def get_trading_config() -> Dict[str, Any]:
+def get_trading_config(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     """Sprint 46C/D: the *effective* trading config — config.yaml's
     `trading:` section with any dashboard-saved override layered on
     top (see state.read_trading_config). Carlos asked for a way to
@@ -494,7 +514,7 @@ def _risk_config_response(effective: Dict[str, Any], note: Optional[str] = None)
 
 
 @app.get("/api/risk-config")
-def get_risk_config() -> Dict[str, Any]:
+def get_risk_config(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     """Sprint 46F: effective risk/mandate safety config — drawdown
     kill-switch threshold/cooldown, mandate's allowed-symbols list,
     and the portfolio-risk gate caps (concentration/correlation/
@@ -534,7 +554,7 @@ def post_risk_config(
 
 
 @app.get("/api/positions", response_model=List[PositionSummary])
-def get_positions() -> List[PositionSummary]:
+def get_positions(_: None = Depends(auth.require_auth)) -> List[PositionSummary]:
     snap = build_state_snapshot(
         config=APP_STATE.get("config") or {},
         audit_path=_audit_path(),
@@ -544,7 +564,7 @@ def get_positions() -> List[PositionSummary]:
 
 
 @app.get("/api/positions/{position_id}")
-def get_position(position_id: str) -> Dict[str, Any]:
+def get_position(position_id: str, _: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     snap = build_state_snapshot(
         config=APP_STATE.get("config") or {},
         audit_path=_audit_path(),
@@ -561,6 +581,7 @@ def get_position_candles(
     position_id: str,
     interval: str = Query("15m", pattern="^(1m|5m|15m|1h|1d)$"),
     window: int = Query(200, ge=10, le=1000),
+    _: None = Depends(auth.require_auth),
 ) -> Dict[str, Any]:
     """Historical candles for the position's asset, used by the chart.
 
@@ -652,7 +673,7 @@ class TradingPauseRequest(BaseModel):
 
 
 @app.get("/api/trading-pause")
-def get_trading_pause() -> Dict[str, Any]:
+def get_trading_pause(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     """Current Stop/Start state. `paused=true` means main.py's
     job_with_monitor() is skipping NEW entries every cycle — existing
     open positions keep their SL/TP protection regardless (see
@@ -682,6 +703,7 @@ def get_audit(
     limit: int = Query(100, ge=1, le=1000),
     after: Optional[float] = Query(None, description="Only events with ts >= after"),
     event_type: Optional[str] = Query(None),
+    _: None = Depends(auth.require_auth),
 ) -> List[AuditEvent]:
     return build_audit(
         limit=limit, after=after, event_type=event_type, audit_path=_audit_path(),
@@ -689,7 +711,10 @@ def get_audit(
 
 
 @app.get("/api/signals")
-def get_signals(limit: int = Query(20, ge=1, le=200)) -> List[Dict[str, Any]]:
+def get_signals(
+    limit: int = Query(20, ge=1, le=200),
+    _: None = Depends(auth.require_auth),
+) -> List[Dict[str, Any]]:
     """Recent HYPOTHESIS_GENERATED and TRADE_APPROVED events.
 
     Heuristic: the bot doesn't persist signals as a dedicated table,
@@ -704,7 +729,7 @@ def get_signals(limit: int = Query(20, ge=1, le=200)) -> List[Dict[str, Any]]:
 
 
 @app.get("/api/stats")
-def get_stats() -> Dict[str, Any]:
+def get_stats(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     """Compact summary suitable for the KPI cards at the top of the dashboard."""
     snap = build_state_snapshot(
         config=APP_STATE.get("config") or {},
@@ -728,7 +753,7 @@ def get_stats() -> Dict[str, Any]:
 # ----------------------------------------------------------------------
 
 @app.get("/api/allocation")
-def get_allocation() -> Dict[str, Any]:
+def get_allocation(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     """Current actual allocation weights vs policy targets.
 
     Uses Sprint 44B's AllocationPolicy from src/data/asset_allocation.py.
@@ -769,7 +794,7 @@ def get_allocation() -> Dict[str, Any]:
 
 
 @app.get("/api/risk/stress")
-def get_risk_stress() -> Dict[str, Any]:
+def get_risk_stress(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     """Apply the 3 historical crisis scenarios to the current portfolio."""
     from src.analysis.stress_test import (
         DEFAULT_SCENARIOS, stress_portfolio_all_scenarios, worst_case_drawdown,
@@ -788,7 +813,7 @@ def get_risk_stress() -> Dict[str, Any]:
 
 
 @app.get("/api/risk/correlation")
-def get_risk_correlation() -> Dict[str, Any]:
+def get_risk_correlation(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     """Asset correlation matrix of the open positions."""
     from src.analysis.asset_correlation import analyze_assets
     from src.data_store.positions import PositionRepository
@@ -801,7 +826,7 @@ def get_risk_correlation() -> Dict[str, Any]:
 
 
 @app.get("/api/risk/cvar")
-def get_risk_cvar() -> Dict[str, Any]:
+def get_risk_cvar(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     """Portfolio-level CVaR (Expected Shortfall) at 95% and 99%."""
     from src.analysis.tail_risk import compute_portfolio_tail_risk
     from src.data_store.positions import PositionRepository
@@ -820,7 +845,10 @@ def get_risk_cvar() -> Dict[str, Any]:
 # ----------------------------------------------------------------------
 
 @app.get("/api/equity")
-def get_equity(window_days: int = Query(30, ge=1, le=365)) -> Dict[str, Any]:
+def get_equity(
+    window_days: int = Query(30, ge=1, le=365),
+    _: None = Depends(auth.require_auth),
+) -> Dict[str, Any]:
     """Downsampled equity curve from the audit ledger + positions.
 
     For each day in the last `window_days`, compute total equity =

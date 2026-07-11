@@ -358,6 +358,14 @@ class ServerEndpointsTest(unittest.TestCase):
         self._ctx.__exit__(None, None, None)
 
     # --- Public endpoints ---
+    #
+    # Sprint 46N (audit C5): only /api/health remains public. Every
+    # other GET below used to be public too — the entire trading
+    # state was readable by anyone who found the API's URL, no token
+    # required. Each test now asserts BOTH halves of the fix: 401
+    # without a token, 200 with one (so a future regression that
+    # removes the auth dependency, OR one that breaks it so no valid
+    # token ever works, both get caught).
 
     def test_health(self):
         r = self.client.get("/api/health")
@@ -367,40 +375,80 @@ class ServerEndpointsTest(unittest.TestCase):
         self.assertIn("audit_path", body)
 
     def test_state_empty(self):
-        r = self.client.get("/api/state")
+        r = self.client.get("/api/state", headers=self.auth_headers)
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertEqual(body["open_count"], 0)
         self.assertEqual(body["mode"]["mode"], "paper")
 
+    def test_state_without_auth_rejected(self):
+        r = self.client.get("/api/state")
+        self.assertEqual(r.status_code, 401)
+
     def test_positions_empty(self):
-        r = self.client.get("/api/positions")
+        r = self.client.get("/api/positions", headers=self.auth_headers)
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json(), [])
 
+    def test_positions_without_auth_rejected(self):
+        r = self.client.get("/api/positions")
+        self.assertEqual(r.status_code, 401)
+
     def test_mode_get_default(self):
-        r = self.client.get("/api/mode")
+        r = self.client.get("/api/mode", headers=self.auth_headers)
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertEqual(body["mode"], "paper")
 
+    def test_mode_get_without_auth_rejected(self):
+        r = self.client.get("/api/mode")
+        self.assertEqual(r.status_code, 401)
+
     def test_audit_empty(self):
-        r = self.client.get("/api/audit")
+        r = self.client.get("/api/audit", headers=self.auth_headers)
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json(), [])
 
+    def test_audit_without_auth_rejected(self):
+        r = self.client.get("/api/audit")
+        self.assertEqual(r.status_code, 401)
+
     def test_stats_empty(self):
-        r = self.client.get("/api/stats")
+        r = self.client.get("/api/stats", headers=self.auth_headers)
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertEqual(body["open_count"], 0)
         self.assertEqual(body["total_exposure_usd"], 0.0)
 
+    def test_stats_without_auth_rejected(self):
+        r = self.client.get("/api/stats")
+        self.assertEqual(r.status_code, 401)
+
     def test_equity_empty(self):
-        r = self.client.get("/api/equity")
+        r = self.client.get("/api/equity", headers=self.auth_headers)
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertEqual(body["series"], [])
+
+    def test_equity_without_auth_rejected(self):
+        r = self.client.get("/api/equity")
+        self.assertEqual(r.status_code, 401)
+
+    def test_config_without_auth_rejected(self):
+        r = self.client.get("/api/config")
+        self.assertEqual(r.status_code, 401)
+
+    def test_risk_config_without_auth_rejected(self):
+        r = self.client.get("/api/risk-config")
+        self.assertEqual(r.status_code, 401)
+
+    def test_trading_pause_without_auth_rejected(self):
+        r = self.client.get("/api/trading-pause")
+        self.assertEqual(r.status_code, 401)
+
+    def test_signals_without_auth_rejected(self):
+        r = self.client.get("/api/signals")
+        self.assertEqual(r.status_code, 401)
 
     # --- Auth ---
 
@@ -457,7 +505,7 @@ class ServerEndpointsTest(unittest.TestCase):
             "/api/mode", json={"mode": "live"}, headers=self.auth_headers,
         )
         self.assertEqual(r1.status_code, 200)
-        r2 = self.client.get("/api/mode")
+        r2 = self.client.get("/api/mode", headers=self.auth_headers)
         self.assertEqual(r2.json()["mode"], "live")
 
     # --- Position close (auth) ---
@@ -532,29 +580,45 @@ class ServerEndpointsTest(unittest.TestCase):
     # --- Allocation / risk ---
 
     def test_allocation_empty(self):
-        r = self.client.get("/api/allocation")
+        r = self.client.get("/api/allocation", headers=self.auth_headers)
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertIn("actual_weights", body)
         self.assertIn("target_weights", body)
 
+    def test_allocation_without_auth_rejected(self):
+        r = self.client.get("/api/allocation")
+        self.assertEqual(r.status_code, 401)
+
     def test_risk_stress_empty(self):
-        r = self.client.get("/api/risk/stress")
+        r = self.client.get("/api/risk/stress", headers=self.auth_headers)
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertIn("scenarios", body)
 
+    def test_risk_stress_without_auth_rejected(self):
+        r = self.client.get("/api/risk/stress")
+        self.assertEqual(r.status_code, 401)
+
     def test_risk_correlation_empty(self):
-        r = self.client.get("/api/risk/correlation")
+        r = self.client.get("/api/risk/correlation", headers=self.auth_headers)
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertIn("assets", body)
 
+    def test_risk_correlation_without_auth_rejected(self):
+        r = self.client.get("/api/risk/correlation")
+        self.assertEqual(r.status_code, 401)
+
     def test_risk_cvar_empty(self):
-        r = self.client.get("/api/risk/cvar")
+        r = self.client.get("/api/risk/cvar", headers=self.auth_headers)
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertIn("note", body)
+
+    def test_risk_cvar_without_auth_rejected(self):
+        r = self.client.get("/api/risk/cvar")
+        self.assertEqual(r.status_code, 401)
 
 
 # ============================================================
