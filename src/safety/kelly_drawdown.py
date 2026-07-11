@@ -35,8 +35,10 @@ Prevents:
 - Emotional decisions during drawdown
 """
 from __future__ import annotations
+import json
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 
@@ -215,3 +217,79 @@ class DrawdownKillSwitch:
         """Manually reset the kill switch (e.g., user override)."""
         self.triggered = False
         self.triggered_at = None
+
+    # --- Sprint 46N (audit A1): persistence ---
+    #
+    # Before this, `peak_equity`/`triggered`/`triggered_at` lived ONLY
+    # in this instance's memory. Every bot restart (a redeploy, a
+    # crash, a manual `docker compose up`) silently reset peak_equity
+    # back to 0.0 and cleared any active trigger -- so a real drawdown
+    # that had correctly paused new entries would resume trading the
+    # moment the process restarted, and the very next equity update
+    # after a restart would treat whatever the CURRENT equity happens
+    # to be as the new all-time peak (since 0.0 < anything), making
+    # the switch measure drawdown from the wrong baseline until a new
+    # high was organically set. Persisting this state (mirroring
+    # src/safety/equity_tracker.py's persist_tracker/load_tracker
+    # pattern) fixes both problems.
+    #
+    # Only STATE (peak_equity/triggered/triggered_at) is persisted --
+    # NOT threshold_pct/cooldown_hours. Those are config values that
+    # can legitimately change between restarts (config.yaml edit or a
+    # dashboard risk-config save) and the current config must win, not
+    # whatever was true when the file was last written.
+
+    def persist(self, path: str) -> None:
+        """Save peak_equity/triggered/triggered_at to disk. Atomic
+        write (tmp file + `.replace()`), same pattern as every other
+        state file in this codebase."""
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "peak_equity": self.peak_equity,
+            "triggered": self.triggered,
+            "triggered_at": self.triggered_at,
+            "saved_at": time.time(),
+        }
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.replace(p)
+
+    @classmethod
+    def load(
+        cls,
+        path: str,
+        threshold_pct: float = 15.0,
+        cooldown_hours: float = 24.0,
+    ) -> "DrawdownKillSwitch":
+        """Construct a DrawdownKillSwitch, restoring persisted
+        peak_equity/triggered/triggered_at if `path` exists and is
+        readable. `threshold_pct`/`cooldown_hours` always come from
+        the caller (i.e. the CURRENT config.yaml / dashboard override
+        at the time of this call), never from the persisted file --
+        see the class-level comment above.
+
+        Fail-open: a missing or corrupt state file returns a fresh
+        instance (peak_equity=0.0, not triggered) instead of raising --
+        same rationale as every other override/state file in this
+        codebase: a broken persistence file must not block startup or
+        crash the bot, it should just mean "start tracking from
+        scratch," which is exactly the pre-Sprint-46N behavior.
+        """
+        switch = cls(threshold_pct=threshold_pct, cooldown_hours=cooldown_hours)
+        p = Path(path)
+        if not p.exists():
+            return switch
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            switch.peak_equity = float(data.get("peak_equity", 0.0))
+            switch.triggered = bool(data.get("triggered", False))
+            triggered_at_raw = data.get("triggered_at")
+            switch.triggered_at = (
+                float(triggered_at_raw) if triggered_at_raw is not None else None
+            )
+        except Exception:
+            # Corrupt/unreadable file -- start fresh rather than crash
+            # bot startup over a damaged drawdown-tracker state file.
+            pass
+        return switch

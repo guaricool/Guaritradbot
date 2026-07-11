@@ -565,7 +565,15 @@ def main():
     # The threshold and cooldown are config-driven (with safe
     # defaults) so the operator can tighten them per-strategy.
     _risk_cfg = config.get("risk", {}) or {}
-    drawdown_kill_switch = DrawdownKillSwitch(
+    # Sprint 46N (audit A1): load persisted peak_equity/triggered/
+    # triggered_at state (if any) instead of always constructing a
+    # fresh switch — a bot restart must not silently forget an active
+    # kill switch or reset the peak back to 0. threshold_pct/
+    # cooldown_hours always come from the CURRENT config (never from
+    # the persisted file) — see DrawdownKillSwitch.load()'s docstring.
+    _drawdown_state_path = "data_store/drawdown_kill_state.json"
+    drawdown_kill_switch = DrawdownKillSwitch.load(
+        _drawdown_state_path,
         threshold_pct=float(_risk_cfg.get("drawdown_kill_threshold_pct", 15.0)),
         cooldown_hours=float(_risk_cfg.get("drawdown_cooldown_hours", 24.0)),
     )
@@ -1167,18 +1175,12 @@ def main():
         # independently from fast_monitor_tick's (different cadence,
         # simplest to keep them decoupled rather than share mutable
         # state between two differently-timed scheduled jobs).
-        opens = position_repo.open()
-        prices = _fetch_prices_for_open_positions(position_repo)
-
-        # Sprint 43 H3 (fixed for real in 46D): drawdown kill switch
-        # check. If the account has dropped more than the configured
-        # threshold from its peak equity, the bot is in "revenge
-        # trading" territory — it should stop opening NEW positions
-        # until the cooldown elapses. The check uses realized PnL +
-        # unrealized PnL of open positions (using the prices fetched
-        # above; falls back to realized-only if a price is missing)
-        # as the current equity; peak is tracked internally by
-        # DrawdownKillSwitch.
+        # Sprint 43 H3 (fixed for real in 46D; equity source fixed in
+        # 46N audit A1): drawdown kill switch check. If the account
+        # has dropped more than the configured threshold from its peak
+        # equity, the bot is in "revenge trading" territory — it
+        # should stop opening NEW positions until the cooldown
+        # elapses.
         #
         # Sprint 46D fix: previously this did `return` immediately on
         # trigger, which — despite the comment directly above it
@@ -1189,13 +1191,45 @@ def main():
         # drawdown. Now we only set a flag that skips step 2 (the
         # normal workflow / new entries) at the very end; step 1
         # (monitor) always runs below regardless.
+        #
+        # Sprint 46N (audit A1) fix: this used to build its own
+        # "current_equity" as `position_repo.total_realized_pnl_usd()
+        # + sum(pos.unrealized_pnl(prices.get(pos.asset, 0.0)) for pos
+        # in opens)` — two compounding bugs in that one expression:
+        #   1. `prices.get(pos.asset, 0.0)` defaulted a MISSING price
+        #      (e.g. one failed yfinance fetch for a single asset) to
+        #      $0.0, which `unrealized_pnl` then treats as "this asset
+        #      is now worth nothing" — a long position's unrealized
+        #      P&L becomes `-entry_price * qty`, i.e. a fabricated
+        #      ~100% loss on that ONE position from a data hiccup, not
+        #      a real market move. This produced the impossible
+        #      -264%/-212% drawdown alerts Carlos saw.
+        #   2. The "equity" base was pure cumulative P&L (starting
+        #      near 0), not real account equity (starting balance +
+        #      P&L) — so drawdown_pct was computed relative to a
+        #      tiny/zero peak, wildly exaggerating the percentage for
+        #      the same dollar move.
+        # `equity_tracker` (constructed above, updated every
+        # fast_monitor_tick with live prices) already computes this
+        # correctly: its equity base is `starting_balance + realized +
+        # unrealized`, and its per-position loop skips any asset with
+        # no current price entirely (contributes $0, not "-100%") —
+        # see EquityTracker.update()'s `if price is not None` guard.
+        # Reusing its latest snapshot fixes both problems by
+        # construction and avoids a second, redundant yfinance fetch
+        # this function no longer needs.
         dd_triggered = False
         try:
-            current_equity = position_repo.total_realized_pnl_usd() + sum(
-                pos.unrealized_pnl(prices.get(pos.asset, 0.0))
-                for pos in opens
-            )
+            current_equity = equity_tracker.latest().total_equity
             dd_state = drawdown_kill_switch.update(current_equity)
+            # Sprint 46N (audit A1): persist peak_equity/triggered/
+            # triggered_at after every update so a bot restart can't
+            # silently forget an active kill switch or reset the peak
+            # back to 0 — see DrawdownKillSwitch.persist()'s docstring.
+            try:
+                drawdown_kill_switch.persist(_drawdown_state_path)
+            except Exception as _dd_persist_err:
+                print(f"[DrawdownKill] persist falló (continuando): {_dd_persist_err}")
             if dd_state.triggered:
                 dd_triggered = True
                 if audit:
