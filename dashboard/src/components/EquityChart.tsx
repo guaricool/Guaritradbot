@@ -6,6 +6,7 @@ import {
   Area,
   AreaChart,
   CartesianGrid,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -41,6 +42,24 @@ export function EquityChart({ windowDays = 30 }: { windowDays?: number }) {
     return 0;
   }, [series]);
 
+  // Sprint 46L: Carlos wants the curve itself to read as gain/loss —
+  // green "wave" above the zero line, red below it — instead of a
+  // single always-green fill regardless of sign. Recharts doesn't
+  // split an Area's color by value natively, so this uses the
+  // standard trick: a vertical gradient whose stop OFFSET (not just
+  // its color) lands exactly where cumulative_usd crosses zero within
+  // the chart's own min/max range. Above that offset = green, below =
+  // red — so the fill (and the line stroke) flips color exactly at
+  // the zero crossing(s), no matter how many times the curve crosses
+  // it.
+  const zeroOffset = useMemo(() => {
+    const values = series.map((p) => p.cumulative_usd ?? 0);
+    const max = Math.max(0, ...values);
+    const min = Math.min(0, ...values);
+    if (max === min) return max >= 0 ? 0 : 1; // flat at exactly 0 → treat as green
+    return max / (max - min);
+  }, [series]);
+
   if (isLoading) {
     return (
       <div className="flex h-64 items-center justify-center text-muted">
@@ -74,10 +93,17 @@ export function EquityChart({ windowDays = 30 }: { windowDays?: number }) {
           <defs>
             <linearGradient id="equityFill" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#10b981" stopOpacity={0.35} />
-              <stop offset="100%" stopColor="#10b981" stopOpacity={0.02} />
+              <stop offset={zeroOffset} stopColor="#10b981" stopOpacity={0.05} />
+              <stop offset={zeroOffset} stopColor="#ef4444" stopOpacity={0.05} />
+              <stop offset="100%" stopColor="#ef4444" stopOpacity={0.35} />
+            </linearGradient>
+            <linearGradient id="equityStroke" x1="0" y1="0" x2="0" y2="1">
+              <stop offset={zeroOffset} stopColor="#10b981" />
+              <stop offset={zeroOffset} stopColor="#ef4444" />
             </linearGradient>
           </defs>
           <CartesianGrid stroke="#1c2438" strokeDasharray="3 3" />
+          <ReferenceLine y={0} stroke="#525a72" strokeDasharray="4 4" />
           <XAxis
             dataKey="date"
             tickFormatter={(d) => fmtDateOnly(d)}
@@ -107,7 +133,7 @@ export function EquityChart({ windowDays = 30 }: { windowDays?: number }) {
           <Area
             type="monotone"
             dataKey="cumulative_usd"
-            stroke="#10b981"
+            stroke="url(#equityStroke)"
             strokeWidth={1.5}
             fill="url(#equityFill)"
             isAnimationActive={false}
