@@ -1,0 +1,100 @@
+<svg viewBox="0 0 1200 760" xmlns="http://www.w3.org/2000/svg" role="img">
+  <title>Grafo de dependencias de código — tradbot (src/)</title>
+  <desc>Paquetes bajo src/ y de qué paquetes internos depende cada uno, derivado de un análisis AST de imports. main.py importa los 9 paquetes de primer nivel para orquestar el arranque; este grafo muestra las dependencias entre esos paquetes.</desc>
+  <defs>
+    <marker id="dg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1200" height="760" fill="#0d0f14"/>
+
+  <text x="24" y="34" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" fill="#f1ede4">main.py</text>
+  <text x="24" y="52" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#6b7280">importa los 9 paquetes de primer nivel de src/ para construir y arrancar el bot (no dibujado — ver rows abajo)</text>
+
+  <!-- Row 1 -->
+  <g font-family="ui-sans-serif, system-ui, sans-serif">
+    <rect x="40" y="80" width="260" height="70" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="170" y="106" text-anchor="middle" font-size="13" fill="#f1ede4">src.agents</text>
+    <text x="170" y="124" text-anchor="middle" font-size="10.5" fill="#9ca3af">usa: analysis, data,</text>
+    <text x="170" y="138" text-anchor="middle" font-size="10.5" fill="#9ca3af">data_store, ml</text>
+
+    <rect x="320" y="80" width="260" height="70" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="450" y="106" text-anchor="middle" font-size="13" fill="#f1ede4">src.execution</text>
+    <text x="450" y="124" text-anchor="middle" font-size="10.5" fill="#9ca3af">usa: agents, data_store,</text>
+    <text x="450" y="138" text-anchor="middle" font-size="10.5" fill="#9ca3af">optimization, workflows</text>
+
+    <rect x="600" y="80" width="260" height="70" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="730" y="106" text-anchor="middle" font-size="13" fill="#f1ede4">src.workflows</text>
+    <text x="730" y="124" text-anchor="middle" font-size="10.5" fill="#9ca3af">motor YAML</text>
+    <text x="730" y="138" text-anchor="middle" font-size="10.5" fill="#9ca3af">sin deps internas</text>
+
+    <rect x="880" y="80" width="260" height="70" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="1010" y="106" text-anchor="middle" font-size="13" fill="#f1ede4">src.api</text>
+    <text x="1010" y="124" text-anchor="middle" font-size="10.5" fill="#9ca3af">usa: analysis, data,</text>
+    <text x="1010" y="138" text-anchor="middle" font-size="10.5" fill="#9ca3af">data_store, safety</text>
+  </g>
+
+  <!-- Row 2 -->
+  <g font-family="ui-sans-serif, system-ui, sans-serif">
+    <rect x="40" y="240" width="260" height="70" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="170" y="266" text-anchor="middle" font-size="13" fill="#f1ede4">src.analysis</text>
+    <text x="170" y="284" text-anchor="middle" font-size="10.5" fill="#9ca3af">usa: data, optimization</text>
+    <text x="170" y="298" text-anchor="middle" font-size="10.5" fill="#9ca3af">(GP, alpha factors)</text>
+
+    <rect x="320" y="240" width="260" height="70" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="450" y="266" text-anchor="middle" font-size="13" fill="#f1ede4">src.data_store</text>
+    <text x="450" y="284" text-anchor="middle" font-size="10.5" fill="#9ca3af">sin deps internas</text>
+    <text x="450" y="298" text-anchor="middle" font-size="10.5" fill="#9ca3af">positions.json en disco</text>
+
+    <rect x="600" y="240" width="260" height="70" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="730" y="266" text-anchor="middle" font-size="13" fill="#f1ede4">src.optimization</text>
+    <text x="730" y="284" text-anchor="middle" font-size="10.5" fill="#9ca3af">sin deps internas</text>
+    <text x="730" y="298" text-anchor="middle" font-size="10.5" fill="#9ca3af">backtester, hyperopt</text>
+
+    <rect x="880" y="240" width="260" height="70" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="1010" y="266" text-anchor="middle" font-size="13" fill="#f1ede4">src.notifications</text>
+    <text x="1010" y="284" text-anchor="middle" font-size="10.5" fill="#9ca3af">sin deps internas</text>
+    <text x="1010" y="298" text-anchor="middle" font-size="10.5" fill="#9ca3af">solo llamado por main</text>
+  </g>
+
+  <!-- Row 3 -->
+  <g font-family="ui-sans-serif, system-ui, sans-serif">
+    <rect x="40" y="400" width="260" height="60" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="170" y="424" text-anchor="middle" font-size="13" fill="#f1ede4">src.data</text>
+    <text x="170" y="442" text-anchor="middle" font-size="10.5" fill="#9ca3af">sin deps internas (fetch de precios)</text>
+
+    <rect x="320" y="400" width="260" height="60" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="450" y="424" text-anchor="middle" font-size="13" fill="#f1ede4">src.ml</text>
+    <text x="450" y="442" text-anchor="middle" font-size="10.5" fill="#9ca3af">usa: features</text>
+
+    <rect x="600" y="400" width="260" height="60" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="730" y="424" text-anchor="middle" font-size="13" fill="#f1ede4">src.safety</text>
+    <text x="730" y="442" text-anchor="middle" font-size="10.5" fill="#9ca3af">usa: data_store</text>
+  </g>
+
+  <!-- Row 4 -->
+  <g font-family="ui-sans-serif, system-ui, sans-serif">
+    <rect x="40" y="540" width="260" height="56" rx="8" fill="#1c1f28" stroke="#374151"/>
+    <text x="170" y="562" text-anchor="middle" font-size="13" fill="#f1ede4">src.core</text>
+    <text x="170" y="580" text-anchor="middle" font-size="10.5" fill="#9ca3af">event bus — sin deps internas</text>
+
+    <rect x="320" y="540" width="260" height="56" rx="8" fill="#1c1f28" stroke="#374151"/>
+    <text x="450" y="562" text-anchor="middle" font-size="13" fill="#f1ede4">src.features</text>
+    <text x="450" y="580" text-anchor="middle" font-size="10.5" fill="#9ca3af">sin deps internas</text>
+  </g>
+
+  <!-- Key edges -->
+  <path d="M170,150 L170,236" stroke="#4b5563" stroke-width="1.6" marker-end="url(#dg-arrow)" fill="none"/>
+  <path d="M300,278 L316,278" stroke="#4b5563" stroke-width="1.6" marker-end="url(#dg-arrow)" fill="none"/>
+  <path d="M300,110 L316,262" stroke="#4b5563" stroke-width="1.6" marker-end="url(#dg-arrow)" fill="none"/>
+  <path d="M450,150 L450,396" stroke="#4b5563" stroke-width="1.6" marker-end="url(#dg-arrow)" fill="none"/>
+  <path d="M100,150 C60,230 60,340 150,396" stroke="#4b5563" stroke-width="1.6" marker-end="url(#dg-arrow)" fill="none"/>
+  <path d="M320,115 L300,115" stroke="#4b5563" stroke-width="1.6" marker-end="url(#dg-arrow)" fill="none"/>
+  <path d="M600,115 L580,115" stroke="#4b5563" stroke-width="1.6" marker-end="url(#dg-arrow)" fill="none"/>
+  <path d="M880,150 C880,220 730,240 730,236" stroke="#4b5563" stroke-width="1.6" marker-end="url(#dg-arrow)" fill="none"/>
+  <path d="M900,150 C820,260 500,410 590,430" stroke="#4b5563" stroke-width="1.6" marker-end="url(#dg-arrow)" fill="none"/>
+  <path d="M730,460 C730,500 320,470 320,396" stroke="#4b5563" stroke-width="1.6" marker-end="url(#dg-arrow)" fill="none"/>
+  <path d="M450,460 L450,536" stroke="#4b5563" stroke-width="1.6" marker-end="url(#dg-arrow)" fill="none"/>
+
+  <text x="24" y="700" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#6b7280">Flechas = las dependencias más estructurales; cada caja lista "usa:" completo en el subtítulo. dashboard/ (Next.js/TS) es un proyecto aparte, no incluido aquí.</text>
+</svg>

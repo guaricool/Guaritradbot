@@ -24,6 +24,23 @@ export function EquityChart({ windowDays = 30 }: { windowDays?: number }) {
 
   const series = useMemo(() => data?.series ?? [], [data]);
 
+  // Sprint 46K fix: the Y-axis previously hardcoded `decimals: 0`, which
+  // rounds every tick label to "$0" on an account this small (positions
+  // are $10-20, P&L moves in cents) — the chart LOOKED broken even when
+  // the underlying data had real cent-level movement. Pick precision
+  // based on how big the real numbers actually are, same idea as
+  // EquityTracker's own precision=4 console logging in main.py.
+  const axisDecimals = useMemo(() => {
+    const maxAbs = series.reduce(
+      (m, p) => Math.max(m, Math.abs(p.cumulative_usd ?? 0)),
+      0,
+    );
+    if (maxAbs === 0) return 2;
+    if (maxAbs < 1) return 4;
+    if (maxAbs < 100) return 2;
+    return 0;
+  }, [series]);
+
   if (isLoading) {
     return (
       <div className="flex h-64 items-center justify-center text-muted">
@@ -69,7 +86,7 @@ export function EquityChart({ windowDays = 30 }: { windowDays?: number }) {
             minTickGap={40}
           />
           <YAxis
-            tickFormatter={(v) => fmtUsd(v, { decimals: 0 })}
+            tickFormatter={(v) => fmtUsd(v, { decimals: axisDecimals })}
             stroke="#525a72"
             fontSize={11}
             width={70}

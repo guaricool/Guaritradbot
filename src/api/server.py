@@ -852,6 +852,23 @@ def get_equity(window_days: int = Query(30, ge=1, le=365)) -> Dict[str, Any]:
     for s in series:
         running += s["realized_pnl_usd"]
         cumulative.append({**s, "cumulative_usd": round(running, 4)})
+    # Sprint 46K fix: with only realized-PnL events in `daily`, a NEW
+    # account (or one with just a single closed trade this window)
+    # produces a series with 0 or 1 points — recharts can't draw a
+    # line/area through a single point, so the dashboard showed one
+    # floating dot instead of a curve. Prepend an explicit $0 baseline
+    # at the window's start date so there's always a real "start of
+    # window" reference to draw a line from, whenever we have at least
+    # one actual event. (If there are zero events, the frontend already
+    # shows its own "no closed trades" empty state — leave that alone.)
+    if cumulative:
+        window_start_date = time.strftime("%Y-%m-%d", time.gmtime(cutoff))
+        if cumulative[0]["date"] != window_start_date:
+            cumulative.insert(0, {
+                "date": window_start_date,
+                "realized_pnl_usd": 0.0,
+                "cumulative_usd": 0.0,
+            })
     return {"window_days": window_days, "series": cumulative}
 
 

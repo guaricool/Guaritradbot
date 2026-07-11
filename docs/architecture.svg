@@ -1,0 +1,136 @@
+<svg viewBox="0 0 1200 900" xmlns="http://www.w3.org/2000/svg" role="img">
+  <title>Arquitectura de Guaritradbot — Sprint 46J</title>
+  <desc>Diagrama del bot: fuentes de datos y brokers, ciclo horario de nuevas entradas, gates de seguridad, loop rápido de protección de posiciones, y el dashboard.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/>
+    </marker>
+    <marker id="arrowDashed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#d4a24c"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="900" fill="#0d0f14"/>
+
+  <!-- Legend -->
+  <g font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#9ca3af">
+    <rect x="24" y="24" width="14" height="14" rx="3" fill="#171a21" stroke="#4b5563"/>
+    <text x="44" y="35">Pipeline / datos</text>
+    <rect x="180" y="24" width="14" height="14" rx="3" fill="#1c1f28" stroke="#d4a24c"/>
+    <text x="200" y="35">Gates de seguridad (pueden bloquear)</text>
+  </g>
+
+  <!-- Row 1: data sources / brokers -->
+  <text x="24" y="80" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" fill="#f1ede4">Brokers y datos</text>
+  <g font-family="ui-sans-serif, system-ui, sans-serif">
+    <rect x="24" y="92" width="220" height="64" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="134" y="118" text-anchor="middle" font-size="14" fill="#f1ede4">binance.us</text>
+    <text x="134" y="136" text-anchor="middle" font-size="11" fill="#9ca3af">cripto · ccxt</text>
+
+    <rect x="270" y="92" width="220" height="64" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="380" y="118" text-anchor="middle" font-size="14" fill="#f1ede4">Alpaca</text>
+    <text x="380" y="136" text-anchor="middle" font-size="11" fill="#9ca3af">equities / ETFs</text>
+
+    <rect x="516" y="92" width="220" height="64" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="626" y="118" text-anchor="middle" font-size="14" fill="#f1ede4">yfinance</text>
+    <text x="626" y="136" text-anchor="middle" font-size="11" fill="#9ca3af">precios OHLCV</text>
+  </g>
+
+  <!-- arrows down to pipeline -->
+  <path d="M134,156 L134,196" stroke="#4b5563" stroke-width="2" marker-end="url(#arrow)" fill="none"/>
+  <path d="M380,156 L380,196" stroke="#4b5563" stroke-width="2" marker-end="url(#arrow)" fill="none"/>
+  <path d="M626,156 L440,196" stroke="#4b5563" stroke-width="2" marker-end="url(#arrow)" fill="none"/>
+
+  <!-- Row 2: hourly pipeline -->
+  <text x="24" y="216" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" fill="#f1ede4">Ciclo horario — nuevas entradas (job_with_monitor)</text>
+  <g font-family="ui-sans-serif, system-ui, sans-serif">
+    <rect x="24" y="228" width="220" height="64" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="134" y="254" text-anchor="middle" font-size="13" fill="#f1ede4">MarketAnalystAgent</text>
+    <text x="134" y="272" text-anchor="middle" font-size="11" fill="#9ca3af">indicadores + alpha factors</text>
+
+    <rect x="270" y="228" width="220" height="64" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="380" y="254" text-anchor="middle" font-size="13" fill="#f1ede4">StrategyAgent</text>
+    <text x="380" y="272" text-anchor="middle" font-size="11" fill="#9ca3af">genera hipótesis</text>
+
+    <rect x="516" y="228" width="220" height="64" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="626" y="254" text-anchor="middle" font-size="13" fill="#f1ede4">RiskManagerAgent</text>
+    <text x="626" y="272" text-anchor="middle" font-size="11" fill="#9ca3af">sizing + portfolio gates</text>
+
+    <rect x="762" y="228" width="220" height="64" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="872" y="254" text-anchor="middle" font-size="13" fill="#f1ede4">ExecutionNode</text>
+    <text x="872" y="272" text-anchor="middle" font-size="11" fill="#9ca3af">enruta a broker real</text>
+  </g>
+  <path d="M244,260 L266,260" stroke="#4b5563" stroke-width="2" marker-end="url(#arrow)" fill="none"/>
+  <path d="M490,260 L512,260" stroke="#4b5563" stroke-width="2" marker-end="url(#arrow)" fill="none"/>
+  <path d="M736,260 L758,260" stroke="#4b5563" stroke-width="2" marker-end="url(#arrow)" fill="none"/>
+
+  <!-- DebateAgent small note -->
+  <text x="380" y="316" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#6b7280">(DebateAgent evalúa reemplazo de posiciones cuando el book está lleno)</text>
+
+  <!-- Row 3: safety gates -->
+  <text x="24" y="356" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" fill="#f1ede4">Gates de seguridad (bloquean solo nuevas entradas, salvo KillSwitch)</text>
+  <g font-family="ui-sans-serif, system-ui, sans-serif">
+    <rect x="24" y="368" width="220" height="58" rx="8" fill="#1c1f28" stroke="#d4a24c"/>
+    <text x="134" y="392" text-anchor="middle" font-size="13" fill="#f1ede4">MandateGate</text>
+    <text x="134" y="408" text-anchor="middle" font-size="10.5" fill="#9ca3af">símbolo · tamaño · daily loss/trades</text>
+
+    <rect x="270" y="368" width="220" height="58" rx="8" fill="#1c1f28" stroke="#d4a24c"/>
+    <text x="380" y="392" text-anchor="middle" font-size="13" fill="#f1ede4">DrawdownKillSwitch</text>
+    <text x="380" y="408" text-anchor="middle" font-size="10.5" fill="#9ca3af">pausa tras drawdown</text>
+
+    <rect x="516" y="368" width="220" height="58" rx="8" fill="#1c1f28" stroke="#d4a24c"/>
+    <text x="626" y="392" text-anchor="middle" font-size="13" fill="#f1ede4">Dashboard Pause</text>
+    <text x="626" y="408" text-anchor="middle" font-size="10.5" fill="#9ca3af">stop/start manual</text>
+
+    <rect x="762" y="368" width="220" height="58" rx="8" fill="#1c1f28" stroke="#d4a24c"/>
+    <text x="872" y="392" text-anchor="middle" font-size="13" fill="#f1ede4">KillSwitch</text>
+    <text x="872" y="408" text-anchor="middle" font-size="10.5" fill="#9ca3af">bloquea el arranque del bot</text>
+  </g>
+  <path d="M134,368 L134,296" stroke="#d4a24c" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrowDashed)" fill="none"/>
+  <path d="M380,368 L500,296" stroke="#d4a24c" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrowDashed)" fill="none"/>
+  <path d="M626,368 L650,296" stroke="#d4a24c" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrowDashed)" fill="none"/>
+  <path d="M872,368 L872,296" stroke="#d4a24c" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrowDashed)" fill="none"/>
+
+  <!-- Row 4: fast monitor loop -->
+  <text x="24" y="480" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" fill="#f1ede4">Loop rápido — protección (fast_monitor_tick, cada ~2 min)</text>
+  <g font-family="ui-sans-serif, system-ui, sans-serif">
+    <rect x="24" y="492" width="260" height="72" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="154" y="520" text-anchor="middle" font-size="13" fill="#f1ede4">PositionMonitor</text>
+    <text x="154" y="538" text-anchor="middle" font-size="10.5" fill="#9ca3af">SL/TP polling</text>
+    <text x="154" y="552" text-anchor="middle" font-size="10.5" fill="#9ca3af">reconcilia OCO nativa (cripto)</text>
+
+    <rect x="320" y="492" width="260" height="72" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="450" y="520" text-anchor="middle" font-size="13" fill="#f1ede4">PositionRepository</text>
+    <text x="450" y="538" text-anchor="middle" font-size="10.5" fill="#9ca3af">positions.json</text>
+    <text x="450" y="552" text-anchor="middle" font-size="10.5" fill="#9ca3af">P&amp;L neto de comisiones</text>
+
+    <rect x="616" y="492" width="260" height="72" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="746" y="520" text-anchor="middle" font-size="13" fill="#f1ede4">binance.us OCO</text>
+    <text x="746" y="538" text-anchor="middle" font-size="10.5" fill="#9ca3af">orden real en el exchange</text>
+    <text x="746" y="552" text-anchor="middle" font-size="10.5" fill="#9ca3af">(opt-in, solo cripto long)</text>
+  </g>
+  <path d="M284,528 L316,528" stroke="#4b5563" stroke-width="2" marker-end="url(#arrow)" fill="none"/>
+  <path d="M612,528 L580,528" stroke="#4b5563" stroke-width="2" marker-end="url(#arrow)" fill="none"/>
+  <path d="M872,292 L872,340 L154,340 L154,488" stroke="#4b5563" stroke-width="1.5" stroke-dasharray="2 3" marker-end="url(#arrow)" fill="none"/>
+  <text x="500" y="336" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#6b7280">ExecutionNode abre la posición (repo + OCO si aplica)</text>
+
+  <!-- Row 5: dashboard -->
+  <text x="24" y="616" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" fill="#f1ede4">Dashboard</text>
+  <g font-family="ui-sans-serif, system-ui, sans-serif">
+    <rect x="24" y="628" width="300" height="70" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="174" y="656" text-anchor="middle" font-size="13" fill="#f1ede4">FastAPI + WebSocket</text>
+    <text x="174" y="674" text-anchor="middle" font-size="10.5" fill="#9ca3af">mismo proceso que el bot, solo lectura</text>
+    <text x="174" y="688" text-anchor="middle" font-size="10.5" fill="#9ca3af">/api/* + /ws/live</text>
+
+    <rect x="360" y="628" width="300" height="70" rx="8" fill="#171a21" stroke="#4b5563"/>
+    <text x="510" y="656" text-anchor="middle" font-size="13" fill="#f1ede4">Dashboard Next.js</text>
+    <text x="510" y="674" text-anchor="middle" font-size="10.5" fill="#9ca3af">servicio Docker separado</text>
+    <text x="510" y="688" text-anchor="middle" font-size="10.5" fill="#9ca3af">Settings, Positions, Audit</text>
+  </g>
+  <path d="M324,663 L356,663" stroke="#4b5563" stroke-width="2" marker-end="url(#arrow)" fill="none"/>
+  <path d="M450,564 L174,624" stroke="#4b5563" stroke-width="1.5" stroke-dasharray="2 3" marker-end="url(#arrow)" fill="none"/>
+
+  <!-- Footer note -->
+  <text x="24" y="760" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#6b7280">config.yaml se combina en el arranque con overrides JSON en audit/ (guardados desde el dashboard) — casi todo requiere reinicio del bot para aplicarse.</text>
+  <text x="24" y="780" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#6b7280">GP (evolución de estrategias) y el backtester viven en src/analysis / src/optimization pero NO están conectados al loop en vivo — herramientas de investigación aparte.</text>
+</svg>
