@@ -127,6 +127,43 @@ class BrokerClient:
             print(f"[BrokerClient] -> Error ejecutando orden: {e}")
             return {"status": "failed", "error": str(e)}
 
+    def get_ticker_price(self, symbol: str) -> float | None:
+        """Sprint 46N (audit A7): live price for SL/TP trigger comparisons.
+
+        Before this fix, `main.py`'s `_fetch_prices_for_open_positions`
+        used yfinance's DAILY-CANDLE CLOSE (`interval="1d"`) as a stand-in
+        for "the current price" when comparing against stop_loss/
+        take_profit — up to a full trading day stale, and sourced from
+        Yahoo's composite BTC-USD index, which is NOT binance.us's own
+        order book. A position could be closed (or NOT closed) based on
+        a price that never actually existed on the exchange that will
+        execute the close. This method fetches the price from the SAME
+        exchange (binance.us via ccxt) that executes the order.
+
+        Prefers `last` (last traded price). Falls back to a bid/ask
+        midpoint if `last` isn't populated (some exchanges omit it on a
+        thin book), then to `close` (previous close) as a final resort.
+
+        Returns None (never raises) on any failure — callers treat a
+        missing price as "skip this asset this tick", the same fail-open
+        philosophy as every other best-effort price fetch in this bot.
+        """
+        try:
+            ticker = self.exchange.fetch_ticker(symbol)
+            last = ticker.get("last")
+            if last is not None and float(last) > 0:
+                return float(last)
+            bid, ask = ticker.get("bid"), ticker.get("ask")
+            if bid is not None and ask is not None and float(bid) > 0 and float(ask) > 0:
+                return (float(bid) + float(ask)) / 2.0
+            close = ticker.get("close")
+            if close is not None and float(close) > 0:
+                return float(close)
+            return None
+        except Exception as e:
+            print(f"[BrokerClient] ⚠️ fetch_ticker falló para {symbol} ({e}).")
+            return None
+
     # ------------------------------------------------------------------
     # Sprint 46I — native OCO stop-loss/take-profit (binance.us)
     # ------------------------------------------------------------------

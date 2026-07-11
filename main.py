@@ -170,28 +170,68 @@ def _is_trading_paused(audit_dir: str = "audit") -> bool:
         return False
 
 
-def _fetch_prices_for_open_positions(position_repo) -> dict:
-    """Sprint 46I: shared helper — fetch last-close price for every
-    asset with a currently open position. Extracted so both the fast
-    position-monitor loop (every few minutes, see main()'s
-    `fast_monitor_tick`) and the hourly drawdown check (job_with_
-    monitor) can each fetch their own snapshot independently, instead
-    of threading shared mutable state between two differently-timed
-    scheduled jobs. Best-effort per-asset: a single failed fetch is
-    skipped, not fatal to the whole cycle.
+def _fetch_prices_for_open_positions(
+    position_repo,
+    broker_client=None,
+    alpaca_broker=None,
+    brokers_config: dict | None = None,
+) -> dict:
+    """Sprint 46I: shared helper — fetch a price for every asset with a
+    currently open position. Extracted so both the fast position-
+    monitor loop (every few minutes, see main()'s `fast_monitor_tick`)
+    and the hourly drawdown check (job_with_monitor) can each fetch
+    their own snapshot independently, instead of threading shared
+    mutable state between two differently-timed scheduled jobs.
+    Best-effort per-asset: a single failed fetch is skipped, not fatal
+    to the whole cycle.
+
+    Sprint 46N (audit A7): this used to fetch yfinance's DAILY-CANDLE
+    CLOSE (`interval="1d"`) via `MarketAnalystAgent.fetch_one` as a
+    stand-in for "the current price" — up to a full trading day stale,
+    sourced from Yahoo's composite index rather than the actual
+    exchange order book (Yahoo's "BTC-USD" is NOT binance.us's tape),
+    and it recomputed a full technical-indicator set per asset just to
+    read one close value. A stop-loss/take-profit comparison against
+    that price could trigger a close that never actually happened on
+    the exchange, or miss one that did.
+
+    Now routes each asset to the SAME broker that will execute its
+    close — `broker_client.get_ticker_price` (ccxt `fetch_ticker`) for
+    crypto, `alpaca_broker.get_latest_trade_price` for equities — via
+    `_asset_class_for`, the same asset->class lookup used elsewhere in
+    this file to decide routing. yfinance/`MarketAnalystAgent` remain
+    the source for HISTORICAL data and indicators elsewhere in the bot
+    (unaffected by this change) — only this live SL/TP price moved off
+    of it. If a broker for an asset's class isn't configured, or the
+    live fetch fails, that asset is simply skipped this tick (same
+    best-effort contract as before).
     """
     opens = position_repo.open()
     prices: dict = {}
-    if opens:
-        from src.agents.market_analyst import MarketAnalystAgent as _MA
-        ma = _MA()
-        for pos in opens:
-            try:
-                df = ma.fetch_one(pos.asset, interval="1d", period="1mo")
-                if df is not None and len(df) > 0:
-                    prices[pos.asset] = float(df["Close"].iloc[-1])
-            except Exception:
-                continue
+    brokers_config = brokers_config or {}
+    for pos in opens:
+        try:
+            asset_class = _asset_class_for(pos.asset, brokers_config)
+            price = None
+            if asset_class == "equity":
+                if alpaca_broker is not None:
+                    price = alpaca_broker.get_latest_trade_price(pos.asset)
+            else:
+                # crypto or unknown -> same fallback convention as
+                # resolve_broker_for_close (src/execution/broker_routing.py):
+                # route unmapped assets to the crypto broker rather than
+                # skipping them outright, for backward compatibility.
+                if broker_client is not None:
+                    ccxt_symbol = pos.asset
+                    if "-" in ccxt_symbol:
+                        ccxt_symbol = ccxt_symbol.replace("-", "/")
+                    elif "/" not in ccxt_symbol:
+                        ccxt_symbol = f"{ccxt_symbol}/USDT"
+                    price = broker_client.get_ticker_price(ccxt_symbol)
+            if price is not None and float(price) > 0:
+                prices[pos.asset] = float(price)
+        except Exception:
+            continue
     return prices
 
 
@@ -1023,7 +1063,12 @@ def main():
             # whatever it was before the book emptied out.
             _blind_tick_count = 0
             return
-        prices = _fetch_prices_for_open_positions(position_repo)
+        prices = _fetch_prices_for_open_positions(
+            position_repo,
+            broker_client=broker_client,
+            alpaca_broker=alpaca_broker,
+            brokers_config=brokers_config,
+        )
         if not prices:
             # Sprint 46N (audit A6): every price fetch failed this tick
             # while positions are open — SL/TP protection did NOT run.
@@ -1348,50 +1393,4 @@ def main():
     scheduler.job = job_with_monitor
 
     # Sprint 46I: register the fast position-monitor loop on the SAME
-    # global `schedule` instance EpochScheduler.start()'s while-loop
-    # already drives (`schedule.run_pending()`) — no changes needed in
-    # scheduler.py. Runs independently of the hourly analysis cycle
-    # (see fast_monitor_tick's docstring for why). Only meaningful in
-    # daemon mode: `--once` never enters that while-loop, so this
-    # schedule entry simply never fires there (same as before this
-    # existed — no regression for --once).
-    _fast_monitor_minutes = float(
-        config.get("schedule", {}).get("fast_monitor_interval_minutes", 2)
-    )
-    schedule.every(_fast_monitor_minutes).minutes.do(fast_monitor_tick)
-    print(f"[Init] Fast position monitor armado: cada {_fast_monitor_minutes} min "
-          f"(independiente del ciclo de análisis de {config.get('schedule', {}).get('run_interval_hours', 1)}h)")
-    # Run once immediately at startup too, so open positions are
-    # protected right away instead of waiting up to
-    # fast_monitor_interval_minutes for the first tick.
-    try:
-        fast_monitor_tick()
-    except Exception as e:
-        print(f"[Init] fast_monitor_tick inicial falló (continuando): {e}")
-
-    try:
-        if args.once:
-            print("[System] Corriendo en modo UNA SOLA VEZ (--once)")
-            audit.append("WORKFLOW_START", {"mode": "once"})
-            scheduler.start(run_once_for_test=True)
-            audit.append("WORKFLOW_END", {"mode": "once"})
-            print("\n=== Ciclo Único Completado ===")
-            summary = audit.summary()
-            print(f"📒 Audit: {summary['total_events']} events, {len(summary['by_type'])} types")
-            print(f"   Audit file: {audit.path}")
-            print(f"📊 Posiciones: {position_repo.count_open()} abiertas, "
-                  f"${position_repo.total_realized_pnl_usd():.4f} realized PnL total")
-        else:
-            print("[System] Iniciando Demonio (Modo Épocas)...")
-            audit.append("WORKFLOW_START", {"mode": "daemon"})
-            scheduler.start(run_once_for_test=False)
-    except KeyboardInterrupt:
-        audit.append("BOT_STOP_KEYBOARDINT", {})
-        print("\nBot detenido por el usuario (Ctrl+C).")
-    except Exception as e:
-        audit.append("BOT_STOP_EXCEPTION", {"error": str(e)})
-        raise
-
-
-if __name__ == "__main__":
-    main()
+    # global `schedule` instance EpochS

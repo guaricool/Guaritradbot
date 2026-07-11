@@ -135,6 +135,12 @@ class AlpacaBroker:
         self.api_key = api_key or os.getenv("ALPACA_API_KEY")
         self.secret_key = secret_key or os.getenv("ALPACA_SECRET_KEY")
         self.mode_override_path = mode_override_path
+        # Sprint 46N (audit A7): lazily-constructed market-data client,
+        # see get_latest_trade_price() below. Not built here in __init__
+        # so a bot that never touches equities (or a test that only
+        # exercises order submission) never pays for it / never needs
+        # the market-data package to be importable.
+        self._data_client = None
         if not self.api_key or not self.secret_key:
             raise ValueError(
                 "AlpacaBroker requires ALPACA_API_KEY and ALPACA_SECRET_KEY "
@@ -255,6 +261,47 @@ class AlpacaBroker:
             return symbols
         except Exception as exc:
             logger.error(f"[AlpacaBroker] list_assets failed: {exc}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Market data (Sprint 46N — audit A7)
+    # ------------------------------------------------------------------
+    def get_latest_trade_price(self, symbol: str) -> float | None:
+        """Live last-trade price for SL/TP trigger comparisons.
+
+        Before this fix, `main.py`'s `_fetch_prices_for_open_positions`
+        used yfinance's DAILY-CANDLE CLOSE for equities too — up to a
+        full trading day stale, and not necessarily Alpaca's own tape.
+        This method reads Alpaca's own market-data API instead, so the
+        price compared against stop_loss/take_profit is the same feed
+        the eventual close order executes against.
+
+        Uses a lazily-constructed `StockHistoricalDataClient` (built on
+        first call, then cached on `self._data_client`) — Alpaca's
+        market-data API is shared across paper/live accounts, there's no
+        separate paper/live market-data endpoint to pick like there is
+        for `TradingClient`.
+
+        Returns None (never raises) on any failure — network hiccup,
+        `alpaca-py` missing, unknown symbol, empty response. Callers
+        treat a missing price as "skip this asset this tick", same
+        fail-open philosophy as every other best-effort price fetch in
+        this bot.
+        """
+        try:
+            if self._data_client is None:
+                from alpaca.data.historical import StockHistoricalDataClient
+                self._data_client = StockHistoricalDataClient(self.api_key, self.secret_key)
+            from alpaca.data.requests import StockLatestTradeRequest
+            request = StockLatestTradeRequest(symbol_or_symbols=symbol)
+            result = self._data_client.get_stock_latest_trade(request)
+            trade = result.get(symbol) if hasattr(result, "get") else None
+            price = getattr(trade, "price", None) if trade is not None else None
+            if price is not None and float(price) > 0:
+                return float(price)
+            return None
+        except Exception as exc:
+            logger.error(f"[AlpacaBroker] get_latest_trade_price({symbol}) failed: {exc}")
             return None
 
     # ------------------------------------------------------------------
