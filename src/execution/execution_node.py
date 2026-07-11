@@ -144,6 +144,7 @@ class ExecutionNode:
         audit=None,
         mode_override_path="audit/mode_override.json",
         position_repo=None,
+        use_native_crypto_stops: bool = False,
     ):
         self.event_bus = event_bus
         self.execution_mode = execution_mode
@@ -153,6 +154,13 @@ class ExecutionNode:
         self.kill_switch = kill_switch
         self.audit = audit
         self.mode_override_path = mode_override_path
+        # Sprint 46I: place a real OCO stop-loss/take-profit order on
+        # binance.us right after a confirmed crypto LONG entry fill,
+        # instead of relying only on PositionMonitor's price polling.
+        # Off by default (config.yaml's trading.use_native_crypto_stops)
+        # — see src/execution/broker.py's OCO methods for the "not
+        # exercised against the live API yet" caveat.
+        self.use_native_crypto_stops = use_native_crypto_stops
         # Sprint 43 C5 fix: ExecutionNode now owns the position persistence
         # (was previously owned by RiskManagerAgent). Adding a position
         # to the repo is the LAST step of a successful fill, not part of
@@ -177,7 +185,13 @@ class ExecutionNode:
     # ----------------------------------------------------------------------
     # Sprint 43 C5 fix: position persistence on successful fill.
     # ----------------------------------------------------------------------
-    def _persist_filled_position(self, order_data: dict, status: str):
+    def _persist_filled_position(
+        self,
+        order_data: dict,
+        status: str,
+        broker_oco_order_id: str = None,
+        protection_mode: str = "polling",
+    ):
         """
         Register a position in the repo AFTER the broker (or paper-mode
         simulation) confirms the fill. Emits POSITION_OPENED audit and
@@ -191,6 +205,15 @@ class ExecutionNode:
         repo is only updated when we have a confirmed fill (real or
         simulated), so exposure / max_open_trades / mandate caps
         always reflect ground truth.
+
+        Sprint 46I: `broker_oco_order_id`/`protection_mode` let
+        `_execute_crypto_order` record that a REAL exchange-side OCO
+        order is protecting this position (see broker.py's
+        `create_oco_sell_order`) — PositionMonitor uses this to
+        reconcile against the exchange instead of polling price
+        thresholds. Defaults preserve the original "polling" behavior
+        for every other call site (equities, paper mode, OCO placement
+        failures).
         """
         if self.position_repo is None:
             # Repos weren't injected (e.g. unit tests that only exercise
@@ -213,6 +236,8 @@ class ExecutionNode:
                 risk_usd=risk_usd,
                 entry_ts=time.time(),
                 strategy=order_data.get("strategy", ""),
+                protection_mode=protection_mode,
+                broker_oco_order_id=broker_oco_order_id,
             )
             self.position_repo.add_open(pos)
             if self.audit:
@@ -721,7 +746,57 @@ class ExecutionNode:
         # max_open_trades / mandate caps remain consistent with
         # ground truth.
         if fill_verdict == "filled":
-            self._persist_filled_position(order_data, status)
+            # Sprint 46I: place a REAL protective OCO order on the
+            # exchange right after the entry fills — only for LONG
+            # positions (a sell-OCO protects a long; spot exchanges
+            # don't support shorting an asset you don't hold, so
+            # "short" crypto signals were never real exchange shorts
+            # to begin with — out of scope here, pre-existing).
+            # Best-effort: if this fails, the position is still
+            # persisted normally with protection_mode="polling" (the
+            # original behavior) — a failed OCO placement must never
+            # block the entry itself, since the position is already
+            # real on the exchange at this point.
+            broker_oco_order_id = None
+            protection_mode = "polling"
+            if self.use_native_crypto_stops and direction == "long":
+                stop_loss = float(order_data.get("stop_loss", 0) or 0)
+                take_profit = float(order_data.get("take_profit", 0) or 0)
+                if stop_loss > 0 and take_profit > 0 and take_profit > stop_loss:
+                    try:
+                        oco_response = broker.create_oco_sell_order(
+                            symbol=symbol,
+                            amount=amount,
+                            take_profit_price=take_profit,
+                            stop_price=stop_loss,
+                        )
+                        if isinstance(oco_response, dict) and oco_response.get("status") != "failed":
+                            broker_oco_order_id = str(
+                                oco_response.get("orderListId")
+                                or oco_response.get("listClientOrderId", "")
+                            ) or None
+                            if broker_oco_order_id:
+                                protection_mode = "native_oco"
+                        if protection_mode != "native_oco":
+                            print(
+                                f"[ExecutionNode] ⚠️ OCO placement falló para {asset} "
+                                f"(quedará en modo polling): {oco_response}"
+                            )
+                            if self.audit:
+                                self.audit.append("OCO_PLACEMENT_FAILED", {
+                                    "asset": asset, "response": str(oco_response)[:300],
+                                })
+                    except Exception as e:
+                        print(f"[ExecutionNode] ⚠️ OCO placement exception para {asset}: {e} (modo polling)")
+                        if self.audit:
+                            self.audit.append("OCO_PLACEMENT_FAILED", {
+                                "asset": asset, "error": str(e)[:300],
+                            })
+            self._persist_filled_position(
+                order_data, status,
+                broker_oco_order_id=broker_oco_order_id,
+                protection_mode=protection_mode,
+            )
         elif fill_verdict == "partial":
             # Sprint 43 H7: a partial fill is a real money event —
             # publish SYSTEM_ERROR so Carlos knows to investigate.

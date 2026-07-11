@@ -98,3 +98,132 @@ class BrokerClient:
         except Exception as e:
             print(f"[BrokerClient] -> Error ejecutando orden: {e}")
             return {"status": "failed", "error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Sprint 46I — native OCO stop-loss/take-profit (binance.us)
+    # ------------------------------------------------------------------
+    #
+    # Carlos: "vamos a lo grande... quiero que sea super ultra robusto"
+    # — worried that polling stops/TPs once per hour could miss a real
+    # exit opportunity. The fix for CRYPTO specifically: place a real
+    # OCO (One-Cancels-Other) order on the exchange itself at entry
+    # time. The exchange enforces the stop/take-profit with ZERO
+    # dependency on the bot process even running — a crash, a slow
+    # cycle, a deploy in progress, none of it matters once this order
+    # is resting on binance.us's books.
+    #
+    # (Equities/ETFs via Alpaca do NOT get this: Alpaca does not allow
+    # combining bracket/OCO orders with fractional/notional shares,
+    # which is how this bot buys SPY/QQQ/GLD/USO with a small account
+    # — see src/execution/alpaca_broker.py. Carlos explicitly chose to
+    # keep equities on the fast polling loop instead of requiring
+    # whole-share minimums — see main.py's fast monitor loop.)
+    #
+    # IMPORTANT — testing caveat: this session had NO shell/API access
+    # to place a real test order and confirm the exact response shape
+    # binance.us returns, or that binanceus's ccxt build exposes these
+    # exact implicit method names. It's built directly from ccxt's own
+    # published example (examples/py/binance-create-oco-order-with-
+    # implicit-methods.py) and Binance.US's documented POST /api/v3/
+    # order/oco endpoint, and `binanceus` extends ccxt's `binance`
+    # class (same implicit-method generation) — but it has NOT been
+    # exercised against the live API. Test with the exchange's minimum
+    # order size before trusting this at real position sizes, and
+    # watch the first few live positions closely.
+    #
+    # binance.us OCO order requirements (same as binance.com):
+    #   - `price` (the take-profit LIMIT leg) must be ABOVE current
+    #     price for a sell OCO (protecting a long).
+    #   - `stopPrice` (the stop-loss trigger) must be BELOW current
+    #     price for a sell OCO.
+    #   - `stopLimitPrice` is the actual limit price submitted once
+    #     `stopPrice` is touched — set slightly below `stopPrice` (a
+    #     small buffer) so the stop leg can still fill during a fast
+    #     drop instead of sitting unfilled above the market.
+
+    def create_oco_sell_order(
+        self,
+        symbol: str,
+        amount: float,
+        take_profit_price: float,
+        stop_price: float,
+        stop_limit_price: float = None,
+        stop_limit_buffer_pct: float = 0.5,
+    ) -> dict:
+        """Place a real OCO sell order protecting a LONG crypto position.
+
+        Args:
+            symbol: unified ccxt symbol, e.g. "BTC/USDT" (same format
+                `_execute_crypto_order` already builds).
+            amount: quantity to protect (same qty as the filled entry).
+            take_profit_price: the LIMIT leg — must be above current price.
+            stop_price: the STOP trigger — must be below current price.
+            stop_limit_price: the actual sell-limit price once stopPrice
+                triggers. If not given, defaults to `stop_price` minus
+                `stop_limit_buffer_pct`% — a small buffer so the order
+                can still fill during a fast drop instead of resting
+                above a falling market.
+            stop_limit_buffer_pct: used only when `stop_limit_price`
+                isn't given (see above).
+
+        Returns the raw exchange response dict on success, or
+        `{"status": "failed", "error": ...}` on any failure — same
+        shape as `create_market_order`, so callers can check
+        `.get("status") == "failed"` uniformly. Never raises.
+        """
+        try:
+            market = self.exchange.market(symbol)
+            if stop_limit_price is None:
+                stop_limit_price = stop_price * (1.0 - stop_limit_buffer_pct / 100.0)
+            params = {
+                "symbol": market["id"],
+                "side": "SELL",
+                "quantity": self.exchange.amount_to_precision(symbol, amount),
+                "price": self.exchange.price_to_precision(symbol, take_profit_price),
+                "stopPrice": self.exchange.price_to_precision(symbol, stop_price),
+                "stopLimitPrice": self.exchange.price_to_precision(symbol, stop_limit_price),
+                "stopLimitTimeInForce": "GTC",
+            }
+            print(
+                f"[BrokerClient] Colocando OCO real: {symbol} qty={amount} "
+                f"TP={take_profit_price} SL={stop_price} (stopLimit={stop_limit_price})"
+            )
+            response = self.exchange.private_post_order_oco(params)
+            print(f"[BrokerClient] -> OCO colocada: orderListId={response.get('orderListId', '?')}")
+            return response
+        except Exception as e:
+            print(f"[BrokerClient] -> Error colocando OCO: {e}")
+            return {"status": "failed", "error": str(e)}
+
+    def get_oco_order_status(self, symbol: str, order_list_id: str) -> dict:
+        """Query the status of a resting OCO order (for reconciliation:
+        has the exchange already closed this position via the stop or
+        take-profit leg?). Returns `{"status": "failed", "error": ...}`
+        on any failure — never raises. Expected keys on success include
+        `listOrderStatus` ("EXECUTING" / "ALL_DONE" / "REJECT") per
+        Binance's OCO order-list schema.
+        """
+        try:
+            market = self.exchange.market(symbol)
+            params = {"symbol": market["id"], "orderListId": order_list_id}
+            return self.exchange.private_get_order_list(params)
+        except Exception as e:
+            print(f"[BrokerClient] -> Error consultando OCO {order_list_id}: {e}")
+            return {"status": "failed", "error": str(e)}
+
+    def cancel_oco_order(self, symbol: str, order_list_id: str) -> dict:
+        """Cancel a resting OCO order — MUST be called before manually
+        closing a position that has one (e.g. dashboard "Close" /
+        "Close all"), otherwise the exchange still has a live sell
+        order that could fill later against a position the bot no
+        longer thinks is open. Returns `{"status": "failed", ...}` on
+        any failure (including "already filled/canceled", which the
+        caller should treat as fine to proceed) — never raises.
+        """
+        try:
+            market = self.exchange.market(symbol)
+            params = {"symbol": market["id"], "orderListId": order_list_id}
+            return self.exchange.private_delete_order_list(params)
+        except Exception as e:
+            print(f"[BrokerClient] -> Error cancelando OCO {order_list_id}: {e}")
+            return {"status": "failed", "error": str(e)}

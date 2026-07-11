@@ -809,8 +809,26 @@ def close_position(
     manual action, but the realized_pnl is 0.0 until the next bot
     cycle reconciles via PositionMonitor.
 
-    Returns the closed position dict on success, None if the position
-    doesn't exist or was already closed.
+    This is a REPO-ONLY close (same as always — this endpoint never
+    talks to the broker for a fresh market sell, live or paper). That
+    trade-off is fine for the documented "clean paper session before
+    going live" use case, but Sprint 46I adds one exception: if the
+    position has a real resting OCO order (protection_mode ==
+    "native_oco"), we CANCEL it here first. Without that, marking the
+    position closed in the repo while the exchange still has a live
+    OCO order resting would create the mirror-image of the "ghost
+    position" bug this session has been fixing all along — a phantom
+    CLOSE instead of a phantom OPEN: the bot stops tracking it
+    (exposure/mandate no longer count it) while the exchange could
+    still fill that OCO order later, completely outside the bot's
+    view. NOTE: canceling the OCO does NOT sell the underlying asset —
+    if this was a real LIVE position, the crypto itself is still held
+    in the account, just no longer protected or tracked by the bot.
+
+    Returns the closed position dict on success (with an added
+    `oco_cancelled` bool and, if applicable, a `note` warning about the
+    still-held asset), or None if the position doesn't exist or was
+    already closed.
     """
     repo = PositionRepository(path=positions_path)
     target = None
@@ -820,6 +838,24 @@ def close_position(
             break
     if target is None:
         return None
+
+    oco_cancelled = False
+    note = None
+    if target.protection_mode == "native_oco" and target.broker_oco_order_id:
+        if _BROKER_CLIENT is not None and hasattr(_BROKER_CLIENT, "cancel_oco_order"):
+            try:
+                symbol = target.asset.replace("-", "/") if "-" in target.asset else target.asset
+                _BROKER_CLIENT.cancel_oco_order(symbol, target.broker_oco_order_id)
+                oco_cancelled = True
+            except Exception:
+                pass
+        note = (
+            "This position had a real exchange-side OCO order. The dashboard's "
+            "close action does not place a market sell — the underlying asset "
+            "may still be held on the exchange. Verify on binance.us directly "
+            "if you intended to fully exit the market position."
+        )
+
     closed = repo.close_position(position_id, close_price=target.entry_price, reason="MANUAL_CLOSE_VIA_API")
     if closed is None:
         return None
@@ -832,15 +868,20 @@ def close_position(
         "close_price": closed.entry_price,    # fallback; bot will reconcile
         "reason": "MANUAL_CLOSE_VIA_API",
         "via": "api",
+        "oco_cancelled": oco_cancelled,
     })
-    return {
+    result = {
         "position_id": closed.position_id,
         "asset": closed.asset,
         "direction": closed.direction,
         "entry_price": closed.entry_price,
         "close_price": closed.entry_price,
         "realized_pnl_usd": closed.realized_pnl or 0.0,
+        "oco_cancelled": oco_cancelled,
     }
+    if note:
+        result["note"] = note
+    return result
 
 
 def close_all_positions(

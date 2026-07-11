@@ -44,6 +44,21 @@ class Position:
     close_reason: Optional[str] = None  # "STOP_HIT" | "TP_HIT" | "MANUAL" | "REVERSE_SIGNAL"
     realized_pnl: Optional[float] = None
 
+    # Sprint 46I — native broker-side protection (Carlos: "quiero que
+    # sea super ultra robusto", worried an hourly bot cycle could miss
+    # a stop-loss/take-profit cross). When the exchange itself holds a
+    # resting OCO/bracket order for this position, `protection_mode` is
+    # "native_oco" and `broker_oco_order_id` identifies it — the
+    # exchange enforces the stop/TP with ZERO dependency on the bot's
+    # cycle timing. Default "polling" preserves the original behavior
+    # (PositionMonitor compares price vs stop_loss/take_profit each
+    # cycle and sends a fresh close order) for every position opened
+    # before this existed, for paper mode, and for any broker/asset
+    # class that doesn't support native protection (Alpaca fractional
+    # shares — see src/execution/alpaca_broker.py's module docstring).
+    protection_mode: str = "polling"  # "polling" | "native_oco"
+    broker_oco_order_id: Optional[str] = None
+
     @property
     def notional_usd(self) -> float:
         return abs(self.entry_price * self.qty)

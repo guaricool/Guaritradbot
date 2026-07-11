@@ -65,9 +65,29 @@ class PositionMonitor:
         """
         Revisa stops/TPs y cierra las que cruzaron.
         Devuelve lista de posiciones cerradas en este ciclo.
+
+        Sprint 46I: positions with `protection_mode == "native_oco"`
+        (a real OCO order resting on binance.us, placed by
+        ExecutionNode at entry — see execution_node.py) are handled by
+        `_reconcile_native_oco` instead of the price-threshold check
+        below. This is INTENTIONAL and important: the exchange, not
+        this loop, is what actually closes those positions — if we
+        ALSO ran `should_close_at`/`_execute_close` (which sends a
+        fresh market order) on a native_oco position, we could sell
+        the same qty twice (once via the exchange's own OCO fill, once
+        via our own duplicate market order) the moment both conditions
+        happen to trigger in the same window. Every other position
+        (equities, paper mode, any crypto position where OCO placement
+        failed at entry) keeps the EXACT original polling behavior.
         """
         closes = []
         for pos in list(self.repo.open()):
+            if pos.protection_mode == "native_oco" and pos.broker_oco_order_id:
+                closed = self._reconcile_native_oco(pos, current_prices)
+                if closed:
+                    closes.append(closed)
+                continue
+
             asset = pos.asset
             price = current_prices.get(asset)
             if price is None:
@@ -87,6 +107,72 @@ class PositionMonitor:
                 if closed:
                     closes.append(closed)
         return closes
+
+    def _reconcile_native_oco(self, pos: Position, current_prices: Dict[str, float]):
+        """Sprint 46I: for a position protected by a real exchange-side
+        OCO order, ask the exchange whether it has ALREADY closed the
+        position (via the stop or take-profit leg) and, if so, mark it
+        closed in the LOCAL repo to match — the bot never sends its
+        own close order here, it's purely catching up to what the
+        exchange already did.
+
+        Close-price approximation: OCO legs fill AT (or extremely
+        close to) their specified trigger price, so we use
+        `pos.take_profit`/`pos.stop_loss` (whichever the current
+        observed price is on the correct side of) rather than trying
+        to fetch the exact fill price from a second API call — same
+        "good enough, reconciles further next cycle if wrong" spirit
+        as the dashboard's manual-close endpoint (see
+        src/api/state.py::close_position).
+
+        Fail-safe: any error talking to the exchange (network, auth,
+        unexpected response shape) leaves the position untouched — it
+        stays open in the repo and we simply retry on the next cycle.
+        The real OCO order is still resting on the exchange regardless
+        of whether OUR reconciliation succeeds, so this is safe to
+        retry indefinitely.
+        """
+        if self.broker is None or not hasattr(self.broker, "get_oco_order_status"):
+            return None
+        symbol = pos.asset.replace("-", "/") if "-" in pos.asset else pos.asset
+        try:
+            status = self.broker.get_oco_order_status(symbol, pos.broker_oco_order_id)
+        except Exception as e:
+            print(f"[PositionMonitor] ⚠️ OCO status check falló para {pos.asset}: {e} (reintenta próximo ciclo)")
+            return None
+        if not isinstance(status, dict) or status.get("status") == "failed":
+            # Query itself failed — leave untouched, retry next cycle.
+            return None
+        list_status = status.get("listOrderStatus")
+        if list_status != "ALL_DONE":
+            # Still resting on the exchange (EXECUTING) or some other
+            # non-terminal state — nothing to reconcile yet.
+            return None
+
+        price = current_prices.get(pos.asset)
+        if price is not None and price >= pos.take_profit:
+            close_price = pos.take_profit
+            reason = "TP_HIT_OCO"
+        elif price is not None and price <= pos.stop_loss:
+            close_price = pos.stop_loss
+            reason = "STOP_HIT_OCO"
+        else:
+            # OCO says done but we don't have a current price to decide
+            # which leg — fall back to take_profit as a neutral default
+            # rather than guessing wrong; the realized_pnl will be
+            # close enough (both legs are known, fixed prices) and this
+            # is a rare edge case (missing price feed at the exact
+            # moment of reconciliation).
+            close_price = pos.take_profit
+            reason = "OCO_ALL_DONE_PRICE_UNKNOWN"
+
+        closed = self._finalize_close(pos, close_price, reason)
+        if closed:
+            print(
+                f"  🔒 OCO reconciled: {pos.asset} {pos.direction} cerrado por el "
+                f"exchange ({reason}) @ ${close_price:.4f}"
+            )
+        return closed
 
     def check_with_signals(
         self,
@@ -180,7 +266,35 @@ class PositionMonitor:
         For paper mode (no broker), the existing behavior is preserved
         (close_position is called directly) because there is no real
         exchange to talk to.
+
+        Sprint 46I: this is also the path `check_with_signals`
+        (SMART_PROFIT_TAKE) uses for ANY open position, including ones
+        protected by a real exchange-side OCO order. If we sent a
+        fresh market sell WITHOUT first canceling that resting OCO
+        order, the position would end up with two live exit paths at
+        once — the OCO order would keep sitting on the exchange after
+        the repo already considers the position closed, and could
+        later try to sell qty the account no longer holds. So: cancel
+        the OCO first (best-effort — if it's already filled/gone,
+        that's fine, we proceed anyway) whenever this is a
+        native_oco position.
         """
+        if (
+            pos.protection_mode == "native_oco"
+            and pos.broker_oco_order_id
+            and self.broker is not None
+            and hasattr(self.broker, "cancel_oco_order")
+        ):
+            try:
+                symbol = pos.asset.replace("-", "/") if "-" in pos.asset else pos.asset
+                self.broker.cancel_oco_order(symbol, pos.broker_oco_order_id)
+            except Exception as e:
+                print(
+                    f"[PositionMonitor] ⚠️ No se pudo cancelar OCO {pos.broker_oco_order_id} "
+                    f"para {pos.asset} antes del cierre manual: {e} (puede que ya se haya "
+                    f"ejecutado — continuando con el cierre)"
+                )
+
         # If we have a real broker, try to close on the exchange first.
         if self.broker is not None:
             try:
@@ -224,6 +338,15 @@ class PositionMonitor:
                     )
                 return None  # DO NOT close in repo
 
+        return self._finalize_close(pos, price, reason)
+
+    def _finalize_close(self, pos: Position, price: float, reason: str):
+        """Sprint 46I: the actual repo mutation + audit/event_bus
+        notification, extracted out of `_execute_close` so
+        `_reconcile_native_oco` can share it — that path never sends
+        its own broker order (the exchange already closed the position
+        via the OCO fill), it only needs this bookkeeping tail.
+        """
         closed = self.repo.close_position(pos.position_id, price, reason)
         if closed and self.audit is not None:
             self.audit.append(

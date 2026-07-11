@@ -20,6 +20,7 @@ import json
 import argparse
 import threading
 
+import schedule
 import yaml
 
 from src.workflows.engine import WorkflowEngine
@@ -164,6 +165,31 @@ def _is_trading_paused(audit_dir: str = "audit") -> bool:
         return bool(data.get("paused", False))
     except Exception:
         return False
+
+
+def _fetch_prices_for_open_positions(position_repo) -> dict:
+    """Sprint 46I: shared helper — fetch last-close price for every
+    asset with a currently open position. Extracted so both the fast
+    position-monitor loop (every few minutes, see main()'s
+    `fast_monitor_tick`) and the hourly drawdown check (job_with_
+    monitor) can each fetch their own snapshot independently, instead
+    of threading shared mutable state between two differently-timed
+    scheduled jobs. Best-effort per-asset: a single failed fetch is
+    skipped, not fatal to the whole cycle.
+    """
+    opens = position_repo.open()
+    prices: dict = {}
+    if opens:
+        from src.agents.market_analyst import MarketAnalystAgent as _MA
+        ma = _MA()
+        for pos in opens:
+            try:
+                df = ma.fetch_one(pos.asset, interval="1d", period="1mo")
+                if df is not None and len(df) > 0:
+                    prices[pos.asset] = float(df["Close"].iloc[-1])
+            except Exception:
+                continue
+    return prices
 
 
 def _start_api_server(
@@ -647,6 +673,11 @@ def main():
         audit=audit,
         mode_override_path=override_path,  # B033: paper-mode gate
         position_repo=position_repo,         # Sprint 43 C5: persist on confirmed fill
+        # Sprint 46I: real OCO stop-loss/take-profit orders on binance.us
+        # for crypto longs, opt-in via config.yaml (off by default —
+        # see src/execution/broker.py's OCO methods for the testing
+        # caveat before enabling this in live mode).
+        use_native_crypto_stops=bool(trading_cfg.get("use_native_crypto_stops", False)),
     )
     position_monitor = PositionMonitor(
         repo=position_repo,
@@ -798,42 +829,159 @@ def main():
     original_job = scheduler.job
 
     # Sprint 34: per-position P&L update scheduler (hourly Telegram updates).
-    # Initialized lazily on the first job_with_monitor tick so the
+    # Initialized lazily on the first fast_monitor_tick so the
     # config["notifications"] block is available at construction time.
     _pupdate_scheduler = None
 
-    def job_with_monitor():
-        # Sprint 46D fix (was Sprint 43 H3, but never actually worked):
-        # the drawdown check below used to read `prices` in its very
-        # first expression (`if (prices and (prices := {...})) else ...`)
-        # while ALSO assigning `prices` later in this same function (in
-        # the monitor block, further down). Python's scoping rule makes
-        # any name assigned anywhere in a function local to the WHOLE
-        # function — so that first read of `prices` ran before `prices`
-        # had ever been bound in this call's frame, raising
-        # UnboundLocalError on literally every single cycle, silently
-        # swallowed by the bare `except Exception` around it (logged to
-        # stdout only). Net effect: `drawdown_kill_switch.update()` was
-        # NEVER called — the "revenge trading" safety net had been
-        # completely dead since it was added, with no audit trail
-        # showing it was broken.
-        #
-        # Fix: fetch current prices for open positions ONCE, right here
-        # at the top (this used to happen only inside the monitor block
-        # below) — both the drawdown check and the monitor need the
-        # same prices, so there's no reason to fetch twice.
+    def fast_monitor_tick():
+        """Sprint 46I — decoupled, fast-cadence position protection.
+
+        Carlos's concern (verbatim): "si es cada hora puede perder la
+        opcion de vender/comprar... y si en ese espacio entre un
+        analisis y otro pierde una gran oportunidad?" He was right —
+        before this, stop-loss/take-profit checks ran on the SAME
+        hourly cadence as the full multi-agent analysis cycle, so a
+        position could blow through its stop and sit unprotected for
+        up to an hour before the bot even looked at it again.
+
+        This function is scheduled independently (see
+        config.yaml's schedule.fast_monitor_interval_minutes, default
+        2) via `schedule.every(...).minutes.do(fast_monitor_tick)`
+        below, registered into the SAME global `schedule` instance
+        `EpochScheduler.start()`'s while-loop already drives — no
+        changes needed to scheduler.py. It runs ONLY the position-
+        protection half of what job_with_monitor used to do inline:
+        SL/TP polling, smart profit-take, OCO reconciliation (for
+        crypto positions using Sprint 46I's native_oco protection —
+        see position_monitor.py), equity tracking, and per-position
+        P&L update notifications. It never touches new-entry
+        generation (StrategyAgent/DebateAgent/RiskManagerAgent) — that
+        stays on the hourly cycle in job_with_monitor, which is
+        heavier (yfinance fetches across the full asset universe,
+        GP/hyperopt-adjacent work) and doesn't need sub-hour freshness
+        the way protecting an already-open position does.
+        """
         opens = position_repo.open()
-        prices = {}  # asset -> last close; populated below if there are open positions
-        if opens:
-            from src.agents.market_analyst import MarketAnalystAgent as _MA
-            ma = _MA()
-            for pos in opens:
+        if not opens:
+            return
+        prices = _fetch_prices_for_open_positions(position_repo)
+        if not prices:
+            return
+        try:
+            # 1a. SL/TP mechanical check (+ OCO reconciliation for
+            # native_oco positions — see position_monitor.py).
+            closed = position_monitor.check(prices)
+            if closed:
+                print(f"[PositionMonitor] {len(closed)} posiciones cerradas por stops/TPs")
+
+            # 1b. Sprint 18: smart profit-take on reversal signals.
+            # Read latest HYPOTHESIS_GENERATED from audit (last 1h) and
+            # close any open position in profit that has a strong
+            # opposite signal.
+            try:
+                import time as _t
+                recent_hyps = audit.read_since(_t.time() - 3600)
+                signals = [
+                    h for h in recent_hyps
+                    if h.get("event_type") == "HYPOTHESIS_GENERATED"
+                ]
+                if signals:
+                    early_closed = position_monitor.check_with_signals(
+                        current_prices=prices,
+                        signals=signals,
+                        signal_min_strength=0.6,
+                    )
+                    if early_closed:
+                        print(
+                            f"[PositionMonitor] {len(early_closed)} posiciones "
+                            f"cerradas por SMART_PROFIT_TAKE (reversal)"
+                        )
+            except Exception as e2:
+                print(f"[PositionMonitor] smart-profit-take falló: {e2}")
+
+            # 1c. Refresh RiskAgent's current_prices view so position
+            # replacement scoring uses live prices.
+            try:
+                rm = registry.get("RiskManagerAgent")
+                if rm is not None:
+                    rm.current_prices = prices
+            except Exception:
+                pass
+
+            # Sprint 23: update equity tracker with current prices
+            try:
+                snap = equity_tracker.update(prices)
+                from src.safety.equity_tracker import format_equity_line
+                print(f"  [Equity] {format_equity_line(snap, precision=4)}")
+                # Sprint 24: persist to disk (crash-only)
                 try:
-                    df = ma.fetch_one(pos.asset, interval="1d", period="1mo")
-                    if df is not None and len(df) > 0:
-                        prices[pos.asset] = float(df["Close"].iloc[-1])
-                except Exception:
-                    continue
+                    persist_tracker(equity_tracker, _equity_state_path)
+                except Exception as _persist_err:
+                    print(f"  [Equity] persist falló: {_persist_err}")
+            except Exception as eqe:
+                print(f"  [Equity] tracker update falló: {eqe}")
+
+            # Sprint 34: hourly P&L update scheduler. Emits
+            # POSITION_UPDATE events at the configured cadence
+            # (default 60 min) per position. Skips silently if no
+            # open positions or no prices available. The
+            # NotificationAgent subscribed to POSITION_UPDATE
+            # sends the actual Telegram message.
+            try:
+                from src.notifications.position_update_scheduler import (
+                    PositionUpdateScheduler,
+                )
+                nonlocal _pupdate_scheduler
+                if _pupdate_scheduler is None:
+                    _pupdate_interval = int(
+                        config.get("notifications", {}).get(
+                            "position_update_minutes", 60
+                        )
+                    )
+                    _pupdate_min_pnl = float(
+                        config.get("notifications", {}).get(
+                            "position_update_min_pnl_usd", 0.0
+                        )
+                    )
+                    _pupdate_scheduler = PositionUpdateScheduler(
+                        position_repo=position_repo,
+                        event_bus=event_bus,
+                        interval_minutes=_pupdate_interval,
+                        min_pnl_usd=_pupdate_min_pnl,
+                    )
+                    print(
+                        f"  [PosUpdate] scheduler armed: "
+                        f"interval={_pupdate_interval}m, "
+                        f"min_pnl=${_pupdate_min_pnl:.2f}"
+                    )
+                n_emitted = _pupdate_scheduler.tick(prices)
+                if n_emitted:
+                    print(f"  [PosUpdate] emitted {n_emitted} update(s)")
+                # Drop any closed positions from the cadence map
+                open_ids = {p.position_id for p in position_repo.open()}
+                for pid in list(_pupdate_scheduler._last_update.keys()):
+                    if pid not in open_ids:
+                        _pupdate_scheduler.clear_position(pid)
+            except Exception as _pue:
+                print(f"  [PosUpdate] scheduler falló: {_pue}")
+        except Exception as e:
+            print(f"[PositionMonitor] check falló: {e}")
+
+    def job_with_monitor():
+        # Sprint 46I: position protection (stop-loss/take-profit,
+        # smart profit-take, OCO reconciliation, equity tracking) no
+        # longer lives here — it runs independently on a faster
+        # cadence via `fast_monitor_tick` (see above and the
+        # `schedule.every(...).minutes.do(fast_monitor_tick)` call
+        # below main()). This function now only does the drawdown
+        # check + capital routing + manual pause gates, then the full
+        # hourly analysis cycle (original_job). It still needs its OWN
+        # price snapshot for the drawdown equity calc below — fetched
+        # independently from fast_monitor_tick's (different cadence,
+        # simplest to keep them decoupled rather than share mutable
+        # state between two differently-timed scheduled jobs).
+        opens = position_repo.open()
+        prices = _fetch_prices_for_open_positions(position_repo)
 
         # Sprint 43 H3 (fixed for real in 46D): drawdown kill switch
         # check. If the account has dropped more than the configured
@@ -897,108 +1045,6 @@ def main():
                     })
                 except Exception:
                     pass
-
-        # 1. Monitor: cierra stops/TPs antes que la nueva ronda
-        try:
-            if opens:
-                if prices:
-                    # 1a. SL/TP mechanical check
-                    closed = position_monitor.check(prices)
-                    if closed:
-                        print(f"[PositionMonitor] {len(closed)} posiciones cerradas por stops/TPs")
-
-                    # 1b. Sprint 18: smart profit-take on reversal signals.
-                    # Read latest HYPOTHESIS_GENERATED from audit (last 1h) and
-                    # close any open position in profit that has a strong
-                    # opposite signal.
-                    try:
-                        import time as _t
-                        recent_hyps = audit.read_since(_t.time() - 3600)
-                        signals = [
-                            h for h in recent_hyps
-                            if h.get("event_type") == "HYPOTHESIS_GENERATED"
-                        ]
-                        if signals:
-                            early_closed = position_monitor.check_with_signals(
-                                current_prices=prices,
-                                signals=signals,
-                                signal_min_strength=0.6,
-                            )
-                            if early_closed:
-                                print(
-                                    f"[PositionMonitor] {len(early_closed)} posiciones "
-                                    f"cerradas por SMART_PROFIT_TAKE (reversal)"
-                                )
-                    except Exception as e2:
-                        print(f"[PositionMonitor] smart-profit-take falló: {e2}")
-
-                    # 1c. Refresh RiskAgent's current_prices view so position
-                    # replacement scoring uses live prices.
-                    try:
-                        rm = registry.get("RiskManagerAgent")
-                        if rm is not None:
-                            rm.current_prices = prices
-                    except Exception:
-                        pass
-
-                    # Sprint 23: update equity tracker with current prices
-                    try:
-                        snap = equity_tracker.update(prices)
-                        from src.safety.equity_tracker import format_equity_line
-                        print(f"  [Equity] {format_equity_line(snap, precision=4)}")
-                        # Sprint 24: persist to disk (crash-only)
-                        try:
-                            persist_tracker(equity_tracker, _equity_state_path)
-                        except Exception as _persist_err:
-                            print(f"  [Equity] persist falló: {_persist_err}")
-                    except Exception as eqe:
-                        print(f"  [Equity] tracker update falló: {eqe}")
-
-                    # Sprint 34: hourly P&L update scheduler. Emits
-                    # POSITION_UPDATE events at the configured cadence
-                    # (default 60 min) per position. Skips silently if no
-                    # open positions or no prices available. The
-                    # NotificationAgent subscribed to POSITION_UPDATE
-                    # sends the actual Telegram message.
-                    try:
-                        from src.notifications.position_update_scheduler import (
-                            PositionUpdateScheduler,
-                        )
-                        nonlocal _pupdate_scheduler
-                        if _pupdate_scheduler is None:
-                            _pupdate_interval = int(
-                                config.get("notifications", {}).get(
-                                    "position_update_minutes", 60
-                                )
-                            )
-                            _pupdate_min_pnl = float(
-                                config.get("notifications", {}).get(
-                                    "position_update_min_pnl_usd", 0.0
-                                )
-                            )
-                            _pupdate_scheduler = PositionUpdateScheduler(
-                                position_repo=position_repo,
-                                event_bus=event_bus,
-                                interval_minutes=_pupdate_interval,
-                                min_pnl_usd=_pupdate_min_pnl,
-                            )
-                            print(
-                                f"  [PosUpdate] scheduler armed: "
-                                f"interval={_pupdate_interval}m, "
-                                f"min_pnl=${_pupdate_min_pnl:.2f}"
-                            )
-                        n_emitted = _pupdate_scheduler.tick(prices)
-                        if n_emitted:
-                            print(f"  [PosUpdate] emitted {n_emitted} update(s)")
-                        # Drop any closed positions from the cadence map
-                        open_ids = {p.position_id for p in position_repo.open()}
-                        for pid in list(_pupdate_scheduler._last_update.keys()):
-                            if pid not in open_ids:
-                                _pupdate_scheduler.clear_position(pid)
-                    except Exception as _pue:
-                        print(f"  [PosUpdate] scheduler falló: {_pue}")
-        except Exception as e:
-            print(f"[PositionMonitor] check falló: {e}")
 
         # Sprint 46G: capital-aware asset routing. Re-check broker
         # balances every cycle and narrow the analyze_market step's
@@ -1074,6 +1120,28 @@ def main():
             print("[TradingPause] Ciclo de nuevas entradas SALTADO (pausado manualmente desde el dashboard). Monitor de SL/TP sigue corriendo normalmente.")
 
     scheduler.job = job_with_monitor
+
+    # Sprint 46I: register the fast position-monitor loop on the SAME
+    # global `schedule` instance EpochScheduler.start()'s while-loop
+    # already drives (`schedule.run_pending()`) — no changes needed in
+    # scheduler.py. Runs independently of the hourly analysis cycle
+    # (see fast_monitor_tick's docstring for why). Only meaningful in
+    # daemon mode: `--once` never enters that while-loop, so this
+    # schedule entry simply never fires there (same as before this
+    # existed — no regression for --once).
+    _fast_monitor_minutes = float(
+        config.get("schedule", {}).get("fast_monitor_interval_minutes", 2)
+    )
+    schedule.every(_fast_monitor_minutes).minutes.do(fast_monitor_tick)
+    print(f"[Init] Fast position monitor armado: cada {_fast_monitor_minutes} min "
+          f"(independiente del ciclo de análisis de {config.get('schedule', {}).get('run_interval_hours', 1)}h)")
+    # Run once immediately at startup too, so open positions are
+    # protected right away instead of waiting up to
+    # fast_monitor_interval_minutes for the first tick.
+    try:
+        fast_monitor_tick()
+    except Exception as e:
+        print(f"[Init] fast_monitor_tick inicial falló (continuando): {e}")
 
     try:
         if args.once:
