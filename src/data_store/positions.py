@@ -109,6 +109,14 @@ class PositionRepository:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.positions: List[Position] = []
+        # Sprint 46N (audit C7): set by _quarantine_corrupt_file() when
+        # the on-disk file couldn't be parsed. None means the load was
+        # clean (file missing or parsed fine). Callers (main.py's
+        # startup sequence, the dashboard API) can check this to
+        # surface a loud warning instead of silently continuing as if
+        # nothing happened.
+        self.load_error: Optional[str] = None
+        self.quarantined_path: Optional[Path] = None
         self._load()
 
     def _load(self):
@@ -118,7 +126,49 @@ class PositionRepository:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             self.positions = [Position(**p) for p in data.get("positions", [])]
         except Exception as e:
-            print(f"[PositionRepo] No se pudo cargar {self.path}: {e}")
+            self._quarantine_corrupt_file(e)
+
+    def _quarantine_corrupt_file(self, error: Exception) -> None:
+        """Sprint 46N (audit C7): a corrupt/unparseable positions.json
+        used to be silently treated as "no positions" — `self.positions`
+        just stayed at its initial empty list, and the VERY NEXT write
+        (`_save()`, triggered by ANY subsequent `add_open`/
+        `close_position` call) would overwrite the corrupt file with
+        that empty state via the atomic tmp+replace pattern below,
+        permanently destroying whatever position history was in the
+        corrupt file with zero chance of manual recovery — exactly the
+        "silently wipes positions.json" finding.
+
+        Now: the corrupt file's raw bytes are copied to a timestamped
+        `<name>.corrupt-<epoch>` quarantine file BEFORE any write can
+        touch the original, the failure is recorded on `self.load_error`
+        (not just printed — so callers like main.py's startup sequence
+        or the dashboard API can surface it, e.g. as a SYSTEM_ERROR
+        event or a dashboard banner) and `self.positions` stays empty
+        (there's no safe way to guess valid position data out of a
+        corrupt file) — but the ORIGINAL bytes survive on disk for
+        manual inspection/recovery instead of vanishing on the next
+        save.
+        """
+        self.load_error = str(error)
+        try:
+            quarantine_path = self.path.with_name(
+                f"{self.path.name}.corrupt-{int(time.time())}"
+            )
+            quarantine_path.write_bytes(self.path.read_bytes())
+            self.quarantined_path = quarantine_path
+            print(
+                f"[PositionRepo] ⚠️ {self.path} está corrupto ({error}). "
+                f"Copia de seguridad guardada en {quarantine_path}. "
+                f"Arrancando con 0 posiciones — REVISAR MANUALMENTE si "
+                f"había posiciones abiertas antes de operar."
+            )
+        except Exception as qe:
+            print(
+                f"[PositionRepo] ⚠️ {self.path} está corrupto ({error}) Y "
+                f"la cuarentena también falló ({qe}). Arrancando con 0 "
+                f"posiciones — REVISAR MANUALMENTE."
+            )
 
     def _save(self):
         data = {"positions": [asdict(p) for p in self.positions], "saved_at": time.time()}

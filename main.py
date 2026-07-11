@@ -584,6 +584,38 @@ def main():
 
     position_repo = PositionRepository("data_store/positions.json")
 
+    # Sprint 46N (audit C7): a corrupt positions.json is quarantined
+    # (not silently wiped) by PositionRepository itself — see its
+    # `_quarantine_corrupt_file` docstring — but startup still needs to
+    # make noise about it here, otherwise "not silently wiped on disk"
+    # would still be "silently ignored in practice" if nothing tells
+    # Carlos to go check whether he actually had open positions.
+    if position_repo.load_error:
+        _corrupt_msg = (
+            f"⚠️ positions.json estaba corrupto al arrancar "
+            f"({position_repo.load_error}). Copia de seguridad en "
+            f"{position_repo.quarantined_path}. El bot arrancó con 0 "
+            f"posiciones registradas — si tenías posiciones abiertas, "
+            f"revisa la copia de seguridad y el estado real en el "
+            f"broker ANTES de dejar operar al bot."
+        )
+        print(f"[Init] {_corrupt_msg}")
+        audit.append("POSITIONS_FILE_CORRUPT", {
+            "error": position_repo.load_error,
+            "quarantined_path": str(position_repo.quarantined_path)
+            if position_repo.quarantined_path else None,
+        })
+        if event_bus is not None:
+            try:
+                event_bus.publish("SYSTEM_ERROR", {
+                    "kind": "POSITIONS_FILE_CORRUPT",
+                    "error": position_repo.load_error,
+                    "quarantined_path": str(position_repo.quarantined_path)
+                    if position_repo.quarantined_path else None,
+                })
+            except Exception as e:
+                print(f"[Init] No se pudo publicar SYSTEM_ERROR de POSITIONS_FILE_CORRUPT: {e}")
+
     # Sprint 46A/B: start the dashboard's HTTP/WebSocket API. Must come
     # after `audit`/`position_repo` exist (it reads the same on-disk
     # state) and before the main loop, so the dashboard has data from
