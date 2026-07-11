@@ -221,6 +221,38 @@ def main():
         except Exception as e:
             print(f"[Init] trading_config_override.json parse error (ignored): {e}")
 
+    # Sprint 46F: dashboard-editable risk/mandate settings — the
+    # drawdown kill-switch threshold/cooldown, the mandate's allowed-
+    # symbols list, and the portfolio-risk gate caps (asset-class
+    # concentration, correlation, CVaR, stress-test). Same override-
+    # file pattern as trading_config_override.json above: never
+    # touches config.yaml directly, mutates `config["risk"]` /
+    # `config["mandate"]["allowed_symbols"]` in place BEFORE anything
+    # below reads them (DrawdownKillSwitch, _build_mandate,
+    # RiskManagerAgent's construction all read from `config` further
+    # down in this function).
+    _risk_override_path = os.path.join(
+        config.get("mandate", {}).get("audit_log_dir", "audit"),
+        "risk_config_override.json",
+    )
+    if os.path.exists(_risk_override_path):
+        try:
+            with open(_risk_override_path, "r", encoding="utf-8") as f:
+                _risk_overrides = json.load(f)
+            if isinstance(_risk_overrides, dict):
+                _risk_applied = {k: v for k, v in _risk_overrides.items() if not k.startswith("_")}
+                if _risk_applied:
+                    config.setdefault("risk", {})
+                    config.setdefault("mandate", {})
+                    for _k, _v in _risk_applied.items():
+                        if _k == "mandate_allowed_symbols":
+                            config["mandate"]["allowed_symbols"] = _v
+                        else:
+                            config["risk"][_k] = _v
+                    print(f"[Init] Risk/mandate config override applied from {_risk_override_path}: {_risk_applied}")
+        except Exception as e:
+            print(f"[Init] risk_config_override.json parse error (ignored): {e}")
+
     risk_per_trade_pct = trading_cfg.get("risk_per_trade_pct", 1.0)
     atr_stop_multiplier = trading_cfg.get("atr_stop_multiplier", 2.0)
     atr_take_profit_multiplier = trading_cfg.get("atr_take_profit_multiplier", 4.0)
@@ -335,10 +367,36 @@ def main():
     # "revenge trading" safety net it provides was dormant.
     # The threshold and cooldown are config-driven (with safe
     # defaults) so the operator can tighten them per-strategy.
+    _risk_cfg = config.get("risk", {}) or {}
     drawdown_kill_switch = DrawdownKillSwitch(
-        threshold_pct=float(config.get("risk", {}).get("drawdown_kill_threshold_pct", 15.0)),
-        cooldown_hours=float(config.get("risk", {}).get("drawdown_cooldown_hours", 24.0)),
+        threshold_pct=float(_risk_cfg.get("drawdown_kill_threshold_pct", 15.0)),
+        cooldown_hours=float(_risk_cfg.get("drawdown_cooldown_hours", 24.0)),
     )
+    # Sprint 46F: these 4 portfolio-risk gate caps have existed as
+    # RiskManagerAgent constructor params since Sprint 44/45, but
+    # main.py never actually read them from config.yaml — they always
+    # silently used the class's hard-coded defaults (60/75/20/70).
+    # Reading them here (same `risk:` section as the drawdown settings
+    # above, now with the Sprint 46F override already merged in) means
+    # both config.yaml AND the dashboard's Settings page can actually
+    # change them.
+    max_asset_class_concentration_pct = float(_risk_cfg.get("max_asset_class_concentration_pct", 60.0))
+    max_avg_correlation_pct = float(_risk_cfg.get("max_avg_correlation_pct", 75.0))
+    max_cvar_95_pct = float(_risk_cfg.get("max_cvar_95_pct", 20.0))
+    max_stress_drawdown_pct = float(_risk_cfg.get("max_stress_drawdown_pct", 70.0))
+
+    # Sprint 46E: startup self-test for the drawdown kill switch. This
+    # exact safety mechanism was completely dead (an UnboundLocalError
+    # in job_with_monitor(), silently swallowed every cycle) for its
+    # entire life before this sprint's fix — a startup self-test like
+    # this would have caught it in seconds instead of an audit finding
+    # it later. Runs against a THROWAWAY DrawdownKillSwitch instance
+    # (never `drawdown_kill_switch` itself), so it can't corrupt real
+    # equity tracking. Best-effort: logs loudly on failure but never
+    # blocks startup (see src/safety/selftest.py's module docstring).
+    from src.safety.selftest import run_startup_selftests
+    run_startup_selftests(audit=audit, event_bus=event_bus)
+
     position_repo = PositionRepository("data_store/positions.json")
 
     # Sprint 46A/B: start the dashboard's HTTP/WebSocket API. Must come
@@ -530,6 +588,15 @@ def main():
             position_repo=position_repo,
             enable_position_replacement=enable_position_replacement,
             replacement_score_threshold=replacement_score_threshold,
+            # Sprint 46F: previously always used this constructor's
+            # hard-coded defaults regardless of config.yaml — now
+            # config-driven (and dashboard-editable via
+            # risk_config_override.json, see the Sprint 46F block
+            # near the top of main()).
+            max_asset_class_concentration_pct=max_asset_class_concentration_pct,
+            max_avg_correlation_pct=max_avg_correlation_pct,
+            max_cvar_95_pct=max_cvar_95_pct,
+            max_stress_drawdown_pct=max_stress_drawdown_pct,
         ),
         "DebateAgent": DebateAgent(position_repo=position_repo, audit=audit),
         "ExecutionAgent": ExecutionAgent(event_bus=event_bus),

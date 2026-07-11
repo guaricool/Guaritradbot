@@ -573,6 +573,126 @@ def write_trading_config(
 
 
 # ----------------------------------------------------------------------
+# Risk / mandate config (Sprint 46F) — dashboard-editable safety gates
+# ----------------------------------------------------------------------
+#
+# Same override-file pattern as trading config above, covering the
+# other two places safety-relevant numbers live in config.yaml:
+#   - `risk:` — drawdown kill-switch threshold/cooldown, plus the
+#     Sprint 44/45 portfolio-risk gate caps (asset-class concentration,
+#     correlation, CVaR, stress-test) that RiskManagerAgent has always
+#     supported as constructor params but main.py never actually read
+#     from config.yaml at all (they silently used the class's
+#     hard-coded defaults, so hand-editing config.yaml wouldn't even
+#     have changed them before this sprint).
+#   - `mandate.allowed_symbols` — the symbol allow-list the MandateGate
+#     enforces. Kept separate from the other mandate fields
+#     (max_position_usd/max_daily_loss_usd/max_total_exposure_usd) —
+#     those are intentionally NOT exposed here yet; ask if you want
+#     them added too, same mechanism.
+#
+# Like trading config, this is READ at startup only — a saved change
+# needs a bot restart (POST /api/restart) to take effect.
+
+RISK_CONFIG_DEFAULTS: Dict[str, Any] = {
+    "drawdown_kill_threshold_pct": 15.0,
+    "drawdown_cooldown_hours": 24.0,
+    "max_asset_class_concentration_pct": 60.0,
+    "max_avg_correlation_pct": 75.0,
+    "max_cvar_95_pct": 20.0,
+    "max_stress_drawdown_pct": 70.0,
+    "mandate_allowed_symbols": [],
+}
+
+
+def _risk_override_path(audit_path: Optional[str] = None) -> Path:
+    if audit_path is None:
+        audit_path = os.getenv("DASHBOARD_AUDIT_PATH", "audit/audit.jsonl")
+    return Path(audit_path).parent / "risk_config_override.json"
+
+
+def read_risk_config(
+    config: Optional[dict] = None,
+    audit_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Effective risk/mandate config: config.yaml's `risk:` section
+    (plus `mandate.allowed_symbols`) with any dashboard-saved override
+    layered on top. Mirrors `read_trading_config` — see that function
+    and this section's header comment for the full rationale.
+    """
+    if config is None:
+        config = {}
+    risk_cfg = config.get("risk", {}) or {}
+    mandate_cfg = config.get("mandate", {}) or {}
+    merged: Dict[str, Any] = {
+        "drawdown_kill_threshold_pct": risk_cfg.get(
+            "drawdown_kill_threshold_pct", RISK_CONFIG_DEFAULTS["drawdown_kill_threshold_pct"]
+        ),
+        "drawdown_cooldown_hours": risk_cfg.get(
+            "drawdown_cooldown_hours", RISK_CONFIG_DEFAULTS["drawdown_cooldown_hours"]
+        ),
+        "max_asset_class_concentration_pct": risk_cfg.get(
+            "max_asset_class_concentration_pct", RISK_CONFIG_DEFAULTS["max_asset_class_concentration_pct"]
+        ),
+        "max_avg_correlation_pct": risk_cfg.get(
+            "max_avg_correlation_pct", RISK_CONFIG_DEFAULTS["max_avg_correlation_pct"]
+        ),
+        "max_cvar_95_pct": risk_cfg.get("max_cvar_95_pct", RISK_CONFIG_DEFAULTS["max_cvar_95_pct"]),
+        "max_stress_drawdown_pct": risk_cfg.get(
+            "max_stress_drawdown_pct", RISK_CONFIG_DEFAULTS["max_stress_drawdown_pct"]
+        ),
+        "mandate_allowed_symbols": list(mandate_cfg.get("allowed_symbols", [])),
+    }
+    updated_at = None
+    updated_by = None
+    override_path = _risk_override_path(audit_path)
+    if override_path.exists():
+        try:
+            with open(override_path, "r", encoding="utf-8") as f:
+                ov = json.load(f)
+            if isinstance(ov, dict):
+                for k, v in ov.items():
+                    if k in RISK_CONFIG_DEFAULTS:
+                        merged[k] = v
+                updated_at = ov.get("_updated_at")
+                updated_by = ov.get("_updated_by")
+        except Exception:
+            pass  # Malformed override file = ignore, use config.yaml fallback
+    merged["_override_updated_at"] = updated_at
+    merged["_override_updated_by"] = updated_by
+    return merged
+
+
+def write_risk_config(
+    updates: Dict[str, Any],
+    updated_by: str = "dashboard",
+    config: Optional[dict] = None,
+    audit_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Merge `updates` (partial dict of risk/mandate fields) into
+    `audit/risk_config_override.json`. Mirrors `write_trading_config`.
+    """
+    override_path = _risk_override_path(audit_path)
+    override_path.parent.mkdir(parents=True, exist_ok=True)
+    existing: Dict[str, Any] = {}
+    if override_path.exists():
+        try:
+            with open(override_path, "r", encoding="utf-8") as f:
+                existing = json.load(f) or {}
+        except Exception:
+            existing = {}
+    for k, v in updates.items():
+        if k in RISK_CONFIG_DEFAULTS:
+            existing[k] = v
+    existing["_updated_at"] = time.time()
+    existing["_updated_by"] = updated_by
+    tmp = override_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    tmp.replace(override_path)  # atomic on POSIX
+    return read_risk_config(config=config, audit_path=audit_path)
+
+
+# ----------------------------------------------------------------------
 # State snapshot
 # ----------------------------------------------------------------------
 

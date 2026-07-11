@@ -284,6 +284,95 @@ def evaluate_tree(
     return _evaluate_tree_unsigned(tree, indicators).astype(float) * direction
 
 
+def _simulate_realistic_exits(
+    raw_signal: pd.Series,
+    close: pd.Series,
+    high: Optional[pd.Series] = None,
+    low: Optional[pd.Series] = None,
+    atr_stop_multiplier: float = 2.0,
+    atr_take_profit_multiplier: float = 4.0,
+) -> pd.Series:
+    """Turn a raw entry-trigger series into a held-position series that
+    exits at a stop-loss or take-profit, instead of holding forever
+    until the next opposite trigger.
+
+    Sprint 46E fix: `fitness()` used to do
+    `raw.replace(0, np.nan).ffill().fillna(0)`, which holds a position
+    from its entry bar all the way to the NEXT opposite trigger — no
+    stop-loss, no take-profit, unlike every position
+    RiskManagerAgent actually opens in production (ATR-based SL/TP,
+    Sprint 0+2's `atr_stop_multiplier`/`atr_take_profit_multiplier`,
+    same names/semantics as config.yaml's `trading:` section). That
+    mismatch let evolved strategies show inflated Sharpe/return by
+    "riding" moves the live bot would have exited from much sooner —
+    a strategy validated in the GP might look nothing like how it
+    actually trades once RiskManagerAgent puts real stops on it.
+
+    This is OFF by default (`fitness(..., simulate_exits=False)`) to
+    keep the existing GP test suite's exact numeric expectations
+    (ffill-forever) unchanged; `run_evolution_cli` (the real
+    production entry point) turns it on.
+
+    ATR is estimated from `close` alone when `high`/`low` aren't
+    given — GP training data doesn't always carry real High/Low (e.g.
+    `run_evolution_cli`'s synthetic OHLC sets High=Low=Close), so this
+    degrades to a close-to-close proxy rather than crashing.
+    """
+    if high is not None and low is not None:
+        prev_close = close.shift(1)
+        tr = pd.concat(
+            [
+                (high - low),
+                (high - prev_close).abs(),
+                (low - prev_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+    else:
+        tr = close.diff().abs()
+    atr = tr.ewm(alpha=1.0 / 14, adjust=False).mean().bfill().fillna(0.0)
+
+    sig_v = raw_signal.to_numpy(dtype=float)
+    close_v = close.to_numpy(dtype=float)
+    atr_v = atr.to_numpy(dtype=float)
+    n = len(sig_v)
+    held_v = np.zeros(n, dtype=float)
+
+    pos = 0.0
+    entry_price = 0.0
+    entry_atr = 0.0
+    for i in range(n):
+        signal_here = sig_v[i]
+        has_signal = signal_here != 0.0 and not np.isnan(signal_here)
+        if pos == 0.0:
+            if has_signal:
+                pos = signal_here
+                entry_price = close_v[i]
+                entry_atr = atr_v[i] if atr_v[i] > 0 else close_v[i] * 0.01
+            held_v[i] = pos
+            continue
+        # Currently holding `pos` — check this bar's close against
+        # the stop/take-profit computed at entry (ATR-based, same
+        # formula RiskManagerAgent.validate_and_size uses).
+        stop = entry_price - pos * atr_stop_multiplier * entry_atr
+        tp = entry_price + pos * atr_take_profit_multiplier * entry_atr
+        price = close_v[i]
+        hit_stop_or_tp = (price <= stop or price >= tp) if pos > 0 else (price >= stop or price <= tp)
+        opposite_signal = has_signal and signal_here != pos
+        if hit_stop_or_tp or opposite_signal:
+            pos = 0.0
+            entry_price = 0.0
+            entry_atr = 0.0
+            # Re-enter the SAME bar if a fresh signal fired (matches
+            # the old ffill semantics of never skipping a trigger).
+            if has_signal:
+                pos = signal_here
+                entry_price = close_v[i]
+                entry_atr = atr_v[i] if atr_v[i] > 0 else close_v[i] * 0.01
+        held_v[i] = pos
+    return pd.Series(held_v, index=raw_signal.index)
+
+
 def precompute_indicators(close: pd.Series) -> Dict[str, pd.Series]:
     out = {"close": close, "rsi": ind_rsi(close, 14)}
     macd, sig = ind_macd(close)
@@ -304,6 +393,9 @@ def fitness(
     direction: int = 1,
     parsimony_penalty: float = 0.05,
     periods_per_year: int = 252,
+    simulate_exits: bool = False,
+    atr_stop_multiplier: float = 2.0,
+    atr_take_profit_multiplier: float = 4.0,
 ) -> Dict[str, float]:
     """Score a strategy tree on the given price data.
 
@@ -320,6 +412,19 @@ def fitness(
               - 1d  bars: 252  (default, unchanged)
             Default keeps backward compatibility with any caller
             that doesn't know about the new param.
+        simulate_exits: Sprint 46E fix. Default False = old behavior
+            (hold the position until the NEXT opposite trigger,
+            forever — no stop/take-profit). True = exit at an
+            ATR-based stop-loss/take-profit like RiskManagerAgent
+            actually does in production (see `_simulate_realistic_exits`).
+            Kept opt-in (not the new default) so the existing GP test
+            suite's numeric expectations are untouched;
+            `run_evolution_cli` (the real production entry point)
+            turns this on.
+        atr_stop_multiplier / atr_take_profit_multiplier: only used
+            when `simulate_exits=True`. Same names/semantics as
+            config.yaml's `trading:` section — pass the bot's actual
+            configured values so the backtest matches live sizing.
 
     Returns a dict with: sharpe, total_return, max_drawdown, n_trades,
     parsimony, score (the composite we maximize).
@@ -327,7 +432,17 @@ def fitness(
     try:
         indicators = precompute_indicators(prices["Close"])
         raw = evaluate_tree(tree, indicators, direction)
-        sig = raw.replace(0, np.nan).ffill().fillna(0).clip(-1, 1)
+        if simulate_exits:
+            sig = _simulate_realistic_exits(
+                raw,
+                prices["Close"],
+                high=prices["High"] if "High" in prices.columns else None,
+                low=prices["Low"] if "Low" in prices.columns else None,
+                atr_stop_multiplier=atr_stop_multiplier,
+                atr_take_profit_multiplier=atr_take_profit_multiplier,
+            ).clip(-1, 1)
+        else:
+            sig = raw.replace(0, np.nan).ffill().fillna(0).clip(-1, 1)
         returns = prices["Close"].pct_change().fillna(0)
         strat = sig.shift(1).fillna(0) * returns
         if strat.std() == 0 or len(strat) < 2:
@@ -387,6 +502,9 @@ def multi_symbol_fitness(
     direction: int = 1,
     min_symbols: int = 2,
     periods_per_year: int = 252,
+    simulate_exits: bool = False,
+    atr_stop_multiplier: float = 2.0,
+    atr_take_profit_multiplier: float = 4.0,
 ) -> Dict[str, float]:
     """Evaluate a tree on multiple symbols and return aggregate metrics.
 
@@ -399,8 +517,14 @@ def multi_symbol_fitness(
     """
     per_symbol = {}
     for sym, prices in prices_by_symbol.items():
-        # Sprint 43 L4: propagate periods_per_year to per-symbol fitness
-        f = fitness(tree, prices, direction, periods_per_year=periods_per_year)
+        # Sprint 43 L4: propagate periods_per_year to per-symbol fitness.
+        # Sprint 46E: propagate simulate_exits/ATR multipliers too.
+        f = fitness(
+            tree, prices, direction, periods_per_year=periods_per_year,
+            simulate_exits=simulate_exits,
+            atr_stop_multiplier=atr_stop_multiplier,
+            atr_take_profit_multiplier=atr_take_profit_multiplier,
+        )
         if f["n_trades"] >= 3:
             per_symbol[sym] = f
     if len(per_symbol) < min_symbols:
@@ -708,6 +832,9 @@ def _evaluate_population(
     direction: int = 1,
     use_multi_symbol: bool = True,
     use_min_symbols: int = 2,
+    simulate_exits: bool = False,
+    atr_stop_multiplier: float = 2.0,
+    atr_take_profit_multiplier: float = 4.0,
 ) -> List[Dict[str, Any]]:
     """Score every individual. Returns list of dicts {tree, score, ...}."""
     out: List[Dict[str, Any]] = []
@@ -715,6 +842,9 @@ def _evaluate_population(
         if use_multi_symbol and len(prices_by_symbol) > 1:
             ms = multi_symbol_fitness(
                 tree, prices_by_symbol, direction=direction, min_symbols=use_min_symbols,
+                simulate_exits=simulate_exits,
+                atr_stop_multiplier=atr_stop_multiplier,
+                atr_take_profit_multiplier=atr_take_profit_multiplier,
             )
             # Use the first available symbol's metrics as the "primary"
             primary_metrics = {}
@@ -733,7 +863,12 @@ def _evaluate_population(
         else:
             # Single-symbol: use the first price df
             prices = next(iter(prices_by_symbol.values()))
-            f = fitness(tree, prices, direction)
+            f = fitness(
+                tree, prices, direction,
+                simulate_exits=simulate_exits,
+                atr_stop_multiplier=atr_stop_multiplier,
+                atr_take_profit_multiplier=atr_take_profit_multiplier,
+            )
             sym_key = next(iter(prices_by_symbol)) if prices_by_symbol else "?"
             out.append({
                 "tree": tree,
@@ -763,6 +898,9 @@ def evolve(
     verbose: bool = False,
     oos_fraction: float = 0.0,
     oos_candidates: int = 5,
+    simulate_exits: bool = False,
+    atr_stop_multiplier: float = 2.0,
+    atr_take_profit_multiplier: float = 4.0,
 ) -> EvolutionResult:
     """Run a full GP evolution loop.
 
@@ -846,6 +984,9 @@ def evolve(
             population, evolution_data,
             direction=direction, use_multi_symbol=use_multi_symbol,
             use_min_symbols=min_symbols,
+            simulate_exits=simulate_exits,
+            atr_stop_multiplier=atr_stop_multiplier,
+            atr_take_profit_multiplier=atr_take_profit_multiplier,
         )
         scored.sort(key=lambda x: x["score"], reverse=True)
         # Track best
@@ -933,6 +1074,9 @@ def evolve(
                 [entry["tree"]], oos_prices,
                 direction=direction, use_multi_symbol=use_multi_symbol,
                 use_min_symbols=min_symbols,
+                simulate_exits=simulate_exits,
+                atr_stop_multiplier=atr_stop_multiplier,
+                atr_take_profit_multiplier=atr_take_profit_multiplier,
             )
             if not oos_scored:
                 continue
@@ -1359,6 +1503,9 @@ def run_evolution_cli(
     verbose: bool = True,
     oos_fraction: float = 0.3,
     min_oos_ratio: float = 0.4,
+    simulate_exits: bool = True,
+    atr_stop_multiplier: float = 2.0,
+    atr_take_profit_multiplier: float = 4.0,
 ) -> EvolutionResult:
     """End-to-end: load synthetic multi-symbol data, evolve, save library.
 
@@ -1397,6 +1544,17 @@ def run_evolution_cli(
         # Sprint 43 fix built the machinery for it. 0.3/0.4 match the
         # values the module's own docstrings recommend.
         oos_fraction=oos_fraction,
+        # Sprint 46E: production evolution now scores strategies as if
+        # RiskManagerAgent's real ATR-based stop/take-profit were
+        # applied, instead of "hold forever until the next opposite
+        # trigger" — see `_simulate_realistic_exits`. Defaults (2.0/4.0)
+        # match config.yaml's `trading.atr_stop_multiplier`/
+        # `atr_take_profit_multiplier`; pass the bot's actual configured
+        # values here if they've been changed from the defaults, so the
+        # backtest matches live sizing.
+        simulate_exits=simulate_exits,
+        atr_stop_multiplier=atr_stop_multiplier,
+        atr_take_profit_multiplier=atr_take_profit_multiplier,
     )
     if verbose:
         print(f"\n[GP] best score: {result.best_score:.3f}")

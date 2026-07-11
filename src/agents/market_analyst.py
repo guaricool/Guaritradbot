@@ -214,6 +214,50 @@ def _resample_ohlcv(df_60m: pd.DataFrame, rule: str) -> pd.DataFrame:
     return resampled
 
 
+_YF_INTERVAL_SECONDS = {
+    "1m": 60, "2m": 120, "5m": 300, "15m": 900, "30m": 900 * 2,
+    "60m": 3600, "90m": 5400, "1h": 3600,
+}
+
+
+def _trim_in_progress_bar(df: pd.DataFrame, interval_seconds: int) -> pd.DataFrame:
+    """Drop the last row if it's a still-forming (not yet closed) candle.
+
+    Sprint 46E fix: `_resample_ohlcv` above already does this for the
+    60m→4h resample path (Sprint 43 H12), but the RAW yfinance
+    fetches for 15m/60m intervals (used directly by
+    `fetch_and_analyze`/`fetch_one` — e.g. SPY/QQQ's RSI mean-
+    reversion on 15m, BTC's MACD on 1h) had no equivalent check.
+    yfinance's last row for an intraday interval is frequently the
+    bar that's still accumulating ticks — its Close is a snapshot of
+    "right now", not a closed bar's final price. `StrategyAgent` then
+    reads that bar's RSI/MACD/EMA as if it were the last CLOSED bar,
+    which can flip a signal in and out of existence as the current
+    minute progresses (not classic look-ahead — no future data leaks
+    in — but the opposite failure mode: acting on a bar that hasn't
+    finished forming yet).
+
+    Uses wall-clock time (yfinance intraday indices are the bar's
+    OPEN time) — if `now < bar_open + interval_seconds`, that bar
+    isn't closed yet. For assets with real trading hours (SPY/QQQ),
+    this naturally does nothing outside market hours, since `now` is
+    already past the last bar's close by then.
+    """
+    if df.empty or len(df) < 2:
+        return df
+    try:
+        last_ts = df.index[-1]
+        now = pd.Timestamp.now(tz=last_ts.tz) if last_ts.tzinfo is not None else pd.Timestamp.now()
+        bar_close = last_ts + pd.Timedelta(seconds=interval_seconds)
+        if now < bar_close:
+            return df.iloc[:-1]
+    except Exception:
+        # Can't parse timestamps for some reason — fail open (return
+        # as-is) rather than risk dropping a valid closed bar.
+        pass
+    return df
+
+
 def _rule_to_timedelta(rule: str) -> str:
     """Convert a pandas resample rule (e.g. '4h', '1D') to a
     Timedelta-parseable string (e.g. '4h', '1D').
@@ -259,6 +303,14 @@ class MarketAnalystAgent(Component):
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             df = df.dropna(how="all")
+            if df.empty:
+                return None
+            # Sprint 46E fix: trim the currently-forming intraday bar
+            # (see _trim_in_progress_bar) BEFORE any resampling or
+            # indicator calc — the H12 fix only covered the resampled
+            # 4h bucket, not the raw 15m/60m fetch itself.
+            if yf_interval in _YF_INTERVAL_SECONDS:
+                df = _trim_in_progress_bar(df, _YF_INTERVAL_SECONDS[yf_interval])
             if df.empty:
                 return None
             # Sprint 43 M6: if caller asked for 4h, resample the
@@ -365,6 +417,17 @@ class MarketAnalystAgent(Component):
                     df = df.dropna(how="all")
                     if df.empty:
                         print(f"  ⚠️  {asset}@{tf}: sin datos")
+                        fail_count += 1
+                        continue
+
+                    # Sprint 46E fix: trim the forming intraday bar for
+                    # the RAW fetch (15m, 60m) before any resampling —
+                    # the existing H12 fix only covers the resampled
+                    # 4h bucket, not the raw yfinance interval itself.
+                    if yf_interval in _YF_INTERVAL_SECONDS:
+                        df = _trim_in_progress_bar(df, _YF_INTERVAL_SECONDS[yf_interval])
+                    if df.empty:
+                        print(f"  ⚠️  {asset}@{tf}: sin velas tras trim de vela en formación")
                         fail_count += 1
                         continue
 

@@ -124,6 +124,71 @@ def _hypothesis_strength(h: dict) -> float:
     return 0.5
 
 
+def _estimate_expected_move_pct(
+    df: pd.DataFrame,
+    price: float,
+    atr: float,
+    kind: str = "reversion",
+    target: float = None,
+) -> float:
+    """Estimate the % magnitude of the move a fresh hypothesis is
+    betting on.
+
+    Sprint 46E fix: `RiskManagerAgent.score_new_hypothesis` (used for
+    position-replacement scoring, "is this new signal better than my
+    worst open position?") reads `expected_move_pct` off each
+    hypothesis — but `StrategyAgent` never set it, so every single
+    hypothesis fell back to the SAME generic proxy
+    (`atr * 4 / entry_price * 100`) regardless of strategy type or
+    actual signal strength. That made the replacement scorer nearly
+    blind to real differences in edge between hypotheses — a strong
+    RSI-30 oversold bounce and a weak RSI-34 zone-touch looked
+    identical to it (same ATR-based number either way).
+
+    This computes a per-hypothesis estimate instead:
+      - `target` given (Support/Resistance bounce/fade): distance from
+        current price to that explicit level — the real reversal
+        target for that trade.
+      - `kind="reversion"` (RSI/Stochastic/Bollinger mean-reversion):
+        distance from current price to BB_Middle, which every df
+        already has computed (fetch_and_analyze computes the full
+        indicator set for every asset/timeframe regardless of which
+        strategy fires) — a real, data-derived reversion target
+        rather than a constant.
+      - `kind="trend"` (MACD/EMA cross/ADX breakout/ML): recent
+        realized momentum — mean absolute bar-to-bar % change over
+        the last 10 bars, scaled up 3x as a "this continues" estimate.
+      - Fallback (missing columns, bad data): the same ATR-based proxy
+        RiskManagerAgent used before this existed.
+
+    Always clamped to [0.1%, 15%] so a data glitch can't hand the
+    replacement scorer an absurd number.
+    """
+    try:
+        if target is not None and price > 0 and target > 0:
+            pct = abs(float(target) - price) / price * 100.0
+            return max(0.1, min(pct, 15.0))
+        if kind == "reversion" and "BB_Middle" in df.columns:
+            bb_mid = df["BB_Middle"].iloc[-1]
+            if bb_mid == bb_mid and price > 0:  # not NaN
+                pct = abs(float(bb_mid) - price) / price * 100.0
+                if pct > 0:
+                    return max(0.1, min(pct, 15.0))
+        if kind == "trend" and "Close" in df.columns:
+            closes = df["Close"].tail(11)
+            if len(closes) >= 2:
+                pct = float(closes.pct_change().abs().mean() * 100.0 * 3.0)
+                if pct == pct and pct > 0:  # not NaN
+                    return max(0.1, min(pct, 15.0))
+    except Exception:
+        pass
+    # Fallback: same ATR-based proxy RiskManagerAgent used before this
+    # existed — still better than nothing if the above can't compute.
+    if price > 0:
+        return max(0.1, min(atr * 4 / price * 100.0, 15.0))
+    return 0.1
+
+
 class StrategyAgent:
     """
     Analiza market_data y genera hipótesis de trade (entry signals).
@@ -198,18 +263,25 @@ class StrategyAgent:
                 zone_oversold = self.params["rsi_zone_oversold"]
                 zone_overbought = self.params["rsi_zone_overbought"]
 
+                # Sprint 46E: real per-hypothesis expected move (distance
+                # to BB_Middle) instead of RiskManagerAgent's old generic
+                # atr*4 proxy — same df, so BB_Middle is already computed.
+                _exp_move = _estimate_expected_move_pct(df, price, atr, kind="reversion")
+
                 # A) Cruce estricto (última vela)
                 if rsi_prev >= oversold and rsi_now < oversold:
                     self._add_hyp(
                         hypotheses, asset, tf, "long",
                         f"MeanReversion_LONG_RSI<{oversold}",
                         price, rsi_at_signal=rsi_now, atr_at_signal=atr,
+                        expected_move_pct=_exp_move,
                     )
                 elif rsi_prev <= overbought and rsi_now > overbought:
                     self._add_hyp(
                         hypotheses, asset, tf, "short",
                         f"MeanReversion_SHORT_RSI>{overbought}",
                         price, rsi_at_signal=rsi_now, atr_at_signal=atr,
+                        expected_move_pct=_exp_move,
                     )
                 # B) Zona RSI (permisiva) — RSI < 35 → long bias
                 elif rsi_now < zone_oversold and tf == "1h":
@@ -219,6 +291,7 @@ class StrategyAgent:
                             hypotheses, asset, tf, "long",
                             f"MeanReversion_LONG_RSI<{zone_oversold}_zone",
                             price, rsi_at_signal=rsi_now, atr_at_signal=atr,
+                            expected_move_pct=_exp_move,
                         )
                 elif rsi_now > zone_overbought and tf == "1h":
                     if _was_in_zone_recently(rsi, zone_overbought, lookback=5, direction="above"):
@@ -226,6 +299,7 @@ class StrategyAgent:
                             hypotheses, asset, tf, "short",
                             f"MeanReversion_SHORT_RSI>{zone_overbought}_zone",
                             price, rsi_at_signal=rsi_now, atr_at_signal=atr,
+                            expected_move_pct=_exp_move,
                         )
 
         # ============================================================
@@ -250,18 +324,23 @@ class StrategyAgent:
             sig_now = float(sig.iloc[-1])
             macd_prev = float(macd.iloc[-2])
             sig_prev = float(sig.iloc[-2])
+            # Sprint 46E: trend-type expected move (recent momentum), not
+            # the flat ATR proxy RiskManagerAgent used before this existed.
+            _exp_move = _estimate_expected_move_pct(df, price, atr, kind="trend")
 
             if macd_prev <= sig_prev and macd_now > sig_now:
                 self._add_hyp(
                     hypotheses, asset, "1h", "long",
                     "MACD_BullCross", price,
                     macd_at_signal=macd_now, atr_at_signal=atr,
+                    expected_move_pct=_exp_move,
                 )
             elif macd_prev >= sig_prev and macd_now < sig_now:
                 self._add_hyp(
                     hypotheses, asset, "1h", "short",
                     "MACD_BearCross", price,
                     macd_at_signal=macd_now, atr_at_signal=atr,
+                    expected_move_pct=_exp_move,
                 )
             # B) Cruce en últimas 3 barras (no solo la última)
             elif _was_crossed_recently(macd, sig, lookback=3, direction="up"):
@@ -269,12 +348,14 @@ class StrategyAgent:
                     hypotheses, asset, "1h", "long",
                     "MACD_BullCross_recent", price,
                     macd_at_signal=macd_now, atr_at_signal=atr,
+                    expected_move_pct=_exp_move,
                 )
             elif _was_crossed_recently(macd, sig, lookback=3, direction="down"):
                 self._add_hyp(
                     hypotheses, asset, "1h", "short",
                     "MACD_BearCross_recent", price,
                     macd_at_signal=macd_now, atr_at_signal=atr,
+                    expected_move_pct=_exp_move,
                 )
             # C) MACD histogram turning (momentum shift)
             elif len(hist) >= 3:
@@ -287,6 +368,7 @@ class StrategyAgent:
                         hypotheses, asset, "1h", "long",
                         "MACD_HistTurn_Bull", price,
                         macd_at_signal=macd_now, atr_at_signal=atr,
+                        expected_move_pct=_exp_move,
                     )
                 # turning bearish: was positive and getting more positive, now falling
                 elif h_prev2 > h_prev > 0 and h_now < h_prev:
@@ -294,6 +376,7 @@ class StrategyAgent:
                         hypotheses, asset, "1h", "short",
                         "MACD_HistTurn_Bear", price,
                         macd_at_signal=macd_now, atr_at_signal=atr,
+                        expected_move_pct=_exp_move,
                     )
 
         # ============================================================
@@ -322,20 +405,23 @@ class StrategyAgent:
             ema20_prev = float(ema20.iloc[-2])
             ema50_prev = float(ema50.iloc[-2])
 
+            # Sprint 46E: trend-type expected move for EMA cross hypotheses.
+            _exp_move = _estimate_expected_move_pct(df, price, atr, kind="trend")
+
             # A) Cruce estricto
             if ema20_prev <= ema50_prev and ema20_now > ema50_now:
                 self._add_hyp(
                     hypotheses, asset, tf_used, "long",
                     "EMA_GoldenCross", price,
                     ema20_at_signal=ema20_now, ema50_at_signal=ema50_now,
-                    atr_at_signal=atr,
+                    atr_at_signal=atr, expected_move_pct=_exp_move,
                 )
             elif ema20_prev >= ema50_prev and ema20_now < ema50_now:
                 self._add_hyp(
                     hypotheses, asset, tf_used, "short",
                     "EMA_DeathCross", price,
                     ema20_at_signal=ema20_now, ema50_at_signal=ema50_now,
-                    atr_at_signal=atr,
+                    atr_at_signal=atr, expected_move_pct=_exp_move,
                 )
             # B) Cruce en últimas 3 barras
             elif _was_crossed_recently(ema20, ema50, lookback=3, direction="up"):
@@ -343,14 +429,14 @@ class StrategyAgent:
                     hypotheses, asset, tf_used, "long",
                     "EMA_GoldenCross_recent", price,
                     ema20_at_signal=ema20_now, ema50_at_signal=ema50_now,
-                    atr_at_signal=atr,
+                    atr_at_signal=atr, expected_move_pct=_exp_move,
                 )
             elif _was_crossed_recently(ema20, ema50, lookback=3, direction="down"):
                 self._add_hyp(
                     hypotheses, asset, tf_used, "short",
                     "EMA_DeathCross_recent", price,
                     ema20_at_signal=ema20_now, ema50_at_signal=ema50_now,
-                    atr_at_signal=atr,
+                    atr_at_signal=atr, expected_move_pct=_exp_move,
                 )
 
         # ============================================================
@@ -379,12 +465,14 @@ class StrategyAgent:
                     hypotheses, asset, "1h", "long",
                     "Stoch_Oversold_Cross", price,
                     stoch_k=k_now, atr_at_signal=atr,
+                    expected_move_pct=_estimate_expected_move_pct(df, price, atr, kind="reversion"),
                 )
             elif k_prev > self.params["stoch_overbought"] and k_now < d_now and k_now > 70:
                 self._add_hyp(
                     hypotheses, asset, "1h", "short",
                     "Stoch_Overbought_Cross", price,
                     stoch_k=k_now, atr_at_signal=atr,
+                    expected_move_pct=_estimate_expected_move_pct(df, price, atr, kind="reversion"),
                 )
 
         # ============================================================
@@ -419,6 +507,7 @@ class StrategyAgent:
                         hypotheses, asset, "4h", "long",
                         "BB_LowerBounce", price,
                         pct_b=pct_b, rsi_at_signal=rsi, atr_at_signal=atr,
+                        expected_move_pct=_estimate_expected_move_pct(df, price, atr, kind="reversion"),
                     )
                 # Cerca de banda superior + RSI alto → short fade
                 elif pct_b > 1 - self.params["bb_pct_b"] and rsi > 55:
@@ -426,6 +515,7 @@ class StrategyAgent:
                         hypotheses, asset, "4h", "short",
                         "BB_UpperFade", price,
                         pct_b=pct_b, rsi_at_signal=rsi, atr_at_signal=atr,
+                        expected_move_pct=_estimate_expected_move_pct(df, price, atr, kind="reversion"),
                     )
 
         # ============================================================
@@ -449,17 +539,28 @@ class StrategyAgent:
 
                 # Cerca de soporte (dentro de 1 ATR)
                 if support > 0 and abs(price - support) < atr * 1.5 and price > support:
+                    # Sprint 46E: explicit target = resistance (the real
+                    # upside reversal target for a support bounce), not a
+                    # generic ATR proxy.
                     self._add_hyp(
                         hypotheses, asset, "4h", "long",
                         "Support_Bounce", price,
                         support_level=support, atr_at_signal=atr,
+                        expected_move_pct=_estimate_expected_move_pct(
+                            df, price, atr, target=resistance if resistance > price else None,
+                        ),
                     )
                 # Cerca de resistencia (dentro de 1 ATR)
                 elif resistance > 0 and abs(price - resistance) < atr * 1.5 and price < resistance:
+                    # Sprint 46E: explicit target = support (the real
+                    # downside reversal target for a resistance fade).
                     self._add_hyp(
                         hypotheses, asset, "4h", "short",
                         "Resistance_Fade", price,
                         resistance_level=resistance, atr_at_signal=atr,
+                        expected_move_pct=_estimate_expected_move_pct(
+                            df, price, atr, target=support if 0 < support < price else None,
+                        ),
                     )
 
         # ============================================================
@@ -492,23 +593,36 @@ class StrategyAgent:
                     continue
                 # Predict probability for the latest bar
                 prob_long = predictor.predict_one(X.iloc[-1])
+                _ml_price = float(df_ml["Close"].iloc[-1])
                 if prob_long >= self.ml_long_threshold:
                     atr_ml = float(df_ml["ATR_14"].iloc[-1]) if "ATR_14" in df_ml.columns else 0
+                    # Sprint 46E: scale the trend-momentum estimate by how
+                    # confident the model is (distance of prob from 0.5) —
+                    # a 0.95-probability call implies more conviction in
+                    # the move than a barely-over-threshold 0.61.
+                    _confidence = abs(float(prob_long) - 0.5) * 2
                     self._add_hyp(
                         hypotheses, asset, "4h", "long",
-                        "ML_Baseline", float(df_ml["Close"].iloc[-1]),
+                        "ML_Baseline", _ml_price,
                         ml_probability=float(prob_long),
                         atr_at_signal=atr_ml,
                         n_features=len(feat_names),
+                        expected_move_pct=_estimate_expected_move_pct(
+                            df_ml, _ml_price, atr_ml, kind="trend",
+                        ) * (0.5 + 0.5 * _confidence),
                     )
                 elif prob_long <= self.ml_short_threshold:
                     atr_ml = float(df_ml["ATR_14"].iloc[-1]) if "ATR_14" in df_ml.columns else 0
+                    _confidence = abs(float(prob_long) - 0.5) * 2
                     self._add_hyp(
                         hypotheses, asset, "4h", "short",
-                        "ML_Baseline", float(df_ml["Close"].iloc[-1]),
+                        "ML_Baseline", _ml_price,
                         ml_probability=float(prob_long),
                         atr_at_signal=atr_ml,
                         n_features=len(feat_names),
+                        expected_move_pct=_estimate_expected_move_pct(
+                            df_ml, _ml_price, atr_ml, kind="trend",
+                        ) * (0.5 + 0.5 * _confidence),
                     )
 
         # ============================================================

@@ -83,8 +83,10 @@ from src.api.state import (
     invalidate_price_cache,
     read_current_prices,
     read_mode,
+    read_risk_config,
     read_trading_config,
     write_mode,
+    write_risk_config,
     write_trading_config,
 )
 
@@ -225,6 +227,23 @@ class UpdateTradingConfigRequest(BaseModel):
     enable_position_replacement: Optional[bool] = None
     replacement_score_threshold: Optional[float] = Field(default=None, ge=0, le=1)
     min_profit_to_protect: Optional[float] = Field(default=None, ge=0)
+    updated_by: Optional[str] = "dashboard"
+
+
+# Sprint 46F: dashboard-editable risk/mandate safety gates — the
+# drawdown kill-switch threshold/cooldown, the mandate's symbol
+# allow-list, and the Sprint 44/45 portfolio-risk gate caps
+# (concentration/correlation/CVaR/stress). Bounds are generous but
+# not unlimited — e.g. drawdown_cooldown_hours capped at 168 (1 week)
+# so a typo can't accidentally pause the bot for a year.
+class UpdateRiskConfigRequest(BaseModel):
+    drawdown_kill_threshold_pct: Optional[float] = Field(default=None, gt=0, le=100)
+    drawdown_cooldown_hours: Optional[float] = Field(default=None, gt=0, le=168)
+    max_asset_class_concentration_pct: Optional[float] = Field(default=None, gt=0, le=100)
+    max_avg_correlation_pct: Optional[float] = Field(default=None, gt=0, le=100)
+    max_cvar_95_pct: Optional[float] = Field(default=None, gt=0, le=100)
+    max_stress_drawdown_pct: Optional[float] = Field(default=None, gt=0, le=100)
+    mandate_allowed_symbols: Optional[List[str]] = None
     updated_by: Optional[str] = "dashboard"
 
 
@@ -449,6 +468,60 @@ def post_trading_config(
         note=(
             "Saved. These changes take effect after the bot restarts "
             "(main.py reads trading config once at startup). Use "
+            "POST /api/restart to apply now (~10-30s downtime), or "
+            "they'll apply automatically on the next deploy/restart."
+        ),
+    )
+
+
+def _risk_config_response(effective: Dict[str, Any], note: Optional[str] = None) -> Dict[str, Any]:
+    """Same shaping as `_trading_config_response`, for risk config."""
+    updated_at = effective.get("_override_updated_at")
+    started_at = APP_STATE.get("started_at")
+    pending_restart = bool(updated_at and started_at and updated_at > started_at)
+    out = {k: v for k, v in effective.items() if not k.startswith("_")}
+    out["pending_restart"] = pending_restart
+    out["updated_at"] = updated_at
+    out["updated_by"] = effective.get("_override_updated_by")
+    if note:
+        out["note"] = note
+    return out
+
+
+@app.get("/api/risk-config")
+def get_risk_config() -> Dict[str, Any]:
+    """Sprint 46F: effective risk/mandate safety config — drawdown
+    kill-switch threshold/cooldown, mandate's allowed-symbols list,
+    and the portfolio-risk gate caps (concentration/correlation/
+    CVaR/stress). See state.read_risk_config for the merge logic.
+    """
+    effective = read_risk_config(config=APP_STATE.get("config") or {}, audit_path=_audit_path())
+    return _risk_config_response(effective)
+
+
+@app.post("/api/risk-config")
+def post_risk_config(
+    req: UpdateRiskConfigRequest,
+    _: None = Depends(auth.require_auth),
+) -> Dict[str, Any]:
+    """Sprint 46F: save a partial risk/mandate config change from the
+    dashboard. Same restart-required caveat as POST /api/config — see
+    that endpoint's docstring.
+    """
+    updates = req.model_dump(exclude_unset=True, exclude={"updated_by"})
+    if not updates:
+        raise HTTPException(status_code=400, detail="no fields provided to update")
+    effective = write_risk_config(
+        updates=updates,
+        updated_by=req.updated_by or "dashboard",
+        config=APP_STATE.get("config") or {},
+        audit_path=_audit_path(),
+    )
+    return _risk_config_response(
+        effective,
+        note=(
+            "Saved. These changes take effect after the bot restarts "
+            "(main.py reads risk/mandate config once at startup). Use "
             "POST /api/restart to apply now (~10-30s downtime), or "
             "they'll apply automatically on the next deploy/restart."
         ),

@@ -88,6 +88,30 @@ export interface TradingConfigResponse extends TradingConfig {
 // that changed.
 export type TradingConfigUpdate = Partial<TradingConfig> & { updated_by?: string };
 
+// Sprint 46F: config.yaml's `risk:` section (drawdown kill-switch +
+// portfolio-risk gate caps) plus `mandate.allowed_symbols`, merged with
+// any dashboard-saved override, served by GET /api/risk-config and
+// editable via POST /api/risk-config. Same restart-required semantics
+// as TradingConfig above.
+export interface RiskConfig {
+  drawdown_kill_threshold_pct: number;
+  drawdown_cooldown_hours: number;
+  max_asset_class_concentration_pct: number;
+  max_avg_correlation_pct: number;
+  max_cvar_95_pct: number;
+  max_stress_drawdown_pct: number;
+  mandate_allowed_symbols: string[];
+}
+
+export interface RiskConfigResponse extends RiskConfig {
+  pending_restart: boolean;
+  updated_at: number | null;
+  updated_by: string | null;
+  note?: string;
+}
+
+export type RiskConfigUpdate = Partial<RiskConfig> & { updated_by?: string };
+
 export interface AuditEvent {
   ts: number;
   iso: string;

@@ -11,6 +11,8 @@ import type {
   Health,
   LoginResponse,
   ModeInfo,
+  RiskConfigResponse,
+  RiskConfigUpdate,
   StateSnapshot,
   StressResult,
   TradingConfigResponse,
@@ -195,6 +197,17 @@ export const api = {
   config: () => request<TradingConfigResponse>("/api/config"),
   updateConfig: (updates: TradingConfigUpdate) =>
     request<TradingConfigResponse>("/api/config", {
+      method: "POST",
+      body: JSON.stringify(updates),
+    }),
+
+  // Risk/mandate config (Sprint 46F) — drawdown kill-switch
+  // threshold/cooldown, portfolio-risk gate caps (concentration,
+  // correlation, CVaR, stress), and the mandate's allowed-symbols
+  // list. Same restart-required semantics as config()/updateConfig().
+  riskConfig: () => request<RiskConfigResponse>("/api/risk-config"),
+  updateRiskConfig: (updates: RiskConfigUpdate) =>
+    request<RiskConfigResponse>("/api/risk-config", {
       method: "POST",
       body: JSON.stringify(updates),
     }),
