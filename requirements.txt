@@ -22,3 +22,12 @@ streamlit-autorefresh==1.0.1
 # Sprint 36: Alpaca Markets REST API client (equities/ETFs routing).
 # Imported as `alpaca_trade_api` even though the pip package is `alpaca-py`.
 alpaca-py>=0.0.4,<1.0
+# Sprint 46A: FastAPI HTTP/WebSocket API backing the Next.js dashboard
+# (src/api/). Added here after the fact — this code existed in the repo
+# for a while with NO entry in requirements.txt/requirements.lock, which
+# meant `pip install -r requirements.lock` never installed it and the
+# API could not run in the built image at all.
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.29,<1.0
+# httpx: required by fastapi.testclient.TestClient (tests/test_sprint_46a_api.py).
+httpx>=0.27,<1.0

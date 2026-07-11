@@ -16,6 +16,32 @@
 # `pip install -r requirements.txt` + `pip freeze`, deduplicated,
 # and verified the install actually succeeds end-to-end before
 # committing this file.
+#
+# Sprint 46A: fastapi/uvicorn/httpx were added to requirements.txt for
+# the new dashboard API backend (src/api/) but this lock file was never
+# updated, so `pip install -r requirements.lock` (what both Dockerfiles
+# actually run) never installed them — the API code was unreachable in
+# every build. Added below as RANGES (not exact `==` pins like the rest
+# of this file) because the sandbox used to regenerate this file via a
+# full `pip freeze` was unavailable (infra outage) at the time of this
+# fix. This is a deliberate, temporary exception to this file's normal
+# "everything exactly pinned" rule: earlier in this same work session a
+# clean-venv `pip install -r requirements.txt` (with these same three
+# packages present) WAS run successfully end-to-end — `from
+# src.api.server import app` succeeded and all 49
+# tests/test_sprint_46a_api.py tests passed — confirming this exact
+# combination resolves cleanly against every other pin already in this
+# file (pydantic==2.13.4, click==8.4.2, PyYAML==6.0.1,
+# python-dotenv==1.0.1, websockets==16.1, certifi, idna are all shared
+# transitive deps and were part of that successful resolution). Pip
+# will resolve fastapi/uvicorn/httpx's remaining transitive deps
+# (starlette, anyio, sniffio, h11, httpcore, httptools, uvloop,
+# watchfiles) fresh at install time. TODO: regenerate this whole file
+# via a clean `pip freeze` next time a shell is available, so these
+# three lines become exact pins like everything else here.
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.29,<1.0
+httpx>=0.27,<1.0
 aiodns==4.0.4
 aiohappyeyeballs==2.7.1
 aiohttp==3.14.1

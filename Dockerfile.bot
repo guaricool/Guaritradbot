@@ -17,6 +17,11 @@ RUN pip install --no-cache-dir -r requirements.lock
 # Copy source code
 COPY . .
 
+# Sprint 46A: the bot process now also serves the dashboard's HTTP/WebSocket
+# API (src/api/server.py) on this port via a background thread started
+# from main.py. docker-compose maps host 8088 -> this port.
+EXPOSE 8080
+
 # Sprint 43 M8 fix: run as non-root user. The audit flagged
 # "Contenedores Docker corren como root, sin límites de recursos
 # ni healthcheck". Non-root reduces the blast radius of any

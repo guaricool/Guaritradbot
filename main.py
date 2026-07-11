@@ -18,6 +18,7 @@ import sys
 import time
 import json
 import argparse
+import threading
 
 import yaml
 
@@ -59,6 +60,53 @@ def _build_mandate(config: dict, audit, position_repo=None, event_bus=None) -> t
         max_total_exposure_usd=float(cfg.get("max_total_exposure_usd", 100.0)),
     )
     return (MandateGate(mc, audit_ledger=audit, position_repo=position_repo, event_bus=event_bus), mc)
+
+
+def _start_api_server(audit_path: str, positions_path: str, config_path: str = "config.yaml") -> None:
+    """Sprint 46A: start the FastAPI/WebSocket dashboard backend as a
+    daemon thread inside the bot process.
+
+    Why here, not a separate service: the API is a thin READ-ONLY
+    layer over the same on-disk state the bot already writes
+    (audit.jsonl, positions.json) — see src/api/state.py's docstring.
+    Sprint 46B's Next.js dashboard was built and wired to call this
+    API (docker-compose maps host 8088 -> container 8080 on the
+    `guaritradbot` service specifically for this), but nothing ever
+    actually started uvicorn — this function was missing entirely,
+    which is why the dashboard could deploy successfully and still
+    show no live data (every request to NEXT_PUBLIC_API_URL just
+    connection-refused).
+
+    Best-effort: any failure here (missing dependency, port already
+    bound, etc.) is caught and logged — it must NEVER take down the
+    trading loop. The dashboard is observability, not core function.
+    """
+    os.environ.setdefault("DASHBOARD_AUDIT_PATH", audit_path)
+    os.environ.setdefault("DASHBOARD_POSITIONS_PATH", positions_path)
+    os.environ.setdefault("DASHBOARD_CONFIG_PATH", config_path)
+    try:
+        pid_path = os.getenv("DASHBOARD_BOT_PID_FILE", "/tmp/guaritradbot.pid")
+        with open(pid_path, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except OSError as e:
+        print(f"[API] ⚠️ No se pudo escribir el PID file ({e}); POST /api/restart no funcionará.")
+    try:
+        import uvicorn
+        from src.api.server import app as api_app
+
+        port = int(os.getenv("DASHBOARD_API_PORT", "8080"))
+
+        def _run():
+            uvicorn.run(api_app, host="0.0.0.0", port=port, log_level="warning")
+
+        t = threading.Thread(target=_run, name="dashboard-api", daemon=True)
+        t.start()
+        print(f"[API] 🌐 Dashboard API + WebSocket escuchando en 0.0.0.0:{port}")
+    except Exception as e:
+        print(
+            f"[API] ⚠️ No se pudo iniciar el servidor del dashboard (fastapi/uvicorn): {e}. "
+            "El bot sigue operando normalmente; solo el dashboard quedará sin datos en vivo."
+        )
 
 
 def main():
@@ -248,6 +296,15 @@ def main():
         cooldown_hours=float(config.get("risk", {}).get("drawdown_cooldown_hours", 24.0)),
     )
     position_repo = PositionRepository("data_store/positions.json")
+
+    # Sprint 46A/B: start the dashboard's HTTP/WebSocket API. Must come
+    # after `audit`/`position_repo` exist (it reads the same on-disk
+    # state) and before the main loop, so the dashboard has data from
+    # the very first cycle.
+    _start_api_server(
+        audit_path=_audit_path(config),
+        positions_path="data_store/positions.json",
+    )
 
     # Sprint 25 fix: ALWAYS show paper position count at startup.
     # Carlos: "cuando cambio a live no me dice nada de las entradas en paper"

@@ -41,8 +41,25 @@ ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
 # Non-root user — same rationale as Dockerfile.bot (Sprint 43 M8).
-RUN addgroup --system --gid 1000 app 2>/dev/null || true \
- && adduser --system --uid 1000 --ingroup app app 2>/dev/null || true
+#
+# THIS WAS BROKEN: the flags below (--system, --gid, --uid, --ingroup)
+# are GNU shadow-utils syntax (groupadd/useradd on Debian, which is
+# what Dockerfile.bot's python:3.11-slim uses). This stage is
+# node:20-alpine, whose `addgroup`/`adduser` are BusyBox applets that
+# only understand SHORT flags (-g, -S, -u, -G, -D, -H) — the GNU
+# long-form flags are unrecognized, so both commands failed. The
+# `2>/dev/null || true` on each line silently swallowed that failure,
+# so the image built "successfully" with no `app` user ever created.
+# The failure only surfaced later, at container START (not build),
+# when Docker tried to resolve `USER app` and found no matching entry
+# in /etc/passwd — which is exactly the error Coolify's deploy logs
+# showed: "Error response from daemon: unable to find user app: no
+# matching entries in passwd file", and why the whole deploy failed.
+# Fixed with the correct BusyBox syntax, and dropped the `|| true`
+# masking — if user creation fails, the build should fail loudly here
+# instead of deferring a cryptic failure to container start.
+RUN addgroup -g 1000 -S app \
+ && adduser -S -D -H -u 1000 -G app app
 
 # next.config.mjs has `output: 'standalone'`, so the build produces
 # .next/standalone/ which is a self-contained Node app (server.js
