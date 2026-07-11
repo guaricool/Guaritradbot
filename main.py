@@ -412,6 +412,14 @@ def main():
     # placeholder, not a guarantee of your account's real rate.
     crypto_taker_fee_pct = float(trading_cfg.get("crypto_taker_fee_pct", 0.001))
 
+    # Sprint 46M: binance.us spot has no margin/borrow, so "short" crypto
+    # signals were never real exchange shorts — see config.yaml's
+    # allow_crypto_short comment for the live incident (repeated
+    # simultaneous BTC-USD long+short pairs, CLOSE_FAILED "insufficient
+    # balance") that surfaced this. Keep off unless real margin/futures
+    # trading is wired in.
+    allow_crypto_short = bool(trading_cfg.get("allow_crypto_short", False))
+
     broker_client = None
     exchange_cfg = config.get("exchange", {})
     if exchange_cfg:
@@ -761,6 +769,7 @@ def main():
             max_avg_correlation_pct=max_avg_correlation_pct,
             max_cvar_95_pct=max_cvar_95_pct,
             max_stress_drawdown_pct=max_stress_drawdown_pct,
+            allow_crypto_short=allow_crypto_short,
         ),
         "DebateAgent": DebateAgent(position_repo=position_repo, audit=audit),
         "ExecutionAgent": ExecutionAgent(event_bus=event_bus),

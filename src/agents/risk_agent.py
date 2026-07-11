@@ -79,6 +79,17 @@ class RiskManagerAgent:
         max_avg_correlation_pct: float = 75.0,
         tail_risk_check_enabled: bool = True,
         max_cvar_95_pct: float = 20.0,
+        # Sprint 46M: binance.us SPOT has no margin/borrow, so a "short"
+        # signal on crypto was never a real exchange short — it's a
+        # plain sell order that only works by accident (if the account
+        # happens to already hold that asset). Default OFF; see
+        # config.yaml's comment for the live incident that surfaced this.
+        allow_crypto_short: bool = False,
+        # Sprint 46M: reject a new trade if an OPEN position already
+        # exists on the same asset (any direction). This is what let the
+        # bot open a simultaneous BTC-USD long + short every cycle,
+        # committing the whole account and producing unclosable pairs.
+        block_conflicting_asset_positions: bool = True,
     ):
         self.broker = broker_client
         self.risk_per_trade_pct = risk_per_trade_pct
@@ -114,6 +125,9 @@ class RiskManagerAgent:
         self.max_avg_correlation_pct = max_avg_correlation_pct
         self.tail_risk_check_enabled = tail_risk_check_enabled
         self.max_cvar_95_pct = max_cvar_95_pct
+        # Sprint 46M.
+        self.allow_crypto_short = allow_crypto_short
+        self.block_conflicting_asset_positions = block_conflicting_asset_positions
 
     def get_account_balance(self) -> tuple:
         if self.broker is None:
@@ -184,6 +198,57 @@ class RiskManagerAgent:
             entry_price = float(h.get("price", 0))
             atr = float(h.get("atr_at_signal", 0))
             direction = h.get("direction", "long")
+            asset = h.get("asset", "")
+
+            # --- Sprint 46M: reject crypto shorts (binance.us spot has
+            # no margin/borrow — a "short" here was never a real
+            # exchange short, see config.yaml's allow_crypto_short
+            # comment for the live incident that surfaced this). ---
+            if (
+                direction == "short"
+                and not self.allow_crypto_short
+                and get_asset_class(asset) == AssetClass.CRYPTO
+            ):
+                rejected.append({"hypothesis": h, "reason": "crypto_short_not_supported"})
+                if self.audit:
+                    self.audit.append("TRADE_REJECTED", {
+                        "asset": asset,
+                        "direction": direction,
+                        "reason": "crypto_short_not_supported",
+                        "detail": (
+                            "binance.us spot has no margin/borrow; a short "
+                            "here is not a real exchange position. Set "
+                            "trading.allow_crypto_short=true only if real "
+                            "margin/futures trading is wired in."
+                        ),
+                    })
+                print(f"  🚫 {asset:8} {direction:5} — crypto_short_not_supported (binance.us spot, no margin)")
+                continue
+
+            # --- Sprint 46M: reject if this asset already has an OPEN
+            # position (any direction). This is what let the bot open a
+            # simultaneous BTC-USD long + short every cycle — each pair
+            # committed the whole small account and the two legs could
+            # never cleanly close against each other on a spot exchange.
+            if self.block_conflicting_asset_positions and self.position_repo is not None:
+                existing = [p for p in self.position_repo.open() if p.asset == asset]
+                if existing:
+                    existing_directions = sorted({p.direction for p in existing})
+                    rejected.append({"hypothesis": h, "reason": "asset_already_has_open_position"})
+                    if self.audit:
+                        self.audit.append("TRADE_REJECTED", {
+                            "asset": asset,
+                            "direction": direction,
+                            "reason": "asset_already_has_open_position",
+                            "existing_directions": existing_directions,
+                            "existing_count": len(existing),
+                        })
+                    print(
+                        f"  🚫 {asset:8} {direction:5} — asset already has "
+                        f"open position(s) ({', '.join(existing_directions)}); "
+                        f"skipping to avoid conflicting/duplicate exposure"
+                    )
+                    continue
 
             if entry_price <= 0:
                 rejected.append({"hypothesis": h, "reason": "invalid_entry_price"})

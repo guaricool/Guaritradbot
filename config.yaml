@@ -82,6 +82,18 @@ trading:
   # (commission-free). Verify YOUR actual fee tier at
   # https://www.binance.us/fee-schedule and adjust if different.
   crypto_taker_fee_pct: 0.001
+  # Sprint 46M fix: binance.us SPOT has no margin/borrow, so it cannot
+  # actually hold a short position. A "short" signal was previously
+  # executed as a plain sell market order, which only succeeds if the
+  # account happens to already hold that crypto (e.g. left over from an
+  # unrelated long) — otherwise it's rejected by the exchange, or worse,
+  # it silently sells real BTC bought moments earlier by a simultaneous
+  # long, leaving tangled, hard-to-close positions. This was live and
+  # caused repeated CLOSE_FAILED "insufficient balance" errors on
+  # 2026-07-10/11. Keep false unless/until real margin/futures trading
+  # is wired in for crypto. Does not affect equities (Alpaca shorts are
+  # a separate, already-gated path).
+  allow_crypto_short: false
 
 schedule:
   run_interval_hours: 1
