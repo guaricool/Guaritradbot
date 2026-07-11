@@ -145,6 +145,15 @@ class ExecutionNode:
         mode_override_path="audit/mode_override.json",
         position_repo=None,
         use_native_crypto_stops: bool = False,
+        # Sprint 46N (audit C3): Alpaca market orders come back from
+        # submit_order() as "new"/"accepted", not "filled" — the fill
+        # itself is confirmed a moment later. Poll get_order() up to
+        # this many times (with this delay between attempts) before
+        # giving up and treating the order as not-yet-confirmed. 5x0.5s
+        # = 2.5s default, comfortably above typical market-order fill
+        # latency during market hours without blocking the cycle long.
+        alpaca_fill_poll_attempts: int = 5,
+        alpaca_fill_poll_delay_s: float = 0.5,
     ):
         self.event_bus = event_bus
         self.execution_mode = execution_mode
@@ -169,6 +178,8 @@ class ExecutionNode:
         # (because the broker call failed after risk_eval but before
         # we had a chance to roll back).
         self.position_repo = position_repo
+        self.alpaca_fill_poll_attempts = alpaca_fill_poll_attempts
+        self.alpaca_fill_poll_delay_s = alpaca_fill_poll_delay_s
         # Cached list of supported symbols on the broker (populated lazily
         # so we don't hammer the exchange API at construction time).
         self._supported_symbols_cache: list | None = None
@@ -877,10 +888,45 @@ class ExecutionNode:
         # fill. Pending/partial/unknown are surfaced and the order
         # does NOT enter the repo.
         fill_verdict = _classify_fill_status(broker_order)
+
+        # Sprint 46N (audit C3): Alpaca's submit_order() response almost
+        # always reflects "new"/"accepted" (pending), not the eventual
+        # fill — the fill confirmation lands a moment later. Poll
+        # get_order() until the order reaches a TERMINAL status
+        # (filled/partial/failed) or we exhaust the retry budget, so a
+        # genuinely-filled position isn't misclassified as NOT_FILLED
+        # and silently dropped from the repo. Only polls when we have
+        # an order id to look up (a submit-time exception won't).
+        order_id = broker_order.get("id") if isinstance(broker_order, dict) else None
+        if fill_verdict == "pending" and order_id:
+            for _attempt in range(self.alpaca_fill_poll_attempts):
+                time.sleep(self.alpaca_fill_poll_delay_s)
+                polled = broker.get_order(order_id, endpoint=broker_order.get("endpoint"))
+                polled_verdict = _classify_fill_status(polled)
+                if polled_verdict in ("filled", "partial", "failed"):
+                    broker_order = polled
+                    fill_verdict = polled_verdict
+                    break
+                # Still pending — keep the freshest response around for
+                # logging even if we end up exhausting the budget below.
+                broker_order = polled
+            else:
+                # Exhausted every attempt and it's still not terminal.
+                # Treat as not-yet-confirmed (safe default — matches
+                # what happened before polling existed) but say so
+                # explicitly rather than blaming an "unknown" status.
+                fill_verdict = "pending"
+
         if fill_verdict == "filled":
             status = "FILLED (LIVE MARKET — ALPACA)"
         elif fill_verdict == "partial":
             status = f"PARTIAL_FILL (LIVE MARKET — ALPACA: {broker_order.get('filled', '?')}/{qty})"
+        elif fill_verdict == "pending":
+            status = (
+                f"NOT_FILLED (LIVE MARKET — ALPACA: still pending after "
+                f"{self.alpaca_fill_poll_attempts}x{self.alpaca_fill_poll_delay_s}s poll — "
+                f"order {order_id} may still fill later; reconcile manually)"
+            )
         else:
             status = f"NOT_FILLED (LIVE MARKET — ALPACA: {fill_verdict})"
 
@@ -925,4 +971,28 @@ class ExecutionNode:
                     "error": (f"⚠️ Fill parcial Alpaca: {asset} {direction} "
                               f"{broker_order.get('filled', '?')}/{qty}. "
                               f"Posición NO agregada al repo."),
+                })
+        elif fill_verdict == "pending":
+            # Sprint 46N (audit C3): the order never reached a terminal
+            # status within the poll budget. It may still fill on
+            # Alpaca's side later — unlike a confirmed failure, this is
+            # NOT safe to silently ignore (money may actually be
+            # committed) so it gets its own SYSTEM_ERROR distinct from
+            # PARTIAL_FILL/failed, prompting Carlos to check the Alpaca
+            # dashboard/positions directly and reconcile manually.
+            if self.event_bus:
+                self.event_bus.publish("SYSTEM_ERROR", {
+                    "kind": "ALPACA_FILL_TIMEOUT",
+                    "asset": asset,
+                    "direction": direction,
+                    "requested": qty,
+                    "broker_order_id": order_id,
+                    "broker_status": broker_order.get("status", "?"),
+                    "error": (
+                        f"⚠️ Orden Alpaca {asset} {direction} (id {order_id}) "
+                        f"seguía pendiente tras {self.alpaca_fill_poll_attempts}x"
+                        f"{self.alpaca_fill_poll_delay_s}s de polling. Puede llenarse "
+                        f"más tarde en Alpaca sin que el bot la registre — "
+                        f"verificar manualmente."
+                    ),
                 })

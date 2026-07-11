@@ -45,6 +45,37 @@ import os
 logger = logging.getLogger(__name__)
 
 
+def _normalize_status(status) -> str:
+    """Sprint 46N (audit C3): alpaca-py's ``OrderStatus`` is a
+    ``(str, Enum)`` hybrid, but Python's ``Enum.__str__`` takes
+    precedence over the ``str`` mixin — ``str(OrderStatus.NEW)``
+    returns the literal string ``"OrderStatus.NEW"``, NOT ``"new"``.
+
+    Every call site in this file used to do ``str(order.status)``
+    directly, which meant `_classify_fill_status` in execution_node.py
+    (which does ``status.lower()`` and compares against ``"new"``,
+    ``"filled"``, ``"accepted"``, etc.) NEVER matched anything for an
+    Alpaca order — ``"orderstatus.new"`` isn't in any of its known-
+    status sets, so it always fell through to ``"unknown"``. In
+    practice this meant every equity fill, even ones that filled
+    instantly, was treated as NOT_FILLED and never persisted to the
+    repo — the SL/TP protection this bot exists to provide silently
+    never activated for a single Alpaca position.
+
+    Fix: prefer ``.value`` (the real lowercase status string alpaca-py
+    defines, e.g. ``"new"``, ``"filled"``, ``"partially_filled"``) and
+    only fall back to ``str()`` for anything that isn't already an
+    Enum member (defensive — some SDK versions may hand back a plain
+    string already).
+    """
+    if status is None:
+        return ""
+    value = getattr(status, "value", None)
+    if isinstance(value, str):
+        return value
+    return str(status)
+
+
 def _read_alpaca_paper_flag(mode_override_path: str) -> bool:
     """Read ``alpaca_paper`` from mode_override.json. Default: True (paper).
 
@@ -308,11 +339,27 @@ class AlpacaBroker:
             order = client.submit_order(req)
             return {
                 "id": str(order.id),
-                "status": str(order.status),
+                # Sprint 46N (audit C3): use .value, not str() — see
+                # _normalize_status's docstring for why str(order.status)
+                # silently broke fill detection for every Alpaca order.
+                "status": _normalize_status(order.status),
                 "symbol": order.symbol,
                 "side": str(order.side),
                 "qty": str(order.qty) if order.qty is not None else None,
                 "notional": str(order.notional) if order.notional is not None else None,
+                # NOTE: key is "filled" (not "filled_qty") to match
+                # `_classify_fill_status`'s existing convention in
+                # execution_node.py, which already reads `filled` on
+                # the ccxt/crypto path (ccxt order dicts use that key
+                # natively) — keeping ONE key name across both broker
+                # adapters means the shared classifier doesn't need to
+                # know which broker produced the dict.
+                "filled": str(order.filled_qty) if getattr(order, "filled_qty", None) is not None else None,
+                "filled_avg_price": (
+                    str(order.filled_avg_price)
+                    if getattr(order, "filled_avg_price", None) is not None
+                    else None
+                ),
                 "submitted_at": str(order.submitted_at),
                 "endpoint": endpoint,
             }
@@ -323,3 +370,60 @@ class AlpacaBroker:
                 "symbol": symbol,
                 "endpoint": endpoint,
             }
+
+    # ------------------------------------------------------------------
+    # Order status polling (Sprint 46N — audit C3)
+    # ------------------------------------------------------------------
+    def get_order(self, order_id: str, endpoint: str = None) -> dict:
+        """Fetch the CURRENT state of a previously-submitted order.
+
+        Alpaca's ``submit_order`` response reflects the order's state
+        at the instant of submission — almost always ``"new"`` or
+        ``"accepted"``, NOT ``"filled"``, even for a plain market order
+        during market hours (the fill itself is confirmed a moment
+        later, asynchronously). Treating that initial response as the
+        final word (the pre-46N behavior) meant a real, filled Alpaca
+        position was never persisted to the repo — this method lets
+        the caller poll until the order reaches a TERMINAL status
+        (filled / partially_filled / canceled / rejected / expired)
+        before deciding whether to persist a Position.
+
+        ``endpoint`` ("paper"/"live") pins the lookup to the SAME
+        client the original ``submit_order`` call used — if the
+        dashboard's paper/live toggle flips between submission and
+        polling (rare but possible), querying the CURRENT runtime
+        client for an order ID that was submitted to the OTHER
+        endpoint would raise a 404. Defaults to the current runtime
+        flag if not provided (e.g. a caller that doesn't track which
+        endpoint the original order went to).
+
+        Returns a dict shaped like ``create_market_order``'s success
+        return (``status``/``filled``/``filled_avg_price``/etc.), or
+        ``{"status": "failed", "error": ...}`` on any exception — never
+        raises, so a polling loop can retry safely.
+        """
+        if endpoint == "paper":
+            client = self._paper_client
+        elif endpoint == "live":
+            client = self._live_client
+        else:
+            client = self._client()
+        try:
+            order = client.get_order_by_id(order_id)
+            return {
+                "id": str(order.id),
+                "status": _normalize_status(order.status),
+                "symbol": order.symbol,
+                "side": str(order.side),
+                "qty": str(order.qty) if order.qty is not None else None,
+                "notional": str(order.notional) if order.notional is not None else None,
+                "filled": str(order.filled_qty) if getattr(order, "filled_qty", None) is not None else None,
+                "filled_avg_price": (
+                    str(order.filled_avg_price)
+                    if getattr(order, "filled_avg_price", None) is not None
+                    else None
+                ),
+            }
+        except Exception as exc:
+            logger.error(f"[AlpacaBroker] get_order({order_id}) failed: {exc}")
+            return {"status": "failed", "error": str(exc)}
