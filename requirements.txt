@@ -1,5 +1,9 @@
 pandas==2.2.2
 numpy==1.26.4
+# Sprint 46N (audit M4): used directly by market_analyst.py for a
+# market-hours-aware staleness/resample check (previously only a
+# transitive dep of pandas).
+pytz>=2024.1
 PyYAML==6.0.1
 ccxt==4.3.43
 python-dotenv==1.0.1

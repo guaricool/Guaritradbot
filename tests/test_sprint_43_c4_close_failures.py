@@ -398,4 +398,43 @@ class RiskAgentReplacementFailureTest(unittest.TestCase):
             # _live_mode_override_path's docstring.
             mode_override_path=_live_mode_override_path(self.tmpdir),
 )
-        
+        agent.score_position = MagicMock(side_effect=lambda p, current_price=None: 0.10 if p.asset == "ETH-USD" else 0.50)
+        result = agent._try_replace_position(
+            new_hyp=self._new_hyp(),
+            new_trade=self._new_trade(),
+            new_score_inputs=self._new_score_inputs(),
+        )
+        self.assertTrue(result, "Successful replacement should return True")
+        self.assertEqual(self.repo.count_open(), 1, "Worst position closed, winner remains")
+        opens = self.repo.open()
+        self.assertEqual(opens[0].asset, "GLD", "Only the winner should remain")
+        replaced = [e for e in self.audit_events if e[0] == "POSITION_REPLACED"]
+        self.assertEqual(len(replaced), 1)
+
+    def test_replacement_no_broker_works(self):
+        """Paper mode: no broker, replacement proceeds with local close."""
+        agent = RiskManagerAgent(
+            broker_client=None,
+            audit=self.audit,
+            position_repo=self.repo,
+            event_bus=self.event_bus,
+            max_open_trades=2,
+            enable_position_replacement=True,
+            replacement_score_threshold=0.20,
+            current_prices={"ETH-USD": 2900.0, "GLD": 182.0},
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
+        agent.score_position = MagicMock(side_effect=lambda p, current_price=None: 0.10 if p.asset == "ETH-USD" else 0.50)
+        result = agent._try_replace_position(
+            new_hyp=self._new_hyp(),
+            new_trade=self._new_trade(),
+            new_score_inputs=self._new_score_inputs(),
+        )
+        self.assertTrue(result)
+        self.assertEqual(self.repo.count_open(), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -594,4 +594,24 @@ class RiskAgentC3FixTest(unittest.TestCase):
 )
         bal, source = agent.get_account_balance()
         self.assertEqual(bal, 100.0)
-        self
+        self.assertEqual(source, "testnet_sim")
+
+    def test_inf_balance_falls_back_to_simulated(self):
+        class _InfBroker(_FakeBroker):
+            def get_usdt_balance(self):
+                return float("inf")
+        agent = RiskManagerAgent(
+            broker_client=_InfBroker(),
+            audit=self.audit,
+            position_repo=self.repo,
+            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+)
+        bal, source = agent.get_account_balance()
+        self.assertEqual(bal, 100.0)
+        self.assertEqual(source, "testnet_sim")
+
+
+if __name__ == "__main__":
+    unittest.main()

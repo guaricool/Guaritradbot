@@ -1506,4 +1506,12 @@ def main():
             audit.append("WORKFLOW_START", {"mode": "daemon"})
             scheduler.start(run_once_for_test=False)
     except KeyboardInterrupt:
-        a
+        audit.append("BOT_STOP_KEYBOARDINT", {})
+        print("\nBot detenido por el usuario (Ctrl+C).")
+    except Exception as e:
+        audit.append("BOT_STOP_EXCEPTION", {"error": str(e)})
+        raise
+
+
+if __name__ == "__main__":
+    main()

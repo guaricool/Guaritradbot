@@ -17,9 +17,42 @@ Sprint 6 añade:
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import pytz
 from src.core.component import Component, ComponentState
 from src.core.data_validator import validate_dataframe, DataIntegrityError
 from src.data.yf_safe import safe_yf_download
+from src.data.asset_class import get_asset_class, AssetClass
+
+
+# Sprint 46N (audit M4): NYSE/Nasdaq regular session, used both to make
+# the staleness check equity-aware (_validate_or_fault) and to fix the
+# 4h resample morning-bucket-always-in-progress bug (_resample_ohlcv).
+# This is a coarse weekday+hours check -- it does NOT know about market
+# holidays. That fuller fix (gating on Alpaca's real GET /v2/clock) is
+# tracked separately under audit finding M12; this is enough to resolve
+# M4's specific complaint (every night and every weekend).
+_NY_TZ = pytz.timezone("America/New_York")
+
+
+def _is_us_equity_market_open(now: "pd.Timestamp | None" = None) -> bool:
+    """True if it's currently within NYSE/Nasdaq regular trading hours
+    (Mon-Fri, 09:30-16:00 America/New_York). See module note above for
+    the known holiday-calendar gap."""
+    try:
+        ts = pd.Timestamp.now(tz="UTC") if now is None else now
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        ny = ts.tz_convert(_NY_TZ)
+        if ny.weekday() >= 5:  # Saturday/Sunday
+            return False
+        open_t = ny.replace(hour=9, minute=30, second=0, microsecond=0)
+        close_t = ny.replace(hour=16, minute=0, second=0, microsecond=0)
+        return open_t <= ny <= close_t
+    except Exception:
+        # Can't determine market state -- fail open to "market open" so
+        # staleness/resample logic falls back to its stricter, pre-M4
+        # behavior rather than silently loosening a safety check.
+        return True
 
 
 # Period mínimo (en días) para garantizar al menos 80 velas tras warmup.
@@ -150,7 +183,7 @@ def _support_resistance(df: pd.DataFrame, window: int = 50) -> tuple:
     return (support, resistance)
 
 
-def _resample_ohlcv(df_60m: pd.DataFrame, rule: str) -> pd.DataFrame:
+def _resample_ohlcv(df_60m: pd.DataFrame, rule: str, asset: str = None) -> pd.DataFrame:
     """Resample OHLCV 60m → 4h (o lo que sea).
 
     Sprint 43 H12 fix: drop the current in-progress bar from the
@@ -165,6 +198,18 @@ def _resample_ohlcv(df_60m: pd.DataFrame, rule: str) -> pd.DataFrame:
     4h bars are still there; the current partial one is
     excluded. If the caller wants the partial for display
     purposes, they can ask explicitly.
+
+    Sprint 46N (audit M4): the bar-count completeness check below
+    (`len(last_bucket_60m_bars) < expected_bars`) assumes a bucket that
+    isn't fully populated is still forming -- true for crypto's 24/7
+    bars, but wrong for equities/ETFs. Their session only runs ~6.5h/day
+    (09:30-16:00 ET), so a calendar-aligned 4h bucket that straddles the
+    open (e.g. 08:00-12:00 ET) can NEVER accumulate the naive "4 hourly
+    bars" no matter how long you wait -- it only ever gets 3 (09:30,
+    10:30, 11:30). The old code discarded that bucket as "in progress"
+    forever, delaying equity 4h signals by up to a full bucket. `asset`
+    lets us switch to a wall-clock completeness check for non-crypto
+    assets instead (see below).
     """
     if df_60m.empty:
         return df_60m
@@ -203,9 +248,44 @@ def _resample_ohlcv(df_60m: pd.DataFrame, rule: str) -> pd.DataFrame:
         # For rule "1h": rule_seconds=3600, expected=1.
         # For rule "1d": rule_seconds=86400, expected=24.
         expected_bars = int(rule_seconds // 3600) or 1  # floor of hours
-        if len(last_bucket_60m_bars) < expected_bars:
-            # In-progress — drop it
-            resampled = resampled.iloc[:-1]
+        is_crypto_like = asset is None or get_asset_class(asset) == AssetClass.CRYPTO
+        if is_crypto_like:
+            # Original Sprint 43 H12 heuristic — correct for a 24/7
+            # market where a complete bucket always gets exactly
+            # `expected_bars` source rows.
+            if len(last_bucket_60m_bars) < expected_bars:
+                # In-progress — drop it
+                resampled = resampled.iloc[:-1]
+        else:
+            # Sprint 46N (audit M4): equity/ETF bucket — bar count alone
+            # can't tell "still forming" from "as complete as it will
+            # ever be" near market open/close. Use the bucket's own end
+            # boundary vs. wall-clock time instead: by the time we reach
+            # this code, `_trim_in_progress_bar` (called upstream, in
+            # both fetch_and_analyze and fetch_one) has already removed
+            # any still-forming raw 60m bar, so every row we see here is
+            # a genuinely closed bar. If the bucket's end time has
+            # already passed, no more bars are coming for it — keep it,
+            # regardless of how few bars it ended up with. Only drop it
+            # if the bucket's window is still open (end time in the
+            # future) AND it hasn't yet reached the full expected count.
+            last_bucket_end = last_bucket_start + pd.Timedelta(seconds=rule_seconds)
+            try:
+                last_ts = df_60m.index[-1]
+                now = (
+                    pd.Timestamp.now(tz=last_ts.tz)
+                    if getattr(last_ts, "tzinfo", None) is not None
+                    else pd.Timestamp.now()
+                )
+            except Exception:
+                now = (
+                    pd.Timestamp.now(tz=last_bucket_start.tz)
+                    if getattr(last_bucket_start, "tzinfo", None) is not None
+                    else pd.Timestamp.now()
+                )
+            bucket_still_open = now < last_bucket_end
+            if bucket_still_open and len(last_bucket_60m_bars) < expected_bars:
+                resampled = resampled.iloc[:-1]
     except Exception:
         # If we can't parse the rule (unusual), fall back to
         # the old behavior (drop nothing). Better to show a
@@ -319,7 +399,7 @@ class MarketAnalystAgent(Component):
             # (defined as `def _resample_ohlcv(df_60m, rule)`,
             # not a method), so we call it without self.
             if interval == "4h":
-                df = _resample_ohlcv(df, "4h")
+                df = _resample_ohlcv(df, "4h", asset=asset)
             # Calcular todos los indicadores (incluyendo los nuevos del PDF2)
             close = df["Close"]
             df["EMA_20"] = close.ewm(span=20, adjust=False).mean()
@@ -362,7 +442,7 @@ class MarketAnalystAgent(Component):
         "1d": 86400, "1wk": 604800,
     }
 
-    def _validate_or_fault(self, df, asset_tf: str, tf: str = None) -> bool:
+    def _validate_or_fault(self, df, asset_tf: str, tf: str = None, asset: str = None) -> bool:
         """Sprint 6: fail-fast. Devuelve False si los datos son corruptos."""
         # Allow 3x the bar's own interval before flagging staleness —
         # generous enough to tolerate a slow/late data provider or a
@@ -373,6 +453,22 @@ class MarketAnalystAgent(Component):
             interval_s = self._TF_SECONDS.get(tf)
             if interval_s:
                 max_staleness = interval_s * 3
+        # Sprint 46N (audit M4): the 3x-interval rule above assumes the
+        # feed keeps updating continuously, which holds for crypto (24/7)
+        # but not for equities/ETFs — SPY/QQQ/GLD/USO legitimately stop
+        # updating every night and every weekend, which was tripping this
+        # check constantly and marking the component DEGRADED for no real
+        # reason. While the US equity market is closed, skip the
+        # staleness check for non-crypto assets (the other integrity
+        # checks — NaN/Inf/negative/monotonic/duplicate-index — still run
+        # unconditionally inside validate_dataframe). Coarse weekday+hours
+        # check only, no holiday calendar — see _is_us_equity_market_open.
+        if asset is not None and max_staleness is not None:
+            try:
+                if get_asset_class(asset) != AssetClass.CRYPTO and not _is_us_equity_market_open():
+                    max_staleness = None
+            except Exception:
+                pass
         try:
             validate_dataframe(df, max_staleness_seconds=max_staleness)
             return True
@@ -432,10 +528,10 @@ class MarketAnalystAgent(Component):
                         continue
 
                     if resample_rule:
-                        df = _resample_ohlcv(df, resample_rule)
+                        df = _resample_ohlcv(df, resample_rule, asset=asset)
 
                     # Sprint 6 fail-fast: validar ANTES de calcular indicadores
-                    if not self._validate_or_fault(df, f"{asset}@{tf}", tf=tf):
+                    if not self._validate_or_fault(df, f"{asset}@{tf}", tf=tf, asset=asset):
                         fail_count += 1
                         continue
 
