@@ -62,6 +62,77 @@ def _build_mandate(config: dict, audit, position_repo=None, event_bus=None) -> t
     return (MandateGate(mc, audit_ledger=audit, position_repo=position_repo, event_bus=event_bus), mc)
 
 
+def _asset_class_for(asset: str, brokers_config: dict) -> str:
+    """Look up which `brokers.<class>.symbols` list (config.yaml) an
+    asset belongs to. Mirrors the mapping ExecutionNode builds for
+    order routing (see src/execution/execution_node.py's
+    `_asset_to_class`), but kept independent here since main.py needs
+    it BEFORE any order exists — to decide which assets are even worth
+    generating signals for this cycle (see
+    `_get_active_asset_classes` / Sprint 46G below).
+
+    Returns "unknown" for anything not listed — callers should treat
+    unknown assets as always-active (don't filter what we can't
+    classify), same conservative default used throughout this file.
+    """
+    for cls_name, cfg in (brokers_config or {}).items():
+        if isinstance(cfg, dict) and asset in (cfg.get("symbols") or []):
+            return cls_name
+    return "unknown"
+
+
+def _get_active_asset_classes(broker_client, alpaca_broker, min_usd: float = 10.0) -> set:
+    """Sprint 46G — capital-aware asset-class routing.
+
+    Carlos: "si tienes dinero en binance, el bot solo podrá trabajar
+    con cryptos, y cuando está en alpaca es que podrá trabajar con
+    stocks... el sistema debe ser tan inteligente que viendo el
+    balance de dinero disponible sepa que camino tomar." Before this,
+    the bot always generated signals for the FULL hardcoded asset list
+    in trading_loop.yaml (SPY/QQQ/BTC-USD/GLD/USO) regardless of
+    whether either broker actually had money — wasting cycles/API
+    calls and letting RiskManagerAgent/ExecutionNode discover the
+    "insufficient funds" problem only at order time.
+
+    Returns the set of asset classes ("crypto"/"equity") worth
+    generating NEW-entry signals for this cycle.
+
+    Fail-OPEN by design: if a broker isn't configured, or its balance
+    can't be read right now (network hiccup), that class is left
+    ACTIVE — unchanged from the bot's behavior before this feature
+    existed. A class is only EXCLUDED when we successfully read its
+    balance and it's below `min_usd` (the same floor as
+    trading.min_order_usd — no point signaling for a market you can't
+    place even the smallest order in).
+    """
+    active = set()
+
+    if broker_client is None:
+        active.add("crypto")
+    else:
+        try:
+            bal = broker_client.get_usdt_balance()
+            if bal is None or bal >= min_usd:
+                active.add("crypto")
+        except Exception:
+            active.add("crypto")
+
+    if alpaca_broker is None:
+        # Sprint 36 default: equity signals already fail loudly with
+        # ALPACA_NOT_CONFIGURED at order time when there's no broker.
+        # No point including equity in the active set here either.
+        pass
+    else:
+        try:
+            bal = alpaca_broker.get_usd_balance()
+            if bal is None or bal >= min_usd:
+                active.add("equity")
+        except Exception:
+            active.add("equity")
+
+    return active
+
+
 def _start_api_server(
     audit_path: str,
     positions_path: str,
@@ -610,6 +681,23 @@ def main():
         return
     workflow_data = engine.load_workflow(workflow_path)
 
+    # Sprint 46G: capture the FULL configured asset universe once, at
+    # startup, from the analyze_market step's `inputs.assets` (trading_
+    # loop.yaml). job_with_monitor() re-filters THIS list every cycle
+    # against live broker balances (see _get_active_asset_classes) and
+    # writes the filtered result back into workflow_data's step —
+    # engine.run() reads it fresh every call since it's the same dict
+    # object EpochScheduler holds. Keeping the untouched original here
+    # means a broker that regains funds later gets its assets back
+    # immediately, instead of the universe permanently shrinking.
+    _analyze_market_step = next(
+        (s for s in workflow_data.get("steps", []) if s.get("id") == "analyze_market"),
+        None,
+    )
+    _full_trading_assets = list(
+        (_analyze_market_step or {}).get("inputs", {}).get("assets", [])
+    )
+
     # Workflow customizado: insertamos un paso de PositionMonitor antes de
     # que se ejecute la estrategia, para que stops/TPs se cierren primero.
     # Si el monitor cierra una posición, queda registrada antes de la
@@ -879,15 +967,62 @@ def main():
         except Exception as e:
             print(f"[PositionMonitor] check falló: {e}")
 
+        # Sprint 46G: capital-aware asset routing. Re-check broker
+        # balances every cycle and narrow the analyze_market step's
+        # asset list to only the classes that currently have money —
+        # crypto-only if just binance is funded, equity-only if just
+        # Alpaca is funded, both if both are (even at the $10 minimum).
+        # See _get_active_asset_classes' docstring for the fail-open
+        # rationale.
+        capital_blocked = False
+        try:
+            if _analyze_market_step is not None and _full_trading_assets:
+                _active_classes = _get_active_asset_classes(
+                    broker_client, alpaca_broker, min_usd=min_order_usd
+                )
+                _filtered_assets = [
+                    a for a in _full_trading_assets
+                    if _asset_class_for(a, brokers_config) in _active_classes
+                    or _asset_class_for(a, brokers_config) == "unknown"
+                ]
+                if not _filtered_assets:
+                    capital_blocked = True
+                    if audit:
+                        audit.append("CAPITAL_ROUTING_BLOCKED", {
+                            "active_classes": sorted(_active_classes),
+                            "full_assets": _full_trading_assets,
+                        })
+                    print(
+                        "[CapitalRouting] ⛔ Ningún broker tiene balance suficiente "
+                        f"(${min_order_usd:.2f} mínimo) — ciclo de nuevas entradas SALTADO."
+                    )
+                else:
+                    if set(_filtered_assets) != set(_full_trading_assets):
+                        if audit:
+                            audit.append("CAPITAL_ROUTING_APPLIED", {
+                                "active_classes": sorted(_active_classes),
+                                "assets_used": _filtered_assets,
+                                "assets_full": _full_trading_assets,
+                            })
+                        print(
+                            f"[CapitalRouting] Universo de assets ajustado a "
+                            f"{_filtered_assets} (clases activas: {sorted(_active_classes)})"
+                        )
+                    _analyze_market_step["inputs"]["assets"] = _filtered_assets
+        except Exception as e:
+            print(f"[CapitalRouting] check falló (continuando sin filtrar): {e}")
+
         # 2. Workflow normal — skipped while the drawdown kill switch is
-        # active (dd_triggered above), so the bot stops opening NEW
-        # positions during the cooldown. Step 1 (monitor) already ran
-        # unconditionally, so SL/TP protection on existing positions is
-        # never paused.
-        if not dd_triggered:
+        # active (dd_triggered above) OR while no broker has enough
+        # capital to trade (capital_blocked above). Step 1 (monitor)
+        # already ran unconditionally, so SL/TP protection on existing
+        # positions is never paused by either gate.
+        if not dd_triggered and not capital_blocked:
             original_job()
-        else:
+        elif dd_triggered:
             print("[DrawdownKill] Ciclo de nuevas entradas SALTADO (cooldown activo). Monitor de SL/TP sigue corriendo normalmente.")
+        else:
+            print("[CapitalRouting] Ciclo de nuevas entradas SALTADO (sin capital disponible). Monitor de SL/TP sigue corriendo normalmente.")
 
     scheduler.job = job_with_monitor
 

@@ -1562,6 +1562,41 @@ def run_evolution_cli(
         print(f"[GP] elapsed: {result.elapsed_seconds:.1f}s")
         if result.best_tree is not None:
             print(f"\n[GP] best tree:\n{result.best_tree.to_string()}")
+        # Sprint 46G: IC / Rank-IC diagnostic, ported from Qlib's
+        # `qlib/contrib/eva/alpha.py::calc_ic` (see
+        # src/analysis/alpha_factors.py's docstring for the adaptation
+        # from Qlib's cross-sectional panel IC to a per-symbol,
+        # pooled-across-time IC). This is a PURE diagnostic — it does
+        # not feed back into fitness/evolve/the strategy library at
+        # all, so it can't change which strategies get selected. It
+        # answers a different question than `best_score`/`sharpe`:
+        # "does this strategy's raw signal actually point the right
+        # way more often than not," independent of the SL/TP exit
+        # mechanics `simulate_exits` models. Best-effort: any failure
+        # here is printed and swallowed, never raised — a broken
+        # diagnostic must not break the CLI's actual job (evolve + save).
+        if result.best_tree is not None:
+            try:
+                from src.analysis.alpha_factors import calc_ic
+                ic_lines = []
+                for sym, sym_df in prices_by_symbol.items():
+                    close = sym_df["Close"]
+                    indicators = precompute_indicators(close)
+                    signal = evaluate_tree(result.best_tree, indicators, direction=1)
+                    forward_return = close.pct_change().shift(-1)
+                    ic, rank_ic = calc_ic(signal, forward_return)
+                    if ic is not None:
+                        ic_lines.append(f"{sym}: IC={ic:+.3f}  RankIC={rank_ic:+.3f}")
+                if ic_lines and verbose:
+                    print(
+                        "\n[GP] signal quality (Qlib-style IC/Rank-IC vs next-bar "
+                        "return — |IC| ~0.02-0.05 is a real, usable edge):"
+                    )
+                    for line in ic_lines:
+                        print(f"     {line}")
+            except Exception as e:
+                if verbose:
+                    print(f"[GP] IC diagnostic skipped ({e})")
     # Save to library
     lib = StrategyLibrary(output_path)
     n_added = lib.add_from_evolution(result, top_k=5, min_oos_ratio=min_oos_ratio)

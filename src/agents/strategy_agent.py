@@ -28,6 +28,15 @@ mercado actual no tiene esos cruces → 0 señales todo el día. Ahora:
 import pandas as pd
 import numpy as np
 
+# Sprint 46G: Qlib-inspired alpha factors (KBAR/RSV/CNTD/WVMA/etc — see
+# src/analysis/alpha_factors.py's module docstring for the Qlib
+# provenance). Used below by the new "Alpha Factor" hypothesis block,
+# which draws on volume and multi-bar breadth data none of the
+# existing RSI/MACD/EMA/Stochastic/Bollinger/Support-Resistance blocks
+# use — a genuinely new information source, not a re-parameterization
+# of an existing one.
+from src.analysis.alpha_factors import latest_alpha_snapshot
+
 
 def _was_in_zone_recently(series: pd.Series, threshold: float, lookback: int = 5, direction: str = "below") -> bool:
     """True if the series crossed below/above `threshold` within last `lookback` bars.
@@ -624,6 +633,74 @@ class StrategyAgent:
                             df_ml, _ml_price, atr_ml, kind="trend",
                         ) * (0.5 + 0.5 * _confidence),
                     )
+
+        # ============================================================
+        # Sprint 46G — Alpha Factor block (Qlib-inspired)
+        # Draws on volume + candle-shape + multi-bar breadth data that
+        # none of the blocks above use:
+        #   - CNTD20 (breadth: %up-bars - %down-bars over 20 bars) as a
+        #     momentum-confirmation filter
+        #   - RSV10/RSV20 (price position within its recent High/Low
+        #     range, 0=at the low, 1=at the high) as the trigger
+        #   - WVMA20 (volume-weighted price-change volatility) to flag
+        #     unusually erratic, volume-heavy moves — a capitulation/
+        #     exhaustion signature worth fading
+        # See src/analysis/alpha_factors.py for the exact formulas
+        # (ported from qlib/contrib/data/loader.py).
+        # ============================================================
+        for asset in ("SPY", "QQQ", "BTC-USD", "GLD", "USO"):
+            df = market_data.get(asset, {}).get("1h")
+            if df is None or len(df) < 25:
+                continue
+            if not {"Open", "High", "Low", "Close", "Volume"}.issubset(set(df.columns)):
+                continue
+            try:
+                snap = latest_alpha_snapshot(df, windows=(10, 20))
+            except Exception as e:
+                if self.audit is not None:
+                    self.audit.append("ALPHA_FACTOR_SNAPSHOT_FAILED", {
+                        "asset": asset, "reason": str(e)[:200],
+                    })
+                continue
+            if not snap:
+                continue
+
+            last = df.iloc[-1]
+            price = float(last["Close"])
+            atr = float(last.get("ATR_14", 0) or 0)
+            cntd20 = snap.get("CNTD20")
+            rsv10 = snap.get("RSV10")
+            rsv20 = snap.get("RSV20")
+            wvma20 = snap.get("WVMA20")
+
+            # A) Momentum breakout: strong up-breadth + price near the
+            # top of its recent range → trend continuation long.
+            if cntd20 is not None and rsv10 is not None and cntd20 > 0.5 and rsv10 > 0.85:
+                self._add_hyp(
+                    hypotheses, asset, "1h", "long",
+                    "AlphaFactor_MomentumBreakout", price,
+                    cntd20=cntd20, rsv10=rsv10, atr_at_signal=atr,
+                    expected_move_pct=_estimate_expected_move_pct(df, price, atr, kind="trend"),
+                )
+            # B) Momentum breakdown: strong down-breadth + price near
+            # the bottom of its recent range → trend continuation short.
+            elif cntd20 is not None and rsv10 is not None and cntd20 < -0.5 and rsv10 < 0.15:
+                self._add_hyp(
+                    hypotheses, asset, "1h", "short",
+                    "AlphaFactor_MomentumBreakdown", price,
+                    cntd20=cntd20, rsv10=rsv10, atr_at_signal=atr,
+                    expected_move_pct=_estimate_expected_move_pct(df, price, atr, kind="trend"),
+                )
+            # C) Capitulation bounce: price pinned at the bottom of its
+            # range AND volume-weighted volatility is unusually high
+            # (a sharp, volume-heavy selloff) → contrarian long.
+            elif rsv20 is not None and wvma20 is not None and rsv20 < 0.10 and wvma20 > 2.0:
+                self._add_hyp(
+                    hypotheses, asset, "1h", "long",
+                    "AlphaFactor_CapitulationBounce", price,
+                    rsv20=rsv20, wvma20=wvma20, atr_at_signal=atr,
+                    expected_move_pct=_estimate_expected_move_pct(df, price, atr, kind="reversion"),
+                )
 
         # ============================================================
         # Dedupe: max 1 señal por (asset, direction) — el bot decide
