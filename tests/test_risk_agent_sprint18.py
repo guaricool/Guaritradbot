@@ -58,7 +58,15 @@ class RiskAgentBugAFixTest(unittest.TestCase):
         self.broker = _FakeBroker()
 
     def test_risk_below_min_order_triggers_auto_adjust(self):
-        """$20 balance + 1% risk + 4% stop = $5 notional → must bump to $10."""
+        """$20 balance + 1% risk + moderate stop = notional < $10 → must
+        bump to $10, and the resulting effective risk must stay within
+        the Sprint 46N (audit A2) default 2x multiplier cap so the
+        auto-adjust itself (this test's actual subject) isn't masked by
+        that separate gate rejecting the trade — see
+        tests/test_sprint_46n_a2_risk_multiplier_cap.py for tests of
+        the multiplier cap itself, including the exact wider-stop
+        scenario (ATR=2000) this test used before Sprint 46N, which is
+        now correctly REJECTED (4x the intended risk)."""
         agent = RiskManagerAgent(
             broker_client=self.broker,
             risk_per_trade_pct=1.0,
@@ -71,21 +79,20 @@ class RiskAgentBugAFixTest(unittest.TestCase):
             correlation_check_enabled=False,
             tail_risk_check_enabled=False,
 )
-        # ATR = 4% of entry → stop_distance = 8% of entry → 1% risk / 8% = 12.5%
-        # → notional = $20 * 12.5% = $2.50 < $10
-        # But that's below balance too. Use a slightly different setup:
-        # risk=1% of $20 = $0.20, stop_distance = 4% of entry = $200 (entry $5000)
-        # → quantity = $0.20 / $200 = 0.001 BTC → notional = $5
+        # risk_amount_usd = $20 * 1% = $0.20
+        # stop_distance = 2 * ATR = 2 * 750 = $1500 (3% of $50000 entry —
+        # a realistic, not extreme, crypto stop)
+        # quantity = 0.20 / 1500 = 0.0001333 BTC → notional = $6.67 < $10
+        # → auto-adjust bumps quantity to 10/50000 = 0.0002 BTC
+        # → effective risk = 0.0002 * 1500 = $0.30 = 1.5x intended $0.20,
+        #   under the default max_auto_adjust_risk_multiplier=2.0 cap.
         hypothesis = {
             "asset": "BTC-USD",
             "strategy": "RSI_MeanReversion",
             "direction": "long",
             "price": 50000.0,
-            "atr_at_signal": 200.0,  # 0.4% of price; 2*ATR = $400 stop distance
+            "atr_at_signal": 750.0,
         }
-        # Wait: 2*ATR = 400, quantity = 0.20/400 = 0.0005 BTC, notional = $25 (above min)
-        # We need notional < min. Set ATR higher: ATR = 2000, stop = 4000.
-        hypothesis["atr_at_signal"] = 2000.0
         state = {"generate_hypotheses": {"hypotheses": [hypothesis]}}
 
         result = agent.validate_and_size({}, state)
@@ -265,13 +272,24 @@ class PositionReplacementTest(unittest.TestCase):
             tail_risk_check_enabled=False,
 )
 
-        # New hypothesis: NEGATIVE expected move + noisy ATR → very low score
+        # New hypothesis: NEGATIVE expected move + noisy ATR → very low score.
+        # Sprint 46N (audit A2): ATR lowered from 3000 to 750 vs. the
+        # original test — at $20 balance/1% risk, ATR=3000 (2xATR=$6000
+        # stop) auto-adjusts to min_order_usd at a 6x risk multiplier,
+        # which the new max_auto_adjust_risk_multiplier gate now rejects
+        # BEFORE sizing even reaches the max_open_trades/replacement
+        # check this test is actually exercising. ATR=750 keeps the
+        # multiplier under the default 2x cap (see
+        # tests/test_sprint_46n_a2_risk_multiplier_cap.py for that gate's
+        # own tests) while the NEGATIVE expected_move_pct alone (-1.0 ->
+        # score contribution of -5.0, clamped) is still enough to make
+        # this hypothesis score far below the open positions' scores.
         new_hyp = {
             "asset": "BTC-USD",
             "strategy": "weak_signal",
             "direction": "long",
             "price": 50000.0,
-            "atr_at_signal": 3000.0,  # 6% ATR (noisy → -0.2)
+            "atr_at_signal": 750.0,
             "expected_move_pct": -1.0,  # NEGATIVE → score goes deeply negative
         }
         state = {"generate_hypotheses": {"hypotheses": [new_hyp]}}
@@ -576,24 +594,4 @@ class RiskAgentC3FixTest(unittest.TestCase):
 )
         bal, source = agent.get_account_balance()
         self.assertEqual(bal, 100.0)
-        self.assertEqual(source, "testnet_sim")
-
-    def test_inf_balance_falls_back_to_simulated(self):
-        class _InfBroker(_FakeBroker):
-            def get_usdt_balance(self):
-                return float("inf")
-        agent = RiskManagerAgent(
-            broker_client=_InfBroker(),
-            audit=self.audit,
-            position_repo=self.repo,
-            # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
-            correlation_check_enabled=False,
-            tail_risk_check_enabled=False,
-)
-        bal, source = agent.get_account_balance()
-        self.assertEqual(bal, 100.0)
-        self.assertEqual(source, "testnet_sim")
-
-
-if __name__ == "__main__":
-    unittest.main()
+        self

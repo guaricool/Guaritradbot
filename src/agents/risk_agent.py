@@ -103,6 +103,18 @@ class RiskManagerAgent:
         alpaca_broker=None,
         brokers_config: Optional[dict] = None,
         mode_override_path: str = "audit/mode_override.json",
+        # Sprint 46N (audit A2): the min_order_usd auto-adjust (below,
+        # Sprint 18) inflates a risk-sized trade up to min_order_usd
+        # whenever the raw risk/stop_distance notional would be smaller
+        # — but it never checked how much that inflation multiplies the
+        # EFFECTIVE risk (quantity * stop_distance) relative to what
+        # risk_per_trade_pct actually intended. With a $20 account (1%
+        # risk = $0.20) and a typical crypto stop of 4-10% (2x ATR),
+        # bumping to the $10 min_order_usd floor makes effective risk
+        # $0.40-$1.00 per trade — 2-5x the configured risk, silently,
+        # with only an audit-log breadcrumb (CAP_AUTO_ADJUSTED) and no
+        # enforcement. See CAP_AUTO_ADJUSTED_REJECTED below.
+        max_auto_adjust_risk_multiplier: float = 2.0,
     ):
         self.broker = broker_client
         self.risk_per_trade_pct = risk_per_trade_pct
@@ -146,6 +158,8 @@ class RiskManagerAgent:
         self.brokers_config = brokers_config or {}
         self.mode_override_path = mode_override_path
         self._asset_to_class = build_asset_to_class_map(self.brokers_config)
+        # Sprint 46N (audit A2).
+        self.max_auto_adjust_risk_multiplier = max_auto_adjust_risk_multiplier
 
     def get_account_balance(self, asset: Optional[str] = None) -> tuple:
         """Return (balance_usd, source) to size a trade against.
@@ -461,6 +475,47 @@ class RiskManagerAgent:
                       f"or lower min_order_usd.")
 
             risk_amount_usd_eff = quantity * stop_distance
+
+            # --- Sprint 46N (audit A2): cap risk multiplication from the
+            # min_order_usd auto-adjust above. Bumping notional up to
+            # min_order_usd is necessary (binance.us/exchange minimums
+            # exist regardless of what risk_per_trade_pct would size),
+            # but it must not be allowed to silently turn a 1%-risk
+            # config into a 5%-risk trade. If the auto-adjust fired AND
+            # the resulting effective risk exceeds
+            # max_auto_adjust_risk_multiplier x the originally-intended
+            # risk_amount_usd, reject the trade instead of opening it —
+            # better to skip a trade this account is too small for than
+            # to size it at a multiple of the risk the operator
+            # configured. Only applies when auto-adjust actually fired;
+            # a normally-sized trade (no adjustment) is never touched by
+            # this gate.
+            if auto_adjust_reason is not None and risk_amount_usd > 0:
+                risk_multiplier = risk_amount_usd_eff / risk_amount_usd
+                if risk_multiplier > self.max_auto_adjust_risk_multiplier:
+                    rejected.append({
+                        "hypothesis": h,
+                        "reason": "auto_adjust_risk_multiplier_exceeded",
+                    })
+                    if self.audit:
+                        self.audit.append("CAP_AUTO_ADJUSTED_REJECTED", {
+                            "asset": h.get("asset"),
+                            "auto_adjust_reason": auto_adjust_reason,
+                            "intended_risk_usd": round(risk_amount_usd, 4),
+                            "effective_risk_usd": round(risk_amount_usd_eff, 4),
+                            "risk_multiplier": round(risk_multiplier, 2),
+                            "max_allowed_multiplier": self.max_auto_adjust_risk_multiplier,
+                            "min_order_usd": self.min_order_usd,
+                        })
+                    print(
+                        f"  🚫 {h['asset']:8} {direction:5} — auto-adjust to "
+                        f"min_order_usd would risk ${risk_amount_usd_eff:.4f} vs "
+                        f"${risk_amount_usd:.4f} intended "
+                        f"({risk_multiplier:.1f}x > {self.max_auto_adjust_risk_multiplier}x cap). "
+                        f"Rejecting — account too small for this stop distance at "
+                        f"the configured risk_per_trade_pct."
+                    )
+                    continue
 
             # --- Min order check (post-adjustment) ---
             if notional < self.min_order_usd:

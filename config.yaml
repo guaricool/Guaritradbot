@@ -57,6 +57,17 @@ trading:
   # minimum. To trade, balance must be ≥ $20. Below that, the bot will
   # skip cycles with a clear "balance below min_order" message.
   min_order_usd: 10.0
+  # Sprint 46N (audit A2): the min_order_usd auto-adjust above bumps a
+  # too-small trade up to min_order_usd — necessary (exchange minimums
+  # exist regardless of risk_per_trade_pct), but that bump multiplies
+  # the EFFECTIVE risk (quantity x stop_distance) above what
+  # risk_per_trade_pct actually intended, especially on a small account
+  # with a wide (crypto) stop. This caps how much that inflation is
+  # allowed to multiply the intended risk before the trade is rejected
+  # outright instead of opened. 2.0 = effective risk may be at most 2x
+  # the configured risk_per_trade_pct; raise only if you've deliberately
+  # accepted a higher per-trade risk on this account size.
+  max_auto_adjust_risk_multiplier: 2.0
   # Sprint 18: Portfolio Management
   enable_position_replacement: true        # if max_open reached, try to replace worst with better signal
   replacement_score_threshold: 0.20        # new signal must score at least +0.20 above worst open position
@@ -147,20 +158,4 @@ mandate:
 # enabled=false disables the drift gate; the 44A concentration cap
 # (max_asset_class_concentration_pct) still runs as a backstop.
 allocation_policy:
-  enabled: true
-  drift_tolerance_pct: 10
-  targets:
-    crypto: 0.40
-    equity_growth: 0.40
-    commodity_safe: 0.10
-    commodity_energy: 0.10
-
-# === Sprint 22 — Paper→Live Transition Safety ===
-# What should the pre-flight checklist do with paper positions when
-# switching to live? Only applies when interactive=False (e.g., daemon mode).
-# - close:  mark them closed in repo, P&L=0, proceed to live
-# - ignore: keep them in repo but warn that they don't exist in live exchange
-# - abort:   refuse to proceed (DEFAULT — safest)
-live_transition:
-  auto_action: "abort"              # default safe option for non-interactive mode
-  dry_run_qty: 0.00001              # BTC qty for dry-run validation order (~50¢ at $50k)
+  

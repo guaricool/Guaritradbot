@@ -439,6 +439,9 @@ def main():
     risk_reward_ratio = trading_cfg.get("risk_reward_ratio", 2.0)
     max_capital_per_trade_pct = trading_cfg.get("max_capital_per_trade_pct", 10.0)
     min_order_usd = trading_cfg.get("min_order_usd", 10.0)
+    # Sprint 46N (audit A2): see RiskManagerAgent's constructor docstring
+    # / config.yaml's comment for the full rationale.
+    max_auto_adjust_risk_multiplier = float(trading_cfg.get("max_auto_adjust_risk_multiplier", 2.0))
     max_open_trades = trading_cfg.get("max_open_trades", 5)
     enable_position_replacement = trading_cfg.get("enable_position_replacement", True)
     replacement_score_threshold = float(trading_cfg.get("replacement_score_threshold", 0.20))
@@ -847,6 +850,8 @@ def main():
             risk_reward_ratio=risk_reward_ratio,
             max_open_trades=max_open_trades,
             min_order_usd=min_order_usd,
+            # Sprint 46N (audit A2).
+            max_auto_adjust_risk_multiplier=max_auto_adjust_risk_multiplier,
             event_bus=event_bus,
             mandate_gate=mandate_gate,
             audit=audit,
