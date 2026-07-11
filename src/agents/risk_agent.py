@@ -194,6 +194,17 @@ class RiskManagerAgent:
         # resets slots_left=1, then the next iteration sees slots_left=0
         # again and triggers another replacement → exposure can spiral.
         did_replace_this_cycle = False
+        # Sprint 46M fix (gap found on review): the live incident that
+        # motivated the conflicting-position gate was TWO NEW hypotheses
+        # (long + short on BTC-USD) submitted in the SAME cycle, not a new
+        # hypothesis vs. an already-persisted position. Positions aren't
+        # written to position_repo until ExecutionNode's later
+        # execute_trades step, so checking position_repo.open() alone
+        # would NOT have caught this — by the time the second (short)
+        # hypothesis is evaluated here, the first (long) one approved
+        # moments earlier in this same loop still isn't in the repo yet.
+        # Track assets approved earlier in THIS batch too.
+        assets_approved_this_cycle: set[str] = set()
         for h in hypotheses:
             entry_price = float(h.get("price", 0))
             atr = float(h.get("atr_at_signal", 0))
@@ -230,22 +241,32 @@ class RiskManagerAgent:
             # simultaneous BTC-USD long + short every cycle — each pair
             # committed the whole small account and the two legs could
             # never cleanly close against each other on a spot exchange.
-            if self.block_conflicting_asset_positions and self.position_repo is not None:
-                existing = [p for p in self.position_repo.open() if p.asset == asset]
-                if existing:
-                    existing_directions = sorted({p.direction for p in existing})
-                    rejected.append({"hypothesis": h, "reason": "asset_already_has_open_position"})
+            if self.block_conflicting_asset_positions:
+                existing_directions = set()
+                if self.position_repo is not None:
+                    existing_directions.update(
+                        p.direction for p in self.position_repo.open() if p.asset == asset
+                    )
+                already_approved_this_cycle = asset in assets_approved_this_cycle
+                if existing_directions or already_approved_this_cycle:
+                    reason = (
+                        "asset_already_has_open_position"
+                        if existing_directions
+                        else "asset_already_approved_this_cycle"
+                    )
+                    rejected.append({"hypothesis": h, "reason": reason})
                     if self.audit:
                         self.audit.append("TRADE_REJECTED", {
                             "asset": asset,
                             "direction": direction,
-                            "reason": "asset_already_has_open_position",
-                            "existing_directions": existing_directions,
-                            "existing_count": len(existing),
+                            "reason": reason,
+                            "existing_directions": sorted(existing_directions),
+                            "already_approved_this_cycle": already_approved_this_cycle,
                         })
                     print(
-                        f"  🚫 {asset:8} {direction:5} — asset already has "
-                        f"open position(s) ({', '.join(existing_directions)}); "
+                        f"  🚫 {asset:8} {direction:5} — asset already has an "
+                        f"open or just-approved position "
+                        f"({', '.join(sorted(existing_directions)) or 'this cycle'}); "
                         f"skipping to avoid conflicting/duplicate exposure"
                     )
                     continue
@@ -563,6 +584,7 @@ class RiskManagerAgent:
                 slots_left = 1  # we just freed one slot by closing worst
 
             approved.append(trade)
+            assets_approved_this_cycle.add(asset)
             slots_left -= 1
 
             if self.audit:

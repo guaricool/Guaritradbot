@@ -182,6 +182,41 @@ class ConflictingAssetPositionBlockedTest(unittest.TestCase):
             result["rejected_trades"][0]["reason"], "asset_already_has_open_position"
         )
 
+    def test_same_cycle_long_and_short_batch_rejects_second(self):
+        """This is the ACTUAL shape of the live incident: both hypotheses
+        are NEW in the same cycle (nothing in position_repo yet, since
+        ExecutionNode only persists a position AFTER this step runs).
+        A naive check against position_repo.open() alone would miss this
+        — the fix must also track assets approved earlier in this same
+        validate_and_size() call."""
+        agent, audit, repo = _make_agent(self.tmpdir, allow_crypto_short=True)
+        self.assertEqual(repo.open(), [])  # nothing persisted yet — matches live sequence
+
+        long_hyp = {
+            "asset": "BTC-USD",
+            "strategy": "MACD_HistTurn_Bull",
+            "direction": "long",
+            "price": 64111.34,
+            "atr_at_signal": 274.34,
+        }
+        short_hyp = {
+            "asset": "BTC-USD",
+            "strategy": "Resistance_Fade",
+            "direction": "short",
+            "price": 64109.35,
+            "atr_at_signal": 705.45,
+        }
+        state = {"generate_hypotheses": {"hypotheses": [long_hyp, short_hyp]}}
+        result = agent.validate_and_size({}, state)
+
+        self.assertEqual(len(result["approved_trades"]), 1,
+                          f"Exactly one leg should be approved, got {result['approved_trades']}")
+        self.assertEqual(result["approved_trades"][0]["direction"], "long")
+        self.assertEqual(len(result["rejected_trades"]), 1)
+        self.assertEqual(
+            result["rejected_trades"][0]["reason"], "asset_already_approved_this_cycle"
+        )
+
     def test_different_asset_not_blocked(self):
         agent, audit, repo = _make_agent(self.tmpdir)
         self._open_position(repo, asset="BTC-USD", direction="long")
