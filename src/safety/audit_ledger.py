@@ -40,7 +40,87 @@ class AuditLedger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.touch(exist_ok=True)
 
+    def _maybe_rotate(self) -> None:
+        """Sprint 46S (audit A8): rotate the live ledger to
+        `audit-YYYY-MM.jsonl` when the calendar month has moved on,
+        so `audit.jsonl` never grows past ~1 month of events. Before
+        this, the file grew forever (audit's exact complaint:
+        "audit.jsonl crece sin límite"), and every reader that calls
+        `read_all()` (the dashboard's tail loop used to, before it
+        switched to byte-offset tailing; `summary()`, `read_by_type()`
+        still do) re-parses the WHOLE file every time.
+
+        How it decides a rotation is due: compares the CURRENT file's
+        mtime month against the current wall-clock month. A file that
+        was last written to in an earlier month means the calendar
+        rolled over since the last append — everything in it belongs
+        to that earlier month, so it gets renamed out of the way and
+        a fresh empty file takes over `self.path`. No separate marker
+        file needed; this makes the check self-contained and correct
+        across bot restarts (an idle bot that skips writing for a
+        whole month would rotate on its first write back, which is
+        exactly the desired behavior).
+
+        `self.path` is deliberately kept as a STABLE path across
+        rotations — src/api/server.py's `_audit_tail_loop` tails it by
+        byte offset, and a path that changed mid-month would silently
+        break that offset tracking. Only the ARCHIVED old file gets a
+        dated name; the live file the rest of the bot writes to and
+        reads from never moves.
+
+        Read methods (`read_all`/`read_since`/`read_by_type`/
+        `summary`) intentionally only see the CURRENT file after a
+        rotation — same behavior as any rotated log (`docker logs`
+        doesn't merge in old rotated files either). Archived
+        `audit-YYYY-MM.jsonl` files remain on disk for manual/forensic
+        inspection; they're just not auto-merged back in.
+
+        Best-effort: any OSError here is logged and swallowed — a
+        rotation hiccup must never block the actual event write below.
+
+        Known edge case: `MandateGate._daily_loss_usd`/`_open_exposure_usd`
+        have an audit-log-scanning FALLBACK for their rolling-24h checks,
+        used only when `position_repo` isn't available. Right at a month
+        boundary (e.g. checking at 00:30 on the 1st for a window back to
+        the previous afternoon), that fallback would only see this
+        month's events post-rotation, undercounting the true 24h window.
+        In production `position_repo` is always constructed and passed
+        (see main.py's `_build_mandate` call), so MandateGate always uses
+        its PREFERRED PositionRepository-based path instead — this
+        fallback is dormant in the live bot today. Flagged here so it
+        isn't a surprise if that ever changes.
+        """
+        try:
+            if not self.path.exists():
+                return
+            size = self.path.stat().st_size
+            if size == 0:
+                return
+            current_month = time.strftime("%Y-%m")
+            file_month = time.strftime("%Y-%m", time.localtime(self.path.stat().st_mtime))
+            if file_month == current_month:
+                return
+            archive_path = self.path.parent / f"audit-{file_month}.jsonl"
+            if archive_path.exists():
+                # Already rotated once this month (e.g. a prior
+                # restart already did it, or two processes raced) --
+                # append rather than clobber so no events are lost.
+                with open(self.path, "rb") as _src:
+                    _leftover = _src.read()
+                if _leftover:
+                    with open(archive_path, "ab") as _dst:
+                        _dst.write(_leftover)
+                self.path.unlink()
+                self.path.touch(exist_ok=True)
+            else:
+                os.rename(self.path, archive_path)
+                self.path.touch(exist_ok=True)
+            print(f"[AuditLedger] Rotated {file_month} events to {archive_path.name}")
+        except OSError as e:
+            print(f"[AuditLedger] WARNING: monthly rotation check failed (continuing without rotating): {e}")
+
     def append(self, event_type: str, payload: dict[str, Any]) -> dict:
+        self._maybe_rotate()
         event = {
             "ts": time.time(),
             "iso": time.strftime("%Y-%m-%dT%H:%M:%S"),

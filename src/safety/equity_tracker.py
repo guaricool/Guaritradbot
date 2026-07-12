@@ -300,17 +300,25 @@ class EquityTracker:
             drawdown_pct=drawdown_pct,
         )
         self.history.append(snap)
-        if self.audit is not None:
-            self.audit.append("EQUITY_UPDATE", {
-                "total_equity": round(snap.total_equity, self.precision),
-                "realized_pnl": round(snap.realized_pnl, self.precision),
-                "unrealized_pnl": round(snap.unrealized_pnl, self.precision),
-                "delta_usd": round(snap.delta_usd, self.precision),
-                "delta_pct": round(snap.delta_pct, 4),
-                "drawdown_pct": round(snap.drawdown_pct, 4),
-                "open_positions": snap.open_positions,
-                "closed_positions": snap.closed_positions,
-            })
+        # Sprint 46S (audit A8): this used to also append an
+        # "EQUITY_UPDATE" event to the audit ledger on every single
+        # call -- which happens every fast_monitor_tick, i.e. every
+        # ~2 minutes, ~720 times/day. The audit's exact complaint:
+        # "no escribir EQUITY_UPDATE al ledger en cada tick (ya está
+        # en equity_state.json)". This snapshot is already fully
+        # captured in `self.history` (in-memory, up to `history_size`
+        # entries) and persisted to disk via `persist_tracker()` /
+        # `_equity_state_path` (main.py calls this right after every
+        # `update()`), which the dashboard's /api/equity endpoint reads
+        # directly -- so the audit ledger never was the only copy of
+        # this data, just a second, high-volume one that made
+        # audit.jsonl grow faster than any other event type and cost
+        # every audit reader (the dashboard's tail loop, `read_all()`
+        # callers) time re-parsing lines nobody was querying.
+        # `self.audit` is kept as a constructor param (deposits/
+        # withdrawals detected by `reconcile_external_balance` above
+        # still audit — those are rare, meaningful events, unlike a
+        # routine mark-to-market tick).
         return snap
 
     def latest(self) -> EquitySnapshot:

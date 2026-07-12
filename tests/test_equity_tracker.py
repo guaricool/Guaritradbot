@@ -210,7 +210,16 @@ class EquityTrackerDrawdownTest(unittest.TestCase):
 
 
 class EquityTrackerAuditTest(unittest.TestCase):
-    def test_update_emits_audit_event(self):
+    def test_update_no_longer_emits_audit_event(self):
+        """Sprint 46S (audit A8): EQUITY_UPDATE used to be written to
+        the audit ledger on every update() call (~720/day at the
+        2-minute fast-tick cadence) -- the audit's exact complaint:
+        "no escribir EQUITY_UPDATE al ledger en cada tick (ya está en
+        equity_state.json)". This snapshot data is already fully
+        available via `tracker.history`/`tracker.latest()` in-memory
+        and persisted separately via `persist_tracker()` -- the audit
+        ledger was a redundant, high-volume second copy. Confirm the
+        ledger stays untouched by a plain update() call."""
         tmpdir = tempfile.mkdtemp()
         audit = AuditLedger(os.path.join(tmpdir, "audit.jsonl"))
         repo = PositionRepository(os.path.join(tmpdir, "positions.json"))
@@ -220,14 +229,32 @@ class EquityTrackerAuditTest(unittest.TestCase):
             audit=audit,
         )
         tracker.update({})
+        tracker.update({})
         events = audit.read_all()
         equity_events = [e for e in events if e.get("event_type") == "EQUITY_UPDATE"]
-        self.assertGreaterEqual(len(equity_events), 1)
-        # Most recent should have all fields
-        latest = equity_events[-1]
-        self.assertIn("total_equity", latest)
-        self.assertIn("delta_usd", latest)
-        self.assertIn("delta_pct", latest)
+        self.assertEqual(len(equity_events), 0)
+        # The snapshot data itself is still fully available in-memory.
+        latest = tracker.latest()
+        self.assertTrue(hasattr(latest, "total_equity"))
+        self.assertTrue(hasattr(latest, "delta_usd"))
+        self.assertTrue(hasattr(latest, "delta_pct"))
+
+    def test_reconcile_still_emits_audit_event(self):
+        """Deposits/withdrawals detected by reconcile_external_balance
+        are rare, meaningful events (unlike a routine mark-to-market
+        tick) and should still hit the audit ledger."""
+        tmpdir = tempfile.mkdtemp()
+        audit = AuditLedger(os.path.join(tmpdir, "audit.jsonl"))
+        repo = PositionRepository(os.path.join(tmpdir, "positions.json"))
+        tracker = EquityTracker(
+            starting_balance=10.0,
+            position_repo=repo,
+            audit=audit,
+        )
+        tracker.reconcile_external_balance(broker_balance=30.0)
+        events = audit.read_all()
+        deposit_events = [e for e in events if e.get("event_type") == "EQUITY_DEPOSIT"]
+        self.assertEqual(len(deposit_events), 1)
 
 
 class FormatEquityLineTest(unittest.TestCase):
