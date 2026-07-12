@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -123,7 +124,18 @@ class AuditLedger:
         self._maybe_rotate()
         event = {
             "ts": time.time(),
-            "iso": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            # Sprint 46S (audit M12): "los timestamps de audit.jsonl son
+            # naive, sin offset" -- `time.strftime` (the old code here)
+            # formats wall-clock local time with NO indication of which
+            # timezone/offset it's in, which is ambiguous the moment the
+            # container's TZ changes (or differs between the bot host and
+            # whoever's reading the file later). `datetime.now().astimezone()`
+            # attaches the system's current UTC offset (e.g.
+            # "2026-07-11T14:30:00-04:00"), so the same string is
+            # unambiguous regardless of reader timezone. `ts` (unix
+            # epoch, always UTC) was already unambiguous and is
+            # unchanged -- this only fixes the human-readable "iso" field.
+            "iso": datetime.now().astimezone().isoformat(timespec="seconds"),
             "event_type": event_type,
             **payload,
         }

@@ -1064,6 +1064,43 @@ class ExecutionNode:
 
         side = "buy" if direction == "long" else "sell"
 
+        # Sprint 46S (audit M12): gate NEW equity entries by real market
+        # hours (Alpaca's own GET /v2/clock). This method is only ever
+        # called for ENTRIES — position CLOSES go through a separate
+        # path (position_monitor.py's `_close_position` via
+        # broker_routing.send_close_order), which is deliberately NOT
+        # gated here: a stop-loss/take-profit close must still be able
+        # to queue (TimeInForce.DAY) even after hours, and blocking an
+        # exit because the market is closed would be actively unsafe.
+        # Only entries get skipped, since an off-hours entry fills at
+        # the next open at a price potentially far from the signal that
+        # triggered it — exactly the audit's complaint.
+        if hasattr(broker, "is_market_open") and not broker.is_market_open():
+            print(
+                f"[ExecutionNode] ⏸️  MARKET_CLOSED — orden de entrada {asset} "
+                f"{direction} SALTADA (Alpaca reporta mercado cerrado). "
+                f"Se reintentará en un ciclo futuro con el mercado abierto."
+            )
+            status = f"SKIPPED (MARKET_CLOSED: {asset})"
+            if self.audit:
+                self.audit.append(
+                    "TRADE_SKIPPED_MARKET_CLOSED",
+                    {
+                        "asset": asset,
+                        "direction": direction,
+                        "qty": qty,
+                        "entry_price": entry_price,
+                        "status": status,
+                        "asset_class": "equity",
+                    },
+                )
+            if self.event_bus:
+                self.event_bus.publish(
+                    "ORDER_EXECUTED",
+                    {"status": status, "order": order_data, "asset_class": "equity"},
+                )
+            return
+
         # Pre-flight: confirm symbol is tradeable before sending.
         # We don't fetch the full ~10k symbol list every order; just
         # query this one symbol's status (one network call, cheap).

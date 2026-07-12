@@ -31,6 +31,18 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # Sprint 46S (audit M12): "Contenedores en UTC sin TZ" -- without
+    # this, the container's wall clock (and every naive local-time log
+    # line / timestamp derived from it) is UTC, which reads confusingly
+    # next to Alpaca's America/New_York market-hours logic and the
+    # audit ledger's now-offset-aware "iso" field (see
+    # src/safety/audit_ledger.py). Overridable via a TZ entry in .env;
+    # defaults to America/New_York since that's the timezone that
+    # actually matters for this bot's equity trading session. Requires
+    # `tzdata` in the image (see Dockerfile.bot) -- without it, glibc
+    # ignores an unresolvable TZ value and silently stays on UTC.
+    environment:
+      - TZ=${TZ:-America/New_York}
     # Sprint 46P (audit A10): HTTPS via Coolify's Traefik. The bot is
     # now reachable on https://guaritradbot.13.140.181.29.sslip.io
     # (Let's Encrypt cert, `certresolver=letsencrypt` already configured
@@ -160,6 +172,10 @@ services:
     environment:
       - PORT=3000
       - HOSTNAME=0.0.0.0
+      # Sprint 46S (audit M12): same rationale as guaritradbot's TZ
+      # above -- dashboard log timestamps in UTC read confusingly next
+      # to the bot's America/New_York-anchored audit feed.
+      - TZ=${TZ:-America/New_York}
     # Sprint 46P (audit A10): the `3050:3000` plain-HTTP mapping is
     # REMOVED — Traefik is now the only ingress to the dashboard,
     # serving https://guaritradbot-dash.13.140.181.29.sslip.io.

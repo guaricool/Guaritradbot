@@ -2,6 +2,15 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Sprint 46S (audit M12): python:3.11-slim doesn't ship the IANA
+# timezone database by default -- without it, setting the TZ env var
+# (see docker-compose.yml) is a silent no-op and glibc falls back to
+# UTC regardless. tzdata is a small, no-daemon data-only package (no
+# extra attack surface), so this is a one-line fix for what was
+# previously a config value with no effect.
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install dependencies
 # Sprint 45 fix (L7): the audit found requirements.lock (exact pins,
 # generated via pip freeze) existed but was never referenced by

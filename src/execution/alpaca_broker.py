@@ -264,6 +264,49 @@ class AlpacaBroker:
             return None
 
     # ------------------------------------------------------------------
+    # Market hours (Sprint 46S — audit M12)
+    # ------------------------------------------------------------------
+    def is_market_open(self) -> bool:
+        """Ask Alpaca's own ``GET /v2/clock`` whether the US equity
+        market is open RIGHT NOW.
+
+        Before this, nothing gated equity ENTRIES by market session at
+        all — the audit's exact complaint: "nada limita la generación
+        de señales de acciones por sesión de mercado. Las órdenes de
+        Alpaca son TimeInForce.DAY -- enviadas fuera de horario quedan
+        encoladas al open y se llenan a un precio potencialmente lejano
+        de la señal." The only existing market-hours logic
+        (``market_analyst.py``'s ``_is_us_equity_market_open()``) is a
+        hardcoded Mon-Fri 09:30-16:00 America/New_York heuristic used
+        ONLY to skip the staleness check overnight/weekends — it has no
+        holiday calendar and was never wired into order submission.
+
+        This method instead asks Alpaca directly, which already knows
+        about holidays/early closes (it's the same clock Alpaca itself
+        uses to decide whether your order queues or executes
+        immediately) — strictly more correct than reimplementing a
+        holiday calendar here.
+
+        Returns ``True`` (fail-open) on ANY error — network hiccup,
+        `alpaca-py` not installed, auth failure, etc. Rationale: this
+        gate exists to avoid a bad fill far from the signal price, not
+        to be a hard safety stop. If we can't determine the market
+        state, falling back to "allow" preserves the bot's pre-M12
+        behavior (which had no gate at all) rather than introducing a
+        NEW failure mode where a broker/network blip silently stops
+        the bot from ever entering equities. This mirrors the same
+        fail-open convention every other best-effort broker call in
+        this class already uses (``get_usd_balance``,
+        ``is_symbol_tradeable``, ``get_latest_trade_price``).
+        """
+        try:
+            clock = self._client().get_clock()
+            return bool(getattr(clock, "is_open", True))
+        except Exception as exc:
+            logger.error(f"[AlpacaBroker] is_market_open() failed (fail-open, allowing): {exc}")
+            return True
+
+    # ------------------------------------------------------------------
     # Market data (Sprint 46N — audit A7)
     # ------------------------------------------------------------------
     def get_latest_trade_price(self, symbol: str) -> float | None:
