@@ -31,6 +31,15 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # Sprint 46P (audit A10): HTTPS via Coolify's Traefik. The bot is
+    # now reachable on https://guaritradbot.13.140.181.29.sslip.io
+    # (Let's Encrypt cert, `certresolver=letsencrypt` already configured
+    # in /data/coolify/proxy/docker-compose.yml on the VPS). The
+    # `8088:8080` plain-HTTP mapping is kept for the cutover window
+    # — once HTTPS is verified, the next commit removes it. The
+    # Traefik labels below were copied from the ypqqk292i4ucih866l5em119
+    # app (riskfxprep) which uses the same sslip.io pattern on this
+    # same VPS — proven-working reference.
     ports:
       - "8088:8080"
     volumes:
@@ -59,6 +68,31 @@ services:
       # the image), so this change doesn't lose that reproducibility.
       - bot_audit:/app/audit
       - bot_data_store:/app/data_store
+    labels:
+      # Sprint 46P (audit A10): Traefik routing. The Host rule below
+      # selects on `guaritradbot.13.140.181.29.sslip.io` — the sslip.io
+      # wildcard auto-resolves to the VPS IP (13.140.181.29) without
+      # touching DNS, and Let's Encrypt issues a cert for free.
+      # `http->https` redirect via the `redirect-to-https` middleware
+      # (declared in ypqqk292i4ucih866l5em119's compose, available
+      # globally in the coolify-proxy network). `gzip` middleware is
+      # best-effort compression; harmless if the bot never serves a
+      # large response, valuable for the dashboard's larger JSON.
+      - traefik.enable=true
+      - traefik.http.middlewares.gzip.compress=true
+      - traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https
+      - traefik.http.routers.http-0-guaritradbot.entryPoints=http
+      - traefik.http.routers.http-0-guaritradbot.middlewares=redirect-to-https
+      - "traefik.http.routers.http-0-guaritradbot.rule=Host(`guaritradbot.13.140.181.29.sslip.io`) && PathPrefix(`/`)"
+      - traefik.http.routers.http-0-guaritradbot.service=http-0-guaritradbot
+      - traefik.http.routers.https-0-guaritradbot.entryPoints=https
+      - traefik.http.routers.https-0-guaritradbot.middlewares=gzip
+      - "traefik.http.routers.https-0-guaritradbot.rule=Host(`guaritradbot.13.140.181.29.sslip.io`) && PathPrefix(`/`)"
+      - traefik.http.routers.https-0-guaritradbot.service=https-0-guaritradbot
+      - traefik.http.routers.https-0-guaritradbot.tls.certresolver=letsencrypt
+      - traefik.http.routers.https-0-guaritradbot.tls=true
+      - traefik.http.services.http-0-guaritradbot.loadbalancer.server.port=8080
+      - traefik.http.services.https-0-guaritradbot.loadbalancer.server.port=8080
     # Sprint 43 M8 fix: cap CPU + memory so a runaway loop can't
     # starve the host. The audit flagged "ausencia de límites de
     # recursos". 1 CPU + 1GB is enough for the bot (it's mostly
