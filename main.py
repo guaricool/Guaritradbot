@@ -931,13 +931,6 @@ def main():
         # (paper/no-broker) fills — see config.yaml's
         # paper_slippage_pct comment.
         paper_slippage_pct=float(trading_cfg.get("paper_slippage_pct", 0.0005)),
-        # Sprint 46R audit B2: the SL/TP minimum-distance floor as
-        # a percent of entry price. Pre-46R these were hard-coded
-        # `entry_price * 0.005` inside RiskManagerAgent. Now the
-        # config can tighten/loosen per market. Default 0.005
-        # preserves the audit B1 behavior.
-        min_sl_floor_pct=float(trading_cfg.get("min_sl_floor_pct", 0.005)),
-        min_tp_floor_pct=float(trading_cfg.get("min_tp_floor_pct", 0.005)),
     )
     def _fee_pct_for_asset(asset: str) -> float:
         """Sprint 46J: crypto assets (binance.us) get the real taker
@@ -995,6 +988,14 @@ def main():
             max_capital_per_trade_pct=max_capital_per_trade_pct,
             atr_stop_multiplier=atr_stop_multiplier,
             atr_take_profit_multiplier=atr_take_profit_multiplier,
+            # Sprint 46R audit B2: SL/TP minimum-distance floor as
+            # a percent of entry price. Pre-46R these were hard-
+            # coded `entry_price * 0.005` inside RiskManagerAgent.
+            # Now config-driven so an operator can tighten/loosen
+            # per market. Default 0.005 preserves the audit B1
+            # behavior.
+            min_sl_floor_pct=float(trading_cfg.get("min_sl_floor_pct", 0.005)),
+            min_tp_floor_pct=float(trading_cfg.get("min_tp_floor_pct", 0.005)),
             risk_reward_ratio=risk_reward_ratio,
             max_open_trades=max_open_trades,
             min_order_usd=min_order_usd,
