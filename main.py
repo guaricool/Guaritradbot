@@ -1479,6 +1479,47 @@ def main():
                 except Exception:
                     pass
 
+        # Sprint 46S (audit B4): reconcile the equity tracker's expected
+        # balance against the broker's real live balance once per hourly
+        # cycle, so a manual deposit/withdrawal to binance.us doesn't
+        # masquerade as trading P&L. `EquityTracker.reconcile_external_
+        # balance` (added in Sprint 46R, commit ef3b83b) already has the
+        # math; it was never actually called from anywhere until this —
+        # this wiring is that missing piece. Scoped to crypto only, since
+        # equity_tracker.starting_balance was itself seeded from
+        # broker_client.get_usdt_balance() above (crypto-only balance;
+        # Alpaca isn't configured on this account today — see
+        # _asset_class_for). Best-effort: skip silently (not a SYSTEM_ERROR)
+        # if the broker is unreachable this cycle — the next hourly cycle
+        # will just try again, and reconciliation drifting by one cycle
+        # is harmless compared to a false SYSTEM_ERROR every time yfinance
+        # or the broker has a transient hiccup.
+        try:
+            if broker_client is not None:
+                _crypto_balance = broker_client.get_usdt_balance()
+                if _crypto_balance is not None and _crypto_balance >= 0:
+                    _crypto_open_notional = sum(
+                        p.notional_usd for p in position_repo.open()
+                        if _asset_class_for(p.asset, brokers_config) == "crypto"
+                    )
+                    _recon = equity_tracker.reconcile_external_balance(
+                        broker_balance=_crypto_balance,
+                        current_open_position_notional=_crypto_open_notional,
+                    )
+                    if _recon["deposit_usd"] or _recon["withdrawal_usd"]:
+                        print(
+                            f"[EquityTracker] reconcile: "
+                            f"deposit=${_recon['deposit_usd']:.4f} "
+                            f"withdrawal=${_recon['withdrawal_usd']:.4f} "
+                            f"new_starting_balance=${_recon['new_starting_balance']:.4f}"
+                        )
+                        try:
+                            persist_tracker(equity_tracker, _equity_state_path)
+                        except Exception as _persist_err:
+                            print(f"[EquityTracker] reconcile persist falló: {_persist_err}")
+        except Exception as _recon_err:
+            print(f"[EquityTracker] reconcile_external_balance falló (continuando): {_recon_err}")
+
         # Sprint 46G: capital-aware asset routing. Re-check broker
         # balances every cycle and narrow the analyze_market step's
         # asset list to only the classes that currently have money —
@@ -1668,4 +1709,11 @@ def main():
             scheduler.start(run_once_for_test=False)
     except KeyboardInterrupt:
         audit.append("BOT_STOP_KEYBOARDINT", {})
-    
+        print("\nBot detenido por el usuario (Ctrl+C).")
+    except Exception as e:
+        audit.append("BOT_STOP_EXCEPTION", {"error": str(e)})
+        raise
+
+
+if __name__ == "__main__":
+    main()
