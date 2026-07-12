@@ -273,7 +273,7 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 24. **M6**: refactor de `main()` a un `BotRuntime` testeable; tests para `fast_monitor_tick` y `job_with_monitor`.
 25. **M9**: ✅ **CERRADO Sprint 46R** (commits `6c20df3` + `948d169`): `last_errors` con `deque(maxlen=50)`, SYSTEM_ERROR en el path genérico del scheduler, y `engine.py` rechaza `result is None` (a menos que `optional: true` en el YAML). `_check_depends_on` también verifica que el dep no sea None. 16 tests.
 26. ✅ **CERRADO Sprint 46R** (commit `104ef31` + VPS ops): M11.1, M11.2, M11.3, M11.4 (log rotation, Telegram retry+meta-alert, healthcheck funcional, dead-man's switch) y M11.5 (backup diario vía cron en el VPS, 14 días retención, audit + data_store volúmenes).
-27. ✅ **PARCIAL Sprint 46R** (commit `8fb3f16`): **B8** cerrado (atomic_write_text + fsync en 7 sitios); **B9** parcial (framework logging_setup + get_logger en main.py + 3 archivos críticos migrados, ~218 print() restantes como follow-up); **B2** sigue pendiente.
+27. ✅ **PARCIAL Sprint 46R** (commits `8fb3f16` + `4e76da1`): **B8** cerrado (atomic_write_text + fsync en 7 sitios); **B9** parcial (framework logging_setup + get_logger en main.py + 3 archivos críticos migrados, ~218 print() restantes como follow-up); **B2** parcial (signal_min_strength y entry_price*0.005 a config, TTLs de cache y caps del strategy_agent pendientes).
 
 ### Fase 4 — Estrategia (cuando lo anterior esté estable)
 28. **M1**: recalibrar el debate para que lo neutro no pase el umbral (o simplificarlo a logging); revisar el sesgo anti-MACD-bajo-cero.
