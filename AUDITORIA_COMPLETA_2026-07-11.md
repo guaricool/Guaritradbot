@@ -212,7 +212,7 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 ## 6. Hallazgos BAJOS
 
 - **B1** — El TP no tiene piso mientras el stop sí (`risk_agent.py:301-302`): ATR≈0 → `take_profit == entry` → cierre instantáneo, puro churn de fees. ✅ **CERRADO Sprint 46R** (commit `d0f9c7e`): TP ahora usa `max(atr * atr_take_profit_multiplier, entry_price * 0.005)` — mismo floor 0.5% que el stop. R:R colapsa a 1:1 en el corner de ATR=0 (mejor que el cierre instantáneo). 6 tests en `test_sprint_46r_b1_tp_floor.py`.
-- **B2** — Números mágicos fuera de config: `signal_min_strength=0.6` (main.py:930), lookback 3600s, floors de $10/$100, `entry_price * 0.005`, caps del strategy_agent, TTLs de caché.
+- **B2** — Números mágicos fuera de config: `signal_min_strength=0.6` (main.py:930), lookback 3600s, floors de $10/$100, `entry_price * 0.005`, caps del strategy_agent, TTLs de caché. ✅ **PARCIAL Sprint 46R** (commit `4e76da1`): `signal_min_strength=0.6` ahora `smart_profit_take_min_signal_strength` en config, `entry_price * 0.005` (B1's SL/TP floor) ahora `min_sl_floor_pct` / `min_tp_floor_pct` separados. `lookback 3600s` cerrado en M16 (`smart_profit_take_max_signal_age_s=300`). **Sigue pendiente**: TTLs de caché (en `src/api/state.py`) y caps del strategy_agent (deliberados, no son "magic numbers" en el sentido de B2). 11 tests en `test_sprint_46r_b2_magic_numbers.py`.
 - **B3** — ~45 warnings de pyflakes: imports sin usar en ~25 módulos, import duplicado en `market_analyst.py`, `historical.py` con nombre indefinido `pd` (módulo autodeclarado "deprecated AND BROKEN" — borrar). `src/strategy/` (5 módulos) solo lo importan los tests — mover o borrar. Basura trackeada: `capability_matrix*.html`, `.analysis/*.png`, `graphify-out/` (un vault de Obsidian entero), los `.docx` de auditorías previas.
 - **B4** — `EquityTracker` no re-sincroniza depósitos/retiros; su drawdown/delta deriva de la realidad con el tiempo.
 - **B5** — ETH-USD y SOL-USD figuran en `config.yaml` como cripto operable, pero ninguna estrategia genera señales para ellos (solo BTC-USD está en el workflow); el mapa de sectores del RiskTeam tampoco los conoce.
@@ -351,6 +351,7 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 | M9 (parcial) | 46R | `6c20df3` | `last_errors` → `deque(maxlen=50)` + generic exception path publishes SYSTEM_ERROR (mirror del branch WorkflowAgentFaultError) |
 | M9 (resto) | 46R | `948d169` | `engine.py` rechaza `result is None` con `WorkflowStepReturnedNoneError` (unless `optional: true`); `_check_depends_on` también verifica `state[dep] is not None` |
 | M16 | 46R | `b318cf1` | `smart_profit_take_max_signal_age_s=300` + `check_with_signals` defensivamente filtra signals más viejos que `max_signal_age_s` y descarta signals sin `ts` |
+| B2 (parcial) | 46R | `4e76da1` | `smart_profit_take_min_signal_strength` + `min_sl_floor_pct` + `min_tp_floor_pct` en config; `entry_price * 0.005` ya no está hardcoded |
 | **B9** (parcial) | 46R | `8fb3f16` | **framework `logging_setup` + get_logger en `main.py` + 3 archivos críticos migrados** (4 tests); ~218 `print()` restantes como follow-up |
 
 ### PENDIENTES (no tocados en Sprints 46N-46R)
@@ -361,6 +362,7 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 | M6 (BotRuntime refactor) | Fase 3 #24 — main.py sigue siendo god-file (75K LOC) |
 | M9 (resto) | ✅ Cerrado por `948d169`: `engine.py` rechaza `result is None`; `_check_depends_on` trata None como "step no produjo data". 16 tests totales en 2 archivos. |
 | M16 | ✅ Cerrado por `b318cf1`: `smart_profit_take_max_signal_age_s=300` en config + `check_with_signals` defensivamente filtra signals viejos. 8 tests. |
+| B2 (parcial) | ✅ Cerrado por `4e76da1` (sub-items principales): `signal_min_strength` y `entry_price*0.005` a config. Pendientes: TTLs de cache, caps del strategy_agent. |
 | M11.5 (backup volumen) | ✅ Cerrado por ops en el VPS — cron diario a las 03:17, 14 días retención, script en `/root/scripts/backup_bot_state.sh`, log en `/var/log/guaritradbot-backup.log`. |
 | M1 (debate recalibración) | Fase 4 #28 |
 | M15 (allocation scaling) | Fase 4 #29 |
