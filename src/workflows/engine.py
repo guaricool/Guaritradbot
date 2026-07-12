@@ -36,6 +36,17 @@ class WorkflowEngine:
         step_id in its `depends_on` has already been run AND
         produced a result. If not, raise a WorkflowDependencyError
         with a clear message.
+
+        Sprint 46R audit M9 (resto): a previous fix only checked
+        that the dep key existed in `state`. A step whose action
+        returned `None` was still considered "ran", and a
+        downstream step that depended on it would receive `None`
+        as its input data — silent data loss. This second check
+        refuses to run the dependent step if any dep produced
+        `None` (even if the producing step was marked optional in
+        the YAML), so the bug surfaces at the depends_on
+        boundary, not three steps later when the action method
+        tries to subscript `state["foo"]["bar"]` on a None.
         """
         deps = step.get("depends_on") or []
         for dep in deps:
@@ -50,6 +61,20 @@ class WorkflowEngine:
                     f"Step '{step.get('id')}' depends on '{dep}' but "
                     f"{dep_status}. Either reorder the YAML, add the "
                     f"missing step, or remove the depends_on."
+                )
+            # Sprint 46R audit M9 (resto): existence in state is
+            # necessary but not sufficient. A step whose action
+            # returned None is recorded in state but is NOT a
+            # valid upstream input for a dependent step. Refuse
+            # to proceed so the operator sees the bad data NOW
+            # rather than as a NoneType error three steps later.
+            if state[dep] is None:
+                raise WorkflowDependencyError(
+                    f"Step '{step.get('id')}' depends on '{dep}' but "
+                    f"'{dep}' ran and returned None (no data). Check "
+                    f"the '{dep}' action for errors or mark the step "
+                    f"'optional: true' in the YAML if returning no data "
+                    f"is intentional."
                 )
 
     def _check_agent_state(self, agent_name: str, agent) -> None:
@@ -106,6 +131,27 @@ class WorkflowEngine:
 
             # Pass inputs and current state to the agent
             result = action_method(inputs=inputs, state=state)
+            # Sprint 46R audit M9 (resto): catch the None result at
+            # the source, not three steps later. A step that
+            # returns None is a likely bug (a forgotten return, an
+            # exception that was swallowed upstream, a misnamed
+            # function). The YAML `optional: true` opt-in exists
+            # for the rare case where returning no data is a
+            # valid outcome (e.g. a "cleanup if anything to do"
+            # step that does nothing on a quiet cycle). Note that
+            # even an optional step returning None will fail
+            # downstream (see _check_depends_on above) — the
+            # `optional` flag is a "don't crash here" knob, not
+            # a "this is fine, downstream can ignore it" knob.
+            if result is None and not step.get("optional", False):
+                raise WorkflowStepReturnedNoneError(
+                    f"Step '{step_id}' (agent={agent_name}, "
+                    f"action={action_name}) returned None. Either "
+                    f"the action forgot to return its result, or the "
+                    f"agent swallowed an exception. Mark the step "
+                    f"'optional: true' in the YAML if returning no "
+                    f"data is intentional."
+                )
             state[step_id] = result
 
         print(f"Workflow '{workflow_data.get('name')}' completed.")
@@ -114,10 +160,25 @@ class WorkflowEngine:
 
 class WorkflowDependencyError(RuntimeError):
     """Raised when a step's depends_on references a step that
-    hasn't run yet (or doesn't exist)."""
+    hasn't run yet (or doesn't exist), OR (Sprint 46R audit M9
+    resto) when a step depends on another step that ran but
+    returned None — see WorkflowEngine._check_depends_on for
+    the full check."""
 
 
 class WorkflowAgentFaultError(RuntimeError):
     """Raised when a step's agent is in a non-runnable state
     (FAULTED, STOPPED). The step is dead; the operator must
     restart the agent, skip the step, or mark it optional."""
+
+
+class WorkflowStepReturnedNoneError(RuntimeError):
+    """Sprint 46R audit M9 (resto): a step's action method
+    returned None and the step was not marked 'optional: true'
+    in the YAML. This is almost always a bug (forgotten
+    return, swallowed exception, misnamed function) — a
+    dependent step would have run with None as its input and
+    crashed three steps later with a confusing NoneType error.
+    Fail loudly HERE, with a clear pointer to the offending
+    step, so the operator can fix the action or opt into the
+    None-tolerant behavior with `optional: true`."""
