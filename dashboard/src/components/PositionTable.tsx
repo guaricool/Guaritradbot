@@ -1,11 +1,44 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { fmtPct, fmtUsd, pnlClass } from "@/lib/format";
 import { Spinner } from "./Spinner";
+import { PositionChart } from "./PositionChart";
 import type { PositionSummary } from "@/lib/types";
+
+// Sprint 46S: Carlos wanted the entry chart to show up automatically as
+// soon as a position opens, for ANY asset (crypto or equity) -- not just
+// on the position detail page, which needed a click to reach. The
+// underlying chart component and /api/positions/{id}/candles endpoint
+// already worked for any asset (yfinance ticker lookup, asset-agnostic);
+// this just surfaces it inline in the table itself so it's automatic.
+// Kept collapsible (default OPEN) rather than unconditionally rendered,
+// since each chart is its own ~300px-tall live-refreshing panel and
+// max_open_trades can be up to 5 -- a collapse escape hatch avoids an
+// unbounded-height page once more than 1-2 positions are open, without
+// giving up the "shows automatically" behavior Carlos asked for.
+const COLLAPSED_STORAGE_KEY = "guaritradbot_collapsed_position_charts";
+
+function readCollapsedSet(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = window.sessionStorage.getItem(COLLAPSED_STORAGE_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function writeCollapsedSet(s: Set<string>) {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify([...s]));
+  } catch {
+    // best-effort only
+  }
+}
 
 export function PositionTable({
   positions,
@@ -19,6 +52,20 @@ export function PositionTable({
   const router = useRouter();
   const [closing, setClosing] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Sprint 46S: which position IDs have their auto-shown chart collapsed.
+  // Default (id absent from the set) = EXPANDED, i.e. the chart shows up
+  // automatically the moment a position appears in this table.
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => readCollapsedSet());
+
+  function toggleChart(id: string) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      writeCollapsedSet(next);
+      return next;
+    });
+  }
 
   if (loading) {
     return (
@@ -90,7 +137,8 @@ export function PositionTable({
                 p.direction === "long" ? "text-gain" : "text-loss";
               const dirArrow = p.direction === "long" ? "▲" : "▼";
               return (
-                <tr key={p.id} className="animate-fade-in">
+                <Fragment key={p.id}>
+                <tr className="animate-fade-in">
                   <td className="font-semibold">
                     <a
                       href={`/positions/${p.id}`}
@@ -150,7 +198,16 @@ export function PositionTable({
                         : `${(p.age_hours / 24).toFixed(1)}d`
                       : "—"}
                   </td>
-                  <td>
+                  <td className="whitespace-nowrap">
+                    <button
+                      onClick={() => toggleChart(p.id)}
+                      className="btn-ghost mr-1 text-xs text-muted hover:text-gold"
+                      title={
+                        collapsed.has(p.id) ? "Show entry chart" : "Hide entry chart"
+                      }
+                    >
+                      {collapsed.has(p.id) ? "▸ Chart" : "▾ Chart"}
+                    </button>
                     <button
                       onClick={() => onClose(p)}
                       disabled={closing === p.id}
@@ -160,6 +217,21 @@ export function PositionTable({
                     </button>
                   </td>
                 </tr>
+                {/* Sprint 46S: auto-shown entry chart -- same component/
+                    endpoint the position detail page uses, works for any
+                    asset (crypto or equity) since /api/positions/{id}/candles
+                    is a generic yfinance lookup keyed on the position's own
+                    asset field. Defaults to visible (see `collapsed`'s
+                    docstring above) so it appears automatically the moment
+                    a position shows up in this table -- no click required. */}
+                {!collapsed.has(p.id) && (
+                  <tr key={`${p.id}-chart`} className="bg-ink-900/40">
+                    <td colSpan={11} className="p-3">
+                      <PositionChart positionId={p.id} interval="15m" height={300} />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               );
             })}
           </tbody>
