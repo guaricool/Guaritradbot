@@ -35,13 +35,10 @@ services:
     # now reachable on https://guaritradbot.13.140.181.29.sslip.io
     # (Let's Encrypt cert, `certresolver=letsencrypt` already configured
     # in /data/coolify/proxy/docker-compose.yml on the VPS). The
-    # `8088:8080` plain-HTTP mapping is kept for the cutover window
-    # — once HTTPS is verified, the next commit removes it. The
-    # Traefik labels below were copied from the ypqqk292i4ucih866l5em119
-    # app (riskfxprep) which uses the same sslip.io pattern on this
-    # same VPS — proven-working reference.
-    ports:
-      - "8088:8080"
+    # `8088:8080` plain-HTTP mapping is REMOVED in this commit —
+    # Traefik is now the only ingress. The Traefik labels below were
+    # copied from the ypqqk292i4ucih866l5em119 app (riskfxprep) which
+    # uses the same sslip.io pattern on this same VPS.
     volumes:
       # Sprint 8 fix: NO montar /app entero (eso congela source code + config.yaml
       # en el volume y bloquea updates del repo). Solo persistir audit/ (runtime state).
@@ -150,12 +147,9 @@ services:
     environment:
       - PORT=3000
       - HOSTNAME=0.0.0.0
-    ports:
-      # Host port 3050 — port 3000 is already in use on the host by
-      # the IUL project's next-server (left over from manual dev).
-      # Container still listens on 3000 internally. Sprint 46P
-      # cutover: closed in a follow-up commit once HTTPS is verified.
-      - "3050:3000"
+    # Sprint 46P (audit A10): the `3050:3000` plain-HTTP mapping is
+    # REMOVED — Traefik is now the only ingress to the dashboard,
+    # serving https://guaritradbot-dash.13.140.181.29.sslip.io.
     depends_on:
       - guaritradbot
     labels:
