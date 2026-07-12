@@ -103,17 +103,20 @@ trading:
   # you deliberately accept more slippage in exchange for higher
   # fill probability on the stop leg.
   native_oco_stop_buffer_pct: 1.5
-  # Sprint 46J: real binance.us taker fee (one-way, as a fraction —
-  # 0.001 = 0.1%), charged on both entry AND exit notional when
-  # realized P&L is recorded for a crypto close. Previously the bot's
-  # P&L (dashboard, equity tracker, GP fitness scoring) assumed
-  # frictionless trading — a textbook "ignoring fees" mistake that can
-  # make a losing strategy look profitable, especially with positions
-  # this small ($10-20, where fees are a much bigger % of notional than
-  # on a large account). Alpaca equities always use 0.0 regardless
-  # (commission-free). Verify YOUR actual fee tier at
-  # https://www.binance.us/fee-schedule and adjust if different.
-  crypto_taker_fee_pct: 0.001
+  # Sprint 46J: real binance.us taker fee (one-way, as a fraction).
+  # Originally set to 0.001 (0.1%) as a conservative default.
+  # Sprint 46R (audit M2, A11 follow-up): the live binance.us account
+  # on this VPS is on the 0.02% taker tier (0.0002) — verified by
+  # Sprint 46O's auto-detect (`BrokerClient.fetch_fee_rate`) AND by
+  # the live A11 smoke test on 2026-07-12. Updated from 0.001 to
+  # 0.0002 so the bot's reported P&L, equity curve, and break-even
+  # math now match reality (the prior 5x-over-conservative value
+  # made the bot report worse break-even than reality). The
+  # auto-detect still audits a FEE_TIER_MISMATCH at startup if the
+  # live tier diverges from this value, so leaving the door open for
+  # tier changes is fine. If your tier is different, update this
+  # number AND verify with https://www.binance.us/fee-schedule.
+  crypto_taker_fee_pct: 0.0002
   # Sprint 46M fix: binance.us SPOT has no margin/borrow, so it cannot
   # actually hold a short position. A "short" signal was previously
   # executed as a plain sell market order, which only succeeds if the

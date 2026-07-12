@@ -262,12 +262,31 @@ class L10TestFilesMigratedTest(unittest.TestCase):
 
 class M8DockerHardeningTest(unittest.TestCase):
     def test_dockerfiles_run_as_non_root(self):
-        for dockerfile in ["Dockerfile.bot", "Dockerfile.dashboard"]:
+        """Sprint 46R (audit B6 follow-up): each Dockerfile must run as
+        a non-root user. The expected username differs per image:
+          - Dockerfile.bot: a custom `app` user created via
+            `groupadd -r app && useradd -r -g app -u 1000 app`
+            (Sprint 43 M8 fix)
+          - Dockerfile.dashboard: the upstream `node` user from
+            the official node:20-alpine base image (uid 1000) —
+            creating a second group at uid 1000 collides with it,
+            so the Dockerfile just `USER node`s at the end
+        The pre-Sprint-46R test expected both to use `USER app`,
+        which was a stale assertion: the dashboard fix (also Sprint
+        43 M8) actually uses `USER node` and that has been working
+        in production for months. The test was a false negative
+        and is the audit's lone "1 fail" pre-Sprint-46R.
+        """
+        for dockerfile, expected_user in [
+            ("Dockerfile.bot", "USER app"),
+            ("Dockerfile.dashboard", "USER node"),
+        ]:
             path = os.path.join(ROOT, dockerfile)
             with open(path, encoding="utf-8") as f:
                 content = f.read()
-            self.assertIn("USER app", content,
-                          f"{dockerfile} must run as non-root (M8 fix)")
+            self.assertIn(expected_user, content,
+                          f"{dockerfile} must run as non-root (M8 fix): "
+                          f"expected '{expected_user}' in Dockerfile")
             self.assertIn("HEALTHCHECK", content,
                           f"{dockerfile} must have a HEALTHCHECK (M8 fix)")
 
