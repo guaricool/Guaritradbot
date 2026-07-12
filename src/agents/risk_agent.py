@@ -502,8 +502,17 @@ class RiskManagerAgent:
                 continue
 
             # --- Stop y Take Profit (ATR-based, Sprint 0+2) ---
+            # Sprint 46R (audit B1): the stop has a 0.5%-of-entry floor
+            # (defends against ATR=0 / weekend / illiquid corner cases),
+            # but the take_profit did NOT — so an ATR=0 hypothesis
+            # produced take_profit == entry_price and the position would
+            # close at fill = pure churn of fees. Mirror the same
+            # 0.5% floor on the TP side. The stop_distance floor is
+            # kept as the audit's contract for the SL side; the TP
+            # floor uses the same percent so the R:R ratio stays
+            # intact at its lowest-volatility corner.
             stop_distance = max(atr * self.atr_stop_multiplier, entry_price * 0.005)
-            tp_distance = atr * self.atr_take_profit_multiplier
+            tp_distance = max(atr * self.atr_take_profit_multiplier, entry_price * 0.005)
             if direction == "long":
                 stop_loss = entry_price - stop_distance
                 take_profit = entry_price + tp_distance
