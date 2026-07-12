@@ -19,8 +19,11 @@ Design principles:
   served at inference time without retraining.
 """
 from __future__ import annotations
+import hashlib
+import hmac
 import os
 import pickle
+import secrets
 import time
 from dataclasses import dataclass
 from typing import List, Optional
@@ -31,6 +34,77 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
 from src.features.alpha_zoo import compute_alpha_features, list_alpha_features
+
+
+# ----------------------------------------------------------------------
+# Sprint 46S (audit M14): integrity-verified pickle artifacts.
+# ----------------------------------------------------------------------
+def _get_ml_artifact_secret() -> bytes:
+    """Independent 256-bit secret used to HMAC-sign ModelTrainer pickle
+    artifacts, so a tampered or substituted `.pkl` file is detected
+    and REJECTED before `pickle.load` ever runs on it.
+
+    The audit's exact finding (M14): "Hoy el artefacto es local y
+    generado por el bot (riesgo contenido), pero si un modelo se
+    comparte o alguien gana escritura al path, es ejecución arbitraria
+    de código. Migrar a skops/ONNX o proteger con verificación de
+    integridad." We took the "verificación de integridad" branch
+    rather than a serialization-format migration (skops/ONNX): both
+    would add a new dependency not already pinned in requirements.lock,
+    while an HMAC signature closes the exact threat named in the
+    finding (a shared/tampered artifact or a path an attacker gained
+    write access to) using only the stdlib.
+
+    Mirrors `src/api/auth.py`'s `_get_signing_secret()` pattern
+    exactly (same preference order, same key size/format) rather than
+    inventing a new convention:
+      1. `ML_ARTIFACT_SIGNING_SECRET` env var, if set.
+      2. A secret persisted at `ML_ARTIFACT_SIGNING_SECRET_FILE`
+         (default `audit/ml_artifact_secret.key` — inside the
+         `bot_audit` Docker volume, so it survives redeploys and
+         previously-signed artifacts keep verifying across restarts).
+      3. If persisting fails, the freshly-generated secret is still
+         returned and used for this process's lifetime (a fresh
+         secret next boot means artifacts signed by a prior boot with
+         no persisted secret won't verify — they fall back to the
+         "unsigned artifact" warn-and-load path in `ModelTrainer.load`,
+         never a hard failure).
+    """
+    env_secret = os.getenv("ML_ARTIFACT_SIGNING_SECRET")
+    if env_secret:
+        return env_secret.encode("utf-8")
+
+    path = os.getenv("ML_ARTIFACT_SIGNING_SECRET_FILE", "audit/ml_artifact_secret.key")
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                existing = f.read().strip()
+            if existing:
+                return bytes.fromhex(existing)
+    except Exception:
+        pass
+
+    new_secret = secrets.token_bytes(32)
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new_secret.hex())
+    except Exception:
+        pass
+    return new_secret
+
+
+def _sign_artifact(payload: bytes) -> str:
+    """Return a hex HMAC-SHA256 signature over the raw pickled bytes."""
+    return hmac.new(_get_ml_artifact_secret(), payload, hashlib.sha256).hexdigest()
+
+
+def _sig_path(path: str) -> str:
+    """Sidecar signature file living next to the artifact itself,
+    e.g. `models/btc_v1.pkl` -> `models/btc_v1.pkl.sig`."""
+    return path + ".sig"
 
 
 @dataclass
@@ -181,17 +255,37 @@ class ModelTrainer:
         return self
 
     def save(self, path: str) -> None:
-        """Persist model + scaler + feature_names to disk."""
+        """Persist model + scaler + feature_names to disk.
+
+        Sprint 46S (audit M14): also write an HMAC-SHA256 signature of
+        the pickled bytes to a `<path>.sig` sidecar file. `load()`
+        verifies this signature before unpickling, so a substituted or
+        tampered artifact is rejected instead of silently executed —
+        see `_get_ml_artifact_secret`'s docstring for the full
+        rationale and the audit's exact finding text.
+        """
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        payload = pickle.dumps({
+            "model": self.model,
+            "scaler": self.scaler,
+            "feature_names": self.feature_names,
+            "trained_at": self.trained_at,
+            "train_metrics": self.train_metrics,
+            "model_type": self.model_type,
+        })
         with open(path, "wb") as f:
-            pickle.dump({
-                "model": self.model,
-                "scaler": self.scaler,
-                "feature_names": self.feature_names,
-                "trained_at": self.trained_at,
-                "train_metrics": self.train_metrics,
-                "model_type": self.model_type,
-            }, f)
+            f.write(payload)
+        try:
+            with open(_sig_path(path), "w", encoding="utf-8") as f:
+                f.write(_sign_artifact(payload))
+        except Exception as e:
+            # Best-effort: a failure to write the sidecar must not
+            # block the model save itself (the model is still usable
+            # by a load() that tolerates a missing/unwritable sidecar
+            # — see load()'s "unsigned artifact" path below). Loud
+            # print so the operator notices integrity protection isn't
+            # active for this artifact.
+            print(f"[ModelTrainer] ⚠️ could not write signature sidecar for {path}: {e!r}")
 
     @staticmethod
     def load(path: str) -> "ModelTrainer":
@@ -204,16 +298,61 @@ class ModelTrainer:
         and log the error so the operator can decide whether
         to retrain.
 
-        Note: pickle.load is unsafe by nature if the artifact
-        came from an untrusted source. The bot's models are
-        always trained in-house and saved to a known path, so
-        the trust model is fine — but the audit recommended
-        moving to a safer format (joblib + signature, or
-        onnx) in a future sprint.
+        Sprint 46S (audit M14): before unpickling, verify the
+        artifact's HMAC-SHA256 signature (see `_sign_artifact`/
+        `_get_ml_artifact_secret`) against its `<path>.sig` sidecar.
+        The audit's finding: "si un modelo se comparte o alguien gana
+        escritura al path, es ejecución arbitraria de código" — a
+        mismatched signature now means REJECT the artifact (return
+        None) rather than unpickle it, since `pickle.load` on an
+        attacker-controlled or corrupted-in-transit file can execute
+        arbitrary code as a side effect of deserialization itself,
+        before any of the `except` clauses below would even get a
+        chance to catch a downstream error.
+
+        A MISSING sidecar (e.g. an artifact saved before this fix
+        shipped) is treated as "unsigned, not verified" rather than a
+        hard failure — it still loads, with a warning — so upgrading
+        to this code doesn't strand every model trained before today.
+        Once re-saved (or trained fresh), the artifact gets a sidecar
+        and is protected going forward.
         """
+        sig_file = _sig_path(path)
         try:
             with open(path, "rb") as f:
-                data = pickle.load(f)
+                payload = f.read()
+        except FileNotFoundError as e:
+            print(f"[ModelTrainer] ⚠️ load({path}) failed: {e!r}. Returning None.")
+            return None
+
+        if os.path.exists(sig_file):
+            try:
+                with open(sig_file, "r", encoding="utf-8") as f:
+                    expected_sig = f.read().strip()
+                actual_sig = _sign_artifact(payload)
+                if not hmac.compare_digest(actual_sig, expected_sig):
+                    print(
+                        f"[ModelTrainer] ⛔ SIGNATURE MISMATCH for {path} — artifact "
+                        f"may be tampered, substituted, or corrupted. Refusing to "
+                        f"unpickle. Retrain or restore from a known-good backup."
+                    )
+                    return None
+            except Exception as e:
+                print(
+                    f"[ModelTrainer] ⚠️ could not verify signature for {path} "
+                    f"({e!r}) — refusing to unpickle an artifact with an "
+                    f"unreadable/corrupt signature sidecar."
+                )
+                return None
+        else:
+            print(
+                f"[ModelTrainer] ⚠️ {sig_file} not found — loading {path} as an "
+                f"UNSIGNED (pre-M14) artifact, integrity not verified. Re-save "
+                f"or retrain to get signature protection going forward."
+            )
+
+        try:
+            data = pickle.loads(payload)
             trainer = ModelTrainer(model_type=data["model_type"])
             trainer.model = data["model"]
             trainer.scaler = data["scaler"]
@@ -221,7 +360,7 @@ class ModelTrainer:
             trainer.trained_at = data["trained_at"]
             trainer.train_metrics = data["train_metrics"]
             return trainer
-        except (FileNotFoundError, EOFError, pickle.UnpicklingError, KeyError, AttributeError) as e:
+        except (EOFError, pickle.UnpicklingError, KeyError, AttributeError) as e:
             print(
                 f"[ModelTrainer] ⚠️ load({path}) failed: {e!r}. "
                 f"Returning None. Caller must handle the missing model."
