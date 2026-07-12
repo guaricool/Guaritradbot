@@ -184,7 +184,7 @@ Confirmado muerto: compose solo corre el bot y el dashboard Next.js. Su borrado 
 `main.py:731`: `from test_hyperopt import create_dummy_data` — el módulo vive en `tests/`, no en la raíz → `ImportError` siempre, tragado por el `except Exception` de la línea 742. Arreglar el import o borrar el bloque (la re-optimización por época del EpochScheduler cubre el caso).
 
 ### M9 — EventBus: órdenes reales dentro de un callback que traga excepciones
-La ejecución real ocurre dentro de `EventBus.publish` (paso llamado, irónicamente, `simulate_execution`): desde el fix Sprint 43 H5, `publish` atrapa **todas** las excepciones de suscriptores (`event_bus.py:36-52`) — un crash inesperado colocando una orden live se degrada a un `print` y el paso "tiene éxito". Además `last_errors` crece sin límite (fuga lenta en un daemon de semanas) y el path genérico de error del scheduler (`scheduler.py:182-185`) no publica SYSTEM_ERROR (sin alerta Telegram ante crash de un agente). Un paso del workflow que retorna `None` igualmente satisface `depends_on` (`engine.py:42`) — los pasos siguientes corren con datos faltantes.
+La ejecución real ocurre dentro de `EventBus.publish` (paso llamado, irónicamente, `simulate_execution`): desde el fix Sprint 43 H5, `publish` atrapa **todas** las excepciones de suscriptores (`event_bus.py:36-52`) — un crash inesperado colocando una orden live se degrada a un `print` y el paso "tiene éxito". Además `last_errors` crece sin límite (fuga lenta en un daemon de semanas) y el path genérico de error del scheduler (`scheduler.py:182-185`) no publica SYSTEM_ERROR (sin alerta Telegram ante crash de un agente). Un paso del workflow que retorna `None` igualmente satisface `depends_on` (`engine.py:42`) — los pasos siguientes corren con datos faltantes. ✅ **PARCIAL Sprint 46R** (commit `6c20df3`): `last_errors` ahora es `deque(maxlen=50)` (era List unbounded — fuga de memoria en daemon de semanas). Generic exception path en `EpochScheduler.job()` ahora también publica SYSTEM_ERROR + audit + Telegram (mirror del branch `WorkflowAgentFaultError`/`WorkflowDependencyError`). 9 tests. **Sigue pendiente**: `engine.py:42` — un step que retorna `None` igual satisface `depends_on` (data loss silencioso en pasos siguientes).
 
 ### M10 — El espejo `audit/positions.json` no es atómico y además nada lo consume
 Se escribe con `write_text` directo (`positions.py:136`) — un lector puede ver un archivo cortado. Y en la arquitectura actual **nada lo lee**: el dashboard Next.js solo usa el API HTTP, y el contenedor del dashboard ni monta el volumen `bot_audit`. Borrarlo, o promoverlo a mecanismo real de durabilidad (ver C6).
@@ -271,7 +271,7 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 22. ✅ **CERRADO Sprint 46R** (commit `06ee77b`): `dashboard.py` (4043 líneas), `tests/test_dashboard_fmt.py` (14 errores), `.streamlit/config.toml`, `historical.py` borrados. Stack Streamlit/plotly/streamlit-autorefresh quitado de `requirements.txt` y `requirements.lock`. **4205 líneas de código muerto eliminadas**.
 23. ✅ **CERRADO Sprint 46R** (commit `6541057`): `.github/workflows/tests.yml` con Python 3.11 + `pip install -r requirements.lock` + `python -m unittest discover` (excluyendo ml_pipeline y h5_l8 sklearn). 2 tests stale arreglados (Dockerfile USER directive, fee tier assertion).
 24. **M6**: refactor de `main()` a un `BotRuntime` testeable; tests para `fast_monitor_tick` y `job_with_monitor`.
-25. **M9**: resultado de ejecución verificable por el paso del workflow; `last_errors` con `deque(maxlen)`; SYSTEM_ERROR en el path genérico del scheduler.
+25. **M9**: ✅ **PARCIAL Sprint 46R** (commit `6c20df3`): `last_errors` con `deque(maxlen=50)` ✅, SYSTEM_ERROR en el path genérico del scheduler ✅. Pendiente: `engine.py:42` — un step que retorna `None` igual satisface `depends_on` (data loss silencioso en pasos siguientes).
 26. ✅ **CERRADO Sprint 46R** (commit `104ef31` + VPS ops): M11.1, M11.2, M11.3, M11.4 (log rotation, Telegram retry+meta-alert, healthcheck funcional, dead-man's switch) y M11.5 (backup diario vía cron en el VPS, 14 días retención, audit + data_store volúmenes).
 27. ✅ **PARCIAL Sprint 46R** (commit `8fb3f16`): **B8** cerrado (atomic_write_text + fsync en 7 sitios); **B9** parcial (framework logging_setup + get_logger en main.py + 3 archivos críticos migrados, ~218 print() restantes como follow-up); **B2** sigue pendiente.
 
@@ -348,6 +348,7 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 | M4 | 46N-fu | `bb5d763` | `_is_us_equity_market_open()` pytz + `_resample_ohlcv(asset=)` wall-clock check |
 | M11.1, M11.2, M11.3, M11.4 | 46R | `104ef31` | log rotation 20MB×5 + Telegram retry+meta-alert + healthcheck 3-checks (análisis/fast/audit-writable) + dead-man's switch |
 | B1 | 46R | `d0f9c7e` | `tp_distance = max(atr*mult, entry*0.005)` — TP floor mirrors stop's 0.5% floor |
+| M9 (parcial) | 46R | `6c20df3` | `last_errors` → `deque(maxlen=50)` + generic exception path publishes SYSTEM_ERROR (mirror del branch WorkflowAgentFaultError) |
 | **B9** (parcial) | 46R | `8fb3f16` | **framework `logging_setup` + get_logger en `main.py` + 3 archivos críticos migrados** (4 tests); ~218 `print()` restantes como follow-up |
 
 ### PENDIENTES (no tocados en Sprints 46N-46R)
@@ -356,7 +357,7 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 |----|--------------------------|
 | M4 (resample) | ✅ Cerrado por `bb5d763` Sprint 46N follow-up. Equities ya tienen staleness + 4h-bucket aware de NYSE/Nasdaq. Holiday calendar queda bajo M12. |
 | M6 (BotRuntime refactor) | Fase 3 #24 — main.py sigue siendo god-file (75K LOC) |
-| M9 (workflow observability) | Fase 3 #25 — last_errors deque + SYSTEM_ERROR en path genérico |
+| M9 (parcial) | ✅ Cerrado por `6c20df3`: last_errors deque + SYSTEM_ERROR en path genérico. Pendiente: `engine.py:42` — un step que retorna `None` igual satisface `depends_on`. |
 | M11.5 (backup volumen) | ✅ Cerrado por ops en el VPS — cron diario a las 03:17, 14 días retención, script en `/root/scripts/backup_bot_state.sh`, log en `/var/log/guaritradbot-backup.log`. |
 | M1 (debate recalibración) | Fase 4 #28 |
 | M15 (allocation scaling) | Fase 4 #29 |
