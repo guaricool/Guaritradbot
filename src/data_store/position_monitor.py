@@ -33,6 +33,7 @@ generadas por StrategyAgent; si alguna contradice una posición en profit,
 dispara cierre temprano.
 """
 from typing import Dict, Optional, List, Any
+import time
 from src.data_store.positions import PositionRepository, Position
 from src.execution.broker_routing import (
     build_asset_to_class_map,
@@ -383,6 +384,7 @@ class PositionMonitor:
         current_prices: Dict[str, float],
         signals: List[Dict[str, Any]],
         signal_min_strength: float = 0.6,
+        max_signal_age_s: Optional[float] = None,
     ) -> list:
         """
         Sprint 18: smart profit-take on reversal.
@@ -400,10 +402,41 @@ class PositionMonitor:
                      Cada signal tiene: asset, direction, strength (0..1).
             signal_min_strength: fuerza mínima de la señal opuesta para
                                  gatillar el cierre temprano.
+            max_signal_age_s: Sprint 46R (audit M16) - max age (in
+                              seconds) of a signal to consider it
+                              for a reversal close. A signal older
+                              than this is filtered out as "stale"
+                              (the reversal may no longer be valid
+                              given the current price). None = no
+                              filtering (caller's responsibility).
+                              The default in main.py is 300s (5 min).
 
         Returns:
             Lista de posiciones cerradas tempranamente.
         """
+        # Sprint 46R audit M16: defensively filter stale signals at
+        # the source, not at the caller. The audit found main.py was
+        # feeding signals up to 1h old against fresh prices, which
+        # can drive a SMART_PROFIT_TAKE close on a reversal that
+        # is no longer valid. The caller (main.py) passes a window
+        # via max_signal_age_s; we honor it here too so future
+        # callers don't accidentally re-introduce the bug. Signals
+        # that don't have a 'ts' field are skipped - we can't age
+        # them, so we don't act on them (safer default than
+        # including them).
+        if max_signal_age_s is not None:
+            now = time.time()
+            fresh_signals = []
+            for sig in signals:
+                sig_ts = sig.get("ts")
+                if sig_ts is None:
+                    # No timestamp = can't verify age. Skip.
+                    continue
+                age_s = now - float(sig_ts)
+                if age_s > max_signal_age_s:
+                    continue
+                fresh_signals.append(sig)
+            signals = fresh_signals
         closes = []
         for pos in list(self.repo.open()):
             asset = pos.asset

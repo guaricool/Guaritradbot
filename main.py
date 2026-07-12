@@ -1230,12 +1230,23 @@ def main():
                 print(f"[PositionMonitor] {len(closed)} posiciones cerradas por stops/TPs")
 
             # 1b. Sprint 18: smart profit-take on reversal signals.
-            # Read latest HYPOTHESIS_GENERATED from audit (last 1h) and
-            # close any open position in profit that has a strong
-            # opposite signal.
+            # Sprint 46R (audit M16): the audit's complaint was that
+            # we fed `check_with_signals` signals up to 1h old against
+            # fresh prices - "la reversion puede estar ya invalidada".
+            # Now we read the last `smart_profit_take_max_signal_age_s`
+            # seconds (default 5 min), and also pass that window to
+            # `check_with_signals` itself as a defensive filter (in
+            # case some other caller in the future passes a wider
+            # list). The fast monitor runs every 2 min, so 5 min is
+            # "the bot had a recent chance to re-evaluate this signal"
+            # - old enough not to miss a fresh reversal, fresh enough
+            # not to act on a stale one.
             try:
                 import time as _t
-                recent_hyps = audit.read_since(_t.time() - 3600)
+                _max_age = float(trading_cfg.get(
+                    "smart_profit_take_max_signal_age_s", 300
+                ))
+                recent_hyps = audit.read_since(_t.time() - _max_age)
                 signals = [
                     h for h in recent_hyps
                     if h.get("event_type") == "HYPOTHESIS_GENERATED"
@@ -1245,6 +1256,7 @@ def main():
                         current_prices=prices,
                         signals=signals,
                         signal_min_strength=0.6,
+                        max_signal_age_s=_max_age,
                     )
                     if early_closed:
                         print(

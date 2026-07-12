@@ -82,6 +82,20 @@ trading:
   # toward 1.0 only if you've deliberately accepted the breakeven
   # risk (e.g. very low fee tier + small account).
   min_profit_fee_multiplier: 2.0
+  # Sprint 46R (audit M16): how old a HYPOTHESIS_GENERATED signal can
+  # be and still drive a SMART_PROFIT_TAKE close. Pre-46R, main.py
+  # fed `check_with_signals` signals up to 1h old — the audit's
+  # exact complaint: "alimenta check_with_signals con hipotesis de
+  # hasta 1h de antiguedad del audit log contra precios frescos -
+  # la reversion puede estar ya invalidada." A 1h-old reversal
+  # signal against a fresh price feed is unreliable: the market
+  # has likely moved, the indicator state has changed, and a
+  # newer signal may have OVERRIDDEN the old one. The fast monitor
+  # ticks every 2 min, so 5 min is "the bot had a recent chance to
+  # re-evaluate this signal". Lower = stricter (only the freshest
+  # signals count); higher = more lenient (accepts older signals
+  # at the cost of acting on potentially stale info).
+  smart_profit_take_max_signal_age_s: 300
   # Sprint 46I: place a REAL OCO (stop-loss + take-profit) order on
   # binance.us at entry time for crypto LONG positions, instead of
   # relying only on the bot polling prices each cycle. The exchange
