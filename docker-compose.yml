@@ -130,18 +130,19 @@ services:
   #   bot's publicly reachable URL. The build arg pulls it from
   #   the env_file / Coolify env so the same image can target
   #   different bot URLs.
-  # - Sprint 46P (audit A10): the `ports: 3050:3000` direct mapping
-  #   here is the same plain-HTTP public exposure as the bot's 8088.
-  #   Cutover target: `https://guaritradbot-dash.13.140.181.29.sslip.io`
-  #   via Coolify Traefik. NEXT_PUBLIC_API_URL should be updated to
-  #   `https://guaritradbot.13.140.181.29.sslip.io` at the same time.
-  #   See docs/HTTPS_SETUP.md.
+  # - Sprint 46P (audit A10): the dashboard now rides the same Traefik
+  #   HTTPS ingress as the bot — reachable on
+  #   `https://guaritradbot-dash.13.140.181.29.sslip.io`. The default
+  #   NEXT_PUBLIC_API_URL is updated to point at the bot's HTTPS URL
+  #   (overridable by env at build time, same as before). The plain-HTTP
+  #   `ports: 3050:3000` mapping is kept for the cutover window and
+  #   will be removed in the next commit. See docs/HTTPS_SETUP.md.
   dashboard:
     build:
       context: .
       dockerfile: Dockerfile.dashboard
       args:
-        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://13.140.181.29:8080}
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-https://guaritradbot.13.140.181.29.sslip.io}
     container_name: guaritradbot_dashboard
     restart: unless-stopped
     env_file:
@@ -152,10 +153,33 @@ services:
     ports:
       # Host port 3050 — port 3000 is already in use on the host by
       # the IUL project's next-server (left over from manual dev).
-      # Container still listens on 3000 internally.
+      # Container still listens on 3000 internally. Sprint 46P
+      # cutover: closed in a follow-up commit once HTTPS is verified.
       - "3050:3000"
     depends_on:
       - guaritradbot
+    labels:
+      # Sprint 46P (audit A10): same Traefik pattern as the bot.
+      # `guaritradbot-dash.13.140.181.29.sslip.io` resolves to the
+      # same VPS via the sslip.io wildcard, and Let's Encrypt issues
+      # a separate cert. The dashboard's `NEXT_PUBLIC_API_URL` (set
+      # above) is also HTTPS, so the browser sees a clean https→
+      # https flow with no mixed-content warnings.
+      - traefik.enable=true
+      - traefik.http.middlewares.gzip.compress=true
+      - traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https
+      - traefik.http.routers.http-0-guaritradbot-dash.entryPoints=http
+      - traefik.http.routers.http-0-guaritradbot-dash.middlewares=redirect-to-https
+      - "traefik.http.routers.http-0-guaritradbot-dash.rule=Host(`guaritradbot-dash.13.140.181.29.sslip.io`) && PathPrefix(`/`)"
+      - traefik.http.routers.http-0-guaritradbot-dash.service=http-0-guaritradbot-dash
+      - traefik.http.routers.https-0-guaritradbot-dash.entryPoints=https
+      - traefik.http.routers.https-0-guaritradbot-dash.middlewares=gzip
+      - "traefik.http.routers.https-0-guaritradbot-dash.rule=Host(`guaritradbot-dash.13.140.181.29.sslip.io`) && PathPrefix(`/`)"
+      - traefik.http.routers.https-0-guaritradbot-dash.service=https-0-guaritradbot-dash
+      - traefik.http.routers.https-0-guaritradbot-dash.tls.certresolver=letsencrypt
+      - traefik.http.routers.https-0-guaritradbot-dash.tls=true
+      - traefik.http.services.http-0-guaritradbot-dash.loadbalancer.server.port=3000
+      - traefik.http.services.https-0-guaritradbot-dash.loadbalancer.server.port=3000
     deploy:
       resources:
         limits:
