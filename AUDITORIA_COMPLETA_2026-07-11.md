@@ -211,7 +211,7 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 
 ## 6. Hallazgos BAJOS
 
-- **B1** — El TP no tiene piso mientras el stop sí (`risk_agent.py:301-302`): ATR≈0 → `take_profit == entry` → cierre instantáneo, puro churn de fees.
+- **B1** — El TP no tiene piso mientras el stop sí (`risk_agent.py:301-302`): ATR≈0 → `take_profit == entry` → cierre instantáneo, puro churn de fees. ✅ **CERRADO Sprint 46R** (commit `d0f9c7e`): TP ahora usa `max(atr * atr_take_profit_multiplier, entry_price * 0.005)` — mismo floor 0.5% que el stop. R:R colapsa a 1:1 en el corner de ATR=0 (mejor que el cierre instantáneo). 6 tests en `test_sprint_46r_b1_tp_floor.py`.
 - **B2** — Números mágicos fuera de config: `signal_min_strength=0.6` (main.py:930), lookback 3600s, floors de $10/$100, `entry_price * 0.005`, caps del strategy_agent, TTLs de caché.
 - **B3** — ~45 warnings de pyflakes: imports sin usar en ~25 módulos, import duplicado en `market_analyst.py`, `historical.py` con nombre indefinido `pd` (módulo autodeclarado "deprecated AND BROKEN" — borrar). `src/strategy/` (5 módulos) solo lo importan los tests — mover o borrar. Basura trackeada: `capability_matrix*.html`, `.analysis/*.png`, `graphify-out/` (un vault de Obsidian entero), los `.docx` de auditorías previas.
 - **B4** — `EquityTracker` no re-sincroniza depósitos/retiros; su drawdown/delta deriva de la realidad con el tiempo.
@@ -280,7 +280,7 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 29. **M15**: adaptar la política de allocation al tamaño real de la cuenta (o desactivar caps imposibles).
 30. ✅ **CERRADO** (commit `bb5d763` Sprint 46N follow-up): `_is_us_equity_market_open()` con `pytz/America/New_York` (Mon-Fri 09:30-16:00) y `_resample_ohlcv(..., asset=...)` con wall-clock completeness check para equities/ETFs. Holiday calendar no cubierto (queda bajo M12).
 31. **B5**: decidir sobre ETH/SOL — agregar estrategia + workflow, o quitarlos del config.
-32. **B1/M16/B10**: piso para el TP, señales frescas para el profit-take, revisar la economía del reemplazo.
+32. **B1/M16/B10**: piso para el TP ✅, señales frescas para el profit-take (M16), revisar la economía del reemplazo (B10).
 
 ---
 
@@ -347,6 +347,7 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 | **B8** | 46R | `8fb3f16` | **`atomic_write_text` con fsync en 7 sitios tmp+replace** (5 tests) |
 | M4 | 46N-fu | `bb5d763` | `_is_us_equity_market_open()` pytz + `_resample_ohlcv(asset=)` wall-clock check |
 | M11.1, M11.2, M11.3, M11.4 | 46R | `104ef31` | log rotation 20MB×5 + Telegram retry+meta-alert + healthcheck 3-checks (análisis/fast/audit-writable) + dead-man's switch |
+| B1 | 46R | `d0f9c7e` | `tp_distance = max(atr*mult, entry*0.005)` — TP floor mirrors stop's 0.5% floor |
 | **B9** (parcial) | 46R | `8fb3f16` | **framework `logging_setup` + get_logger en `main.py` + 3 archivos críticos migrados** (4 tests); ~218 `print()` restantes como follow-up |
 
 ### PENDIENTES (no tocados en Sprints 46N-46R)
