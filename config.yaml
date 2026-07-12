@@ -2,7 +2,10 @@
 # Documentado en SPRINT 0 (Sprint 1 meterá mandate gate aquí).
 
 execution_mode: "auto"      # "auto" | "human_in_the_loop"
-optimize_on_start: false
+# Sprint 46S (audit M8): optimize_on_start removed — it always
+# ImportError'd (reached for tests/test_hyperopt.py from the project
+# root) and was already always false in practice. Real periodic
+# re-optimization happens via EpochScheduler.run_reoptimization().
 
 exchange:
   # Sprint 8 fix: Carlos vive en USA, Binance global (binance.com + testnet) está bloqueado.

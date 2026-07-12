@@ -417,7 +417,6 @@ def main():
             config = yaml.safe_load(f) or {}
 
     execution_mode = config.get("execution_mode", "auto")
-    optimize_on_start = config.get("optimize_on_start", False)
 
     trading_cfg = dict(config.get("trading", {}) or {})
     # Sprint 46D: dashboard-editable trading settings. The dashboard's
@@ -961,23 +960,21 @@ def main():
         mode_override_path=override_path,
     )
 
+    # Sprint 46S (audit M8): the old `optimize_on_start` block that lived
+    # here always raised `ImportError` — `from test_hyperopt import
+    # create_dummy_data` reaches for a module that lives under `tests/`,
+    # not the project root, so `sys.path` never has it. The failure was
+    # swallowed by a bare `except Exception`, so nothing ever surfaced it;
+    # the flag also defaults to `false` in config.yaml, so in practice
+    # this never ran anyway. Real re-optimization already happens on a
+    # schedule via `EpochScheduler.run_reoptimization()`
+    # (`src/execution/scheduler.py`), which downloads real market data
+    # (not dummy data) per asset and walk-forward-validates the new
+    # params before adopting them — a strictly better mechanism than this
+    # one-shot startup grid search ever was. Removed rather than fixed,
+    # per the audit's own suggested resolution. `optimize_on_start` was
+    # also removed from config.yaml since nothing reads it anymore.
     strategy_params = None
-    if optimize_on_start:
-        print("[Optimizador] Iniciando Grid Search de parámetros...")
-        try:
-            from test_hyperopt import create_dummy_data
-            df_hist = create_dummy_data()
-            hyperopt = HyperoptManager()
-
-            def rsi_sig(data, **p):
-                return StrategyAgent.generate_vectorized_signals(data, strategy_type="RSI", **p)
-
-            param_space = {"rsi_oversold": [25, 30, 35], "rsi_overbought": [65, 70, 75]}
-            best_p = hyperopt.optimize("RSI_MeanReversion", df_hist, param_space, rsi_sig)
-            if best_p:
-                strategy_params = best_p
-        except Exception as e:
-            print(f"[Optimizador] Error durante la optimización: {e}")
 
     registry = {
         "MarketAnalystAgent": MarketAnalystAgent(event_bus=event_bus, audit=audit),
@@ -1671,11 +1668,4 @@ def main():
             scheduler.start(run_once_for_test=False)
     except KeyboardInterrupt:
         audit.append("BOT_STOP_KEYBOARDINT", {})
-        print("\nBot detenido por el usuario (Ctrl+C).")
-    except Exception as e:
-        audit.append("BOT_STOP_EXCEPTION", {"error": str(e)})
-        raise
-
-
-if __name__ == "__main__":
-    main()
+    
