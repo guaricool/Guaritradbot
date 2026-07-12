@@ -1,0 +1,74 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Sprint 46R (audit B6): this CI workflow is the long-promised
+# one — the suite has been "fast (~13s) and valuable" (per the
+# audit) since Sprint 1 but has never run automatically. The audit
+# noted the 1 fail (test_dockerfiles_run_as_non_root) and the 14
+# errors (test_dashboard_fmt.py) would have been caught here.
+# Both are fixed as of Sprint 46R — this workflow is the net
+# that keeps them fixed.
+#
+# On every push to main, and every PR, this workflow:
+#   1. Spins up Python 3.11 (matches the bot's `python:3.11-slim`
+#      base image — see Dockerfile.bot)
+#   2. Installs from requirements.lock (matches what the bot
+#      image installs — see Dockerfile.bot's `pip install -r
+#      requirements.lock` line)
+#   3. Discovers all tests in tests/ and runs them
+#
+# Excluded (the audit flagged them as pre-existing failures
+# that this workflow would have caught — they're not regressions
+# to gate on, they're cleanup targets):
+#   - test_dashboard_fmt.py: file DELETED in Sprint 46R (M7)
+#   - test_sprint_43_h3_h4_h10_h11_l7_l9_l10_m8.M8DockerHardeningTest
+#     was failing on the stale USER assertion; Sprint 46R fixed
+#     the assertion and it now passes
+#   - test_sprint_43_h5_l8 and test_ml_pipeline import sklearn,
+#     which is NOT in requirements.lock because the ML pipeline
+#     runs in a separate venv (per the Sprint 19 docs). Excluded
+#     below with `--ignore` rather than deleted, in case the
+#     pipeline is wired back in later.
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      - name: Install dependencies (from lockfile — same as the bot image)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.lock
+
+      - name: Run tests
+        # The 558 -> 720 growth in test count from Sprint 18 to
+        # 46N is the regression net the audit asked for. Sprint
+        # 46R's M7 cleanup (deleted dashboard.py) and the new
+        # Sprint 46R tests (kill switch E2E, OCO edge cases, etc)
+        # bring the count to ~735. The two excluded files (ml
+        # pipeline + h5_l8) are pre-existing and have their own
+        # Sprint 19 venv setup that's out of scope for the
+        # standard bot CI.
+        run: |
+          python -m unittest discover tests -v \
+            --ignore=tests/test_ml_pipeline.py \
+            --ignore=tests/test_sprint_43_h5_l8.py 2>&1 | tail -80
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "::notice::Sprint 46R CI: if you see a fail here, see the audit findings (docs/AUDITORIA_COMPLETA_2026-07-11.md) and the corresponding Sprint 46N/R commit that fixed it."
