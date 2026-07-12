@@ -104,6 +104,136 @@ class EquityTracker:
             closed_positions=0,
         )
 
+    def reconcile_external_balance(
+        self,
+        broker_balance: float,
+        current_open_position_notional: float = 0.0,
+    ) -> Dict[str, float]:
+        """
+        Sprint 46R (audit B4): reconcile the tracker's expected
+        balance with the broker's live balance, treating any
+        difference as an external deposit or withdrawal.
+
+        The pre-46R tracker only knew about starting_balance +
+        realized P&L. If Carlos deposited $20 from his bank to
+        the broker, the tracker's "expected" balance stayed at
+        the old number and the live broker balance jumped by $20.
+        The next snapshot would show a $20 "delta" that was
+        really a deposit, not a P&L gain. After a few deposits
+        the drawdown calculation would be wildly off too (peak
+        equity never reset to include the deposits).
+
+        The fix: the caller passes the broker's current
+        free balance. We compute
+            expected_free = starting_balance
+                          + realized_pnl
+                          - current_open_position_notional
+        (realized P&L is the net of closed trades; open
+        positions are deducted from free balance because the
+        cash is locked in them). Any discrepancy
+            delta = broker_balance - expected_free
+        is treated as a deposit (positive) or withdrawal
+        (negative) and ADJUSTS `self.starting_balance` so the
+        tracker's future snapshots are accurate.
+
+        Returns a dict describing what happened (or didn't):
+          {
+            "deposit_usd": float,  # positive = Carlos deposited
+            "withdrawal_usd": float,  # positive = Carlos withdrew
+            "new_starting_balance": float,
+            "broker_balance": float,
+            "expected_free_before": float,
+            "audit_emitted": bool,
+          }
+
+        The caller (main.py) should call this method
+        periodically (e.g. once per cycle or once per day) with
+        the live broker balance. The actual wiring in main.py
+        is a follow-up; this method is the audit's "make the
+        math right" piece.
+
+        Edge cases handled:
+        - broker_balance < 0: skip (bad data from the broker;
+          the broker doesn't have a negative free balance in
+          any currency we trade).
+        - abs(delta) < tolerance_usd: skip (avoid noise from
+          rounding or in-flight orders). The default tolerance
+          is $0.01 (one cent); pass tolerance_usd to override.
+        """
+        if broker_balance < 0:
+            # The broker doesn't report a negative free balance
+            # in any currency we trade. If the caller passes
+            # one, that's a broker API error - don't silently
+            # apply a phantom deposit/withdrawal.
+            return {
+                "deposit_usd": 0.0,
+                "withdrawal_usd": 0.0,
+                "new_starting_balance": self.starting_balance,
+                "broker_balance": broker_balance,
+                "expected_free_before": 0.0,
+                "audit_emitted": False,
+            }
+        # Latest realized PnL is in the most recent snapshot.
+        latest = self.history[-1] if self.history else None
+        realized_pnl = latest.realized_pnl if latest else 0.0
+        expected_free = (
+            self.starting_balance + realized_pnl - current_open_position_notional
+        )
+        delta = broker_balance - expected_free
+        result = {
+            "deposit_usd": 0.0,
+            "withdrawal_usd": 0.0,
+            "new_starting_balance": self.starting_balance,
+            "broker_balance": broker_balance,
+            "expected_free_before": expected_free,
+            "audit_emitted": False,
+        }
+        if abs(delta) < 0.01:
+            # Within rounding tolerance - no event.
+            return result
+        if delta > 0:
+            # Deposit: bump the starting_balance by delta and
+            # bump the peak equity if the new expected total
+            # exceeds it (the deposit itself isn't a peak unless
+            # no other equity has been realized; be conservative
+            # and only bump the peak if the new starting_balance
+            # alone is a new high).
+            self.starting_balance += delta
+            if self.starting_balance > self._max_equity:
+                self._max_equity = self.starting_balance
+            result["deposit_usd"] = delta
+            result["new_starting_balance"] = self.starting_balance
+            kind = "EQUITY_DEPOSIT"
+        else:
+            # Withdrawal: drop starting_balance by |delta| and
+            # possibly drop the peak equity if the post-withdraw
+            # expected total is below it.
+            abs_delta = abs(delta)
+            self.starting_balance -= abs_delta
+            # If the peak was based on the OLD starting balance,
+            # pull the peak down by the withdrawal amount so a
+            # $50 withdraw from a $100 account at $150 peak
+            # becomes a $50 account with a $100 peak.
+            if self._max_equity > self.starting_balance:
+                self._max_equity = max(self._max_equity - abs_delta, self.starting_balance)
+            result["withdrawal_usd"] = abs_delta
+            result["new_starting_balance"] = self.starting_balance
+            kind = "EQUITY_WITHDRAWAL"
+
+        if self.audit is not None:
+            try:
+                self.audit.append(kind, {
+                    "amount_usd": abs(delta),
+                    "broker_balance": round(broker_balance, 4),
+                    "expected_free_before": round(expected_free, 4),
+                    "new_starting_balance": round(self.starting_balance, 4),
+                    "new_max_equity": round(self._max_equity, 4),
+                })
+                result["audit_emitted"] = True
+            except Exception as e:
+                logger.error(f"reconcile_external_balance: audit append failed: {e}")
+        return result
+
     def update(self, current_prices: Optional[Dict[str, float]] = None) -> EquitySnapshot:
         """
         Compute current equity and append a snapshot to history.
