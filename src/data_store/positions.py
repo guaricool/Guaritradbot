@@ -207,9 +207,20 @@ class PositionRepository:
             # container NO comparte data_store/ con el dashboard, pero sí
             # comparte audit/.
             try:
+                # Sprint 46S (audit B8 follow-up): use the shared
+                # atomic_write_text helper here too — the dashboard
+                # container reads this file, and a non-atomic write
+                # means an OOM kill / signal mid-_save() can leave the
+                # dashboard parsing truncated JSON and silently
+                # displaying 0 open positions. Same crash-safety
+                # properties as the primary `data_store/positions.json`
+                # write above (tmp + fsync + atomic rename).
                 mirror = Path("audit/positions.json")
                 mirror.parent.mkdir(parents=True, exist_ok=True)
-                mirror.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+                atomic_write_text(
+                    mirror,
+                    json.dumps(data, indent=2, default=str),
+                )
             except Exception as e:
                 # No fatal — el bot sigue funcionando, solo el dashboard no
                 # podrá ver las posiciones en este ciclo.
