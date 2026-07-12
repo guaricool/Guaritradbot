@@ -1,5 +1,5 @@
-"""
-Sprint 46A — State snapshot builder for the bot HTTP API.
+﻿"""
+Sprint 46A â€” State snapshot builder for the bot HTTP API.
 
 Pure read-only layer that turns the bot's on-disk state (positions
 JSON, audit JSONL, mode_override JSON) + a live price snapshot into
@@ -8,26 +8,26 @@ typed Pydantic models the REST/WS endpoints can serve.
 Design principle
 ----------------
 The bot writes state to disk (positions, audit, mode). The API
-layer does NOT mutate the state — it only reads. Mutations (close
+layer does NOT mutate the state â€” it only reads. Mutations (close
 position, toggle mode) go through dedicated POST endpoints in
 server.py that write to the same on-disk files the bot already reads.
 That keeps the bot logic untouched.
 
 What this module does
 ---------------------
-- `build_state_snapshot()` — full snapshot for the dashboard's
+- `build_state_snapshot()` â€” full snapshot for the dashboard's
   initial load: positions + P&L + balance + mode + counts.
-- `build_positions()` — list of positions with computed current
+- `build_positions()` â€” list of positions with computed current
   P&L (calls yfinance for live prices; falls back to entry price
   if fetch fails, with `current_price_source` flag so the UI can
   show it appropriately).
-- `build_audit()` — recent audit events (filterable by since/until).
-- `read_mode()` — current mode from `audit/mode_override.json` or
+- `build_audit()` â€” recent audit events (filterable by since/until).
+- `read_mode()` â€” current mode from `audit/mode_override.json` or
   config.yaml fallback.
-- `write_mode()` — toggle mode (writes the override file; the bot
+- `write_mode()` â€” toggle mode (writes the override file; the bot
   re-reads it on next cycle via B033 paper-mode gate in the broker,
   and on next startup for the main loop).
-- `read_current_prices()` — live prices via yfinance with a 30s
+- `read_current_prices()` â€” live prices via yfinance with a 30s
   in-process cache so we don't hammer the API.
 
 Threading model
@@ -35,7 +35,7 @@ Threading model
 This module is sync. The FastAPI app can run the heavy lifting
 (yfinance fetch) in a thread pool via `run_in_threadpool` from
 `fastapi.concurrency`. The state files are read in the request
-handler — short operations, no need for a worker process.
+handler â€” short operations, no need for a worker process.
 """
 from __future__ import annotations
 
@@ -50,6 +50,10 @@ import pandas as pd
 
 from src.data_store.positions import PositionRepository, Position
 from src.safety.audit_ledger import AuditLedger
+from src.core.atomic_write import atomic_write_text
+from src.core.logging_setup import get_logger
+
+logger = get_logger(__name__)
 
 
 # ----------------------------------------------------------------------
@@ -58,7 +62,7 @@ from src.safety.audit_ledger import AuditLedger
 
 # Pydantic models for the API surface. Kept here (not in server.py) so
 # the snapshot builder can return them directly and the server can
-# just `return` them — FastAPI serializes them automatically.
+# just `return` them â€” FastAPI serializes them automatically.
 from pydantic import BaseModel, Field
 
 
@@ -92,12 +96,12 @@ class ModeInfo(BaseModel):
 
 
 class StateSnapshot(BaseModel):
-    """Full dashboard snapshot — what the home page requests once on load."""
+    """Full dashboard snapshot â€” what the home page requests once on load."""
     mode: ModeInfo
     balance_usd: float = 0.0
     balance_source: str = "unknown"                 # "broker" | "testnet_sim" | "live"
     # Sprint 46C: per-broker available cash. `balance_usd` above was
-    # ALWAYS 0.0/"unknown" — nothing ever populated it, so the
+    # ALWAYS 0.0/"unknown" â€” nothing ever populated it, so the
     # dashboard never showed real money available, even though both
     # BINANCE_API_KEY/SECRET and ALPACA_API_KEY/SECRET_KEY were set.
     # These two fields are populated from the SAME broker instances
@@ -178,7 +182,7 @@ def read_current_prices(assets: List[str], max_age_s: float = PRICE_CACHE_TTL_S)
 
     Uses a process-level cache (TTL = max_age_s) to avoid hammering
     yfinance on every dashboard refresh. Unknown assets or fetch
-    failures are simply omitted from the result — the caller can
+    failures are simply omitted from the result â€” the caller can
     fall back to the entry price (which it does, with a
     `current_price_source = "entry_fallback"` label so the UI can
     show the staleness to the operator).
@@ -218,7 +222,7 @@ def invalidate_price_cache(asset: Optional[str] = None) -> None:
 # The dashboard is supposed to show "how much money do I actually have
 # available" per broker (binance.us for crypto, Alpaca for equities).
 # Before this, `StateSnapshot.balance_usd` existed as a field but NO
-# caller ever set it to anything other than its 0.0 default — the API
+# caller ever set it to anything other than its 0.0 default â€” the API
 # never had a reference to the bot's actual broker connections. This
 # module registers the SAME BrokerClient/AlpacaBroker instances main.py
 # already built for trading (see `set_brokers()`, called once from
@@ -226,7 +230,7 @@ def invalidate_price_cache(asset: Optional[str] = None) -> None:
 # authenticated connections instead of opening new ones with duplicate
 # credentials/rate-limit budget.
 #
-# Cached with a short TTL — balance doesn't need to be sub-second-live
+# Cached with a short TTL â€” balance doesn't need to be sub-second-live
 # and both `get_usdt_balance()`/`get_usd_balance()` are real network
 # calls to the exchange/broker.
 
@@ -244,7 +248,7 @@ def set_brokers(broker_client=None, alpaca_broker=None) -> None:
     Called once from `main.py::_start_api_server`, right before the
     uvicorn thread starts, with the exact same `broker_client` /
     `alpaca_broker` objects the trading loop uses. Safe to call with
-    both None (e.g. in tests, or if neither broker is configured) —
+    both None (e.g. in tests, or if neither broker is configured) â€”
     every consumer below treats a None broker as "not configured"
     rather than raising.
     """
@@ -272,20 +276,20 @@ def set_position_repo(position_repo) -> None:
 
     The bug this fixes ("resurrected" positions): before this, every
     mutating API request (`close_position`, `close_all_positions`)
-    built a FRESH `PositionRepository(path=positions_path)` — read
+    built a FRESH `PositionRepository(path=positions_path)` â€” read
     whatever was on disk at that instant, closed the target position
     on THAT throwaway copy, and saved. The bot's own long-lived
-    in-memory repo never learned about that close — it still held the
+    in-memory repo never learned about that close â€” it still held the
     position as OPEN in its `self.positions` list. The next time
     ANYTHING triggered the bot's own `_save()` (opening a new
     position, `fast_monitor_tick` closing a different position, an OCO
     reconciliation, etc.), it overwrote `positions.json` with its
-    stale in-memory state — silently undoing the dashboard's close and
+    stale in-memory state â€” silently undoing the dashboard's close and
     bringing the "closed" position back as open on disk.
 
     Because the dashboard API runs in a background thread INSIDE THE
     SAME PROCESS as the bot (see `main.py::_start_api_server`'s
-    docstring), there's no need for cross-process IPC to fix this —
+    docstring), there's no need for cross-process IPC to fix this â€”
     both sides can safely share the literal same Python object. Once
     shared, a dashboard close mutates the EXACT list the bot's own
     scheduler will later save, so there is no second stale copy left
@@ -295,7 +299,7 @@ def set_position_repo(position_repo) -> None:
     thread(s) safe.
 
     Safe to call with None (e.g. in tests, or the API running without
-    a live bot process) — every consumer below falls back to
+    a live bot process) â€” every consumer below falls back to
     constructing its own disk-backed instance via `get_position_repo`,
     same behavior as before this existed.
     """
@@ -320,7 +324,7 @@ def _get_binance_balance() -> Tuple[Optional[float], str]:
     """Return (balance, source) for the binance.us broker.
 
     source is one of: "live" (fresh fetch), "cache" (within TTL),
-    "unavailable" (broker configured but the call failed — e.g.
+    "unavailable" (broker configured but the call failed â€” e.g.
     network/API-key issue), "not_configured" (no broker instance
     registered at all, e.g. exchange section missing from config).
     """
@@ -335,7 +339,7 @@ def _get_binance_balance() -> Tuple[Optional[float], str]:
         _BALANCE_CACHE["binance"] = (bal, "live", now)
         return bal, "live"
     except Exception:
-        # Don't cache failures — retry on the next request instead of
+        # Don't cache failures â€” retry on the next request instead of
         # being stuck showing "unavailable" for a full TTL window
         # after a single transient network blip.
         return None, "unavailable"
@@ -375,7 +379,7 @@ def _build_position_summary(
     """
     notional = pos.notional_usd
     if current_price is None:
-        # Fallback to entry price — P&L is 0, source flagged.
+        # Fallback to entry price â€” P&L is 0, source flagged.
         current_price = pos.entry_price
         current_price_source = "entry_fallback"
     if pos.direction == "long":
@@ -518,19 +522,17 @@ def write_mode(
         "switched_at": time.time(),
         "switched_by": switched_by,
     }
-    tmp = override_path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    tmp.replace(override_path)  # atomic on POSIX
+    atomic_write_text(override_path, json.dumps(payload, indent=2))  # Sprint 46R (audit B8): fsync before rename
     return read_mode(audit_path=audit_path)
 
 
 # ----------------------------------------------------------------------
-# Trading config (Sprint 46D) — dashboard-editable trading settings
+# Trading config (Sprint 46D) â€” dashboard-editable trading settings
 # ----------------------------------------------------------------------
 #
 # Same pattern as mode_override.json above: config.yaml is the file
 # Carlos edits by hand (with comments explaining every field), so the
-# API never rewrites it directly — PyYAML's dump() isn't round-trip
+# API never rewrites it directly â€” PyYAML's dump() isn't round-trip
 # safe and would silently destroy every comment in the file. Instead,
 # dashboard edits go to `audit/trading_config_override.json`, a flat
 # JSON of {field: value} that OVERLAYS config.yaml's `trading:` section
@@ -539,11 +541,11 @@ def write_mode(
 # IMPORTANT caveat (surfaced to the user via `pending_restart` in the
 # API response): `main.py` reads `trading_cfg` (config.yaml merged with
 # this override file) ONCE at startup and passes the individual values
-# into RiskManagerAgent's constructor — they are NOT re-read per cycle.
+# into RiskManagerAgent's constructor â€” they are NOT re-read per cycle.
 # So a saved change here only takes effect after the bot restarts
 # (POST /api/restart). This mirrors the existing mode-toggle behavior
 # for the main loop's mandate check (see SetModeResponse.note in
-# server.py) — nothing new architecturally, just extended to cover all
+# server.py) â€” nothing new architecturally, just extended to cover all
 # of `trading:` instead of only `mandate.enabled`.
 
 TRADING_CONFIG_DEFAULTS: Dict[str, Any] = {
@@ -611,7 +613,7 @@ def write_trading_config(
     `audit/trading_config_override.json` and return the new effective
     config (same shape as `read_trading_config`).
 
-    Only keys present in TRADING_CONFIG_DEFAULTS are persisted —
+    Only keys present in TRADING_CONFIG_DEFAULTS are persisted â€”
     unknown keys are silently dropped (defense in depth; server.py's
     Pydantic model should already reject them before this is called).
     """
@@ -629,36 +631,34 @@ def write_trading_config(
             existing[k] = v
     existing["_updated_at"] = time.time()
     existing["_updated_by"] = updated_by
-    tmp = override_path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-    tmp.replace(override_path)  # atomic on POSIX
+    atomic_write_text(override_path, json.dumps(existing, indent=2))  # Sprint 46R (audit B8): fsync before rename
     return read_trading_config(config=config, audit_path=audit_path)
 
 
 # ----------------------------------------------------------------------
-# Risk / mandate config (Sprint 46F) — dashboard-editable safety gates
+# Risk / mandate config (Sprint 46F) â€” dashboard-editable safety gates
 # ----------------------------------------------------------------------
 #
 # Same override-file pattern as trading config above, covering the
 # other two places safety-relevant numbers live in config.yaml:
-#   - `risk:` — drawdown kill-switch threshold/cooldown, plus the
+#   - `risk:` â€” drawdown kill-switch threshold/cooldown, plus the
 #     Sprint 44/45 portfolio-risk gate caps (asset-class concentration,
 #     correlation, CVaR, stress-test) that RiskManagerAgent has always
 #     supported as constructor params but main.py never actually read
 #     from config.yaml at all (they silently used the class's
 #     hard-coded defaults, so hand-editing config.yaml wouldn't even
 #     have changed them before this sprint).
-#   - `mandate.allowed_symbols` — the symbol allow-list the MandateGate
+#   - `mandate.allowed_symbols` â€” the symbol allow-list the MandateGate
 #     enforces. Kept separate from the other mandate fields
-#     (max_position_usd/max_daily_loss_usd/max_total_exposure_usd) —
+#     (max_position_usd/max_daily_loss_usd/max_total_exposure_usd) â€”
 #     those are intentionally NOT exposed here yet; ask if you want
 #     them added too, same mechanism.
-#   - `mandate.max_daily_trades` (Sprint 46J) — new-entry rate limit,
+#   - `mandate.max_daily_trades` (Sprint 46J) â€” new-entry rate limit,
 #     0 = unlimited. Exposed here alongside allowed_symbols using the
 #     same "special-case mandate.* field" pattern (see the merge loop
 #     in main.py's Sprint 46F risk-override block).
 #
-# Like trading config, this is READ at startup only — a saved change
+# Like trading config, this is READ at startup only â€” a saved change
 # needs a bot restart (POST /api/restart) to take effect.
 
 RISK_CONFIG_DEFAULTS: Dict[str, Any] = {
@@ -685,7 +685,7 @@ def read_risk_config(
 ) -> Dict[str, Any]:
     """Effective risk/mandate config: config.yaml's `risk:` section
     (plus `mandate.allowed_symbols`) with any dashboard-saved override
-    layered on top. Mirrors `read_trading_config` — see that function
+    layered on top. Mirrors `read_trading_config` â€” see that function
     and this section's header comment for the full rationale.
     """
     if config is None:
@@ -755,9 +755,7 @@ def write_risk_config(
             existing[k] = v
     existing["_updated_at"] = time.time()
     existing["_updated_by"] = updated_by
-    tmp = override_path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-    tmp.replace(override_path)  # atomic on POSIX
+    atomic_write_text(override_path, json.dumps(existing, indent=2))  # Sprint 46R (audit B8): fsync before rename
     return read_risk_config(config=config, audit_path=audit_path)
 
 
@@ -778,7 +776,7 @@ def build_state_snapshot(
       - `audit/mode_override.json` (mode)
       - yfinance (live prices for open positions)
 
-    Pure read-only — does NOT mutate any state file.
+    Pure read-only â€” does NOT mutate any state file.
     """
     repo = get_position_repo(positions_path)
     opens = repo.open()
@@ -808,7 +806,7 @@ def build_state_snapshot(
 
     mode = read_mode(config=config, audit_path=audit_path)
 
-    # Sprint 46C: real per-broker balances. Best-effort — a broker
+    # Sprint 46C: real per-broker balances. Best-effort â€” a broker
     # not being configured, or a transient network error, must never
     # break the whole /api/state response (the dashboard still needs
     # positions/P&L even if a balance call fails).
@@ -899,7 +897,7 @@ def close_position(
     manual action, but the realized_pnl is 0.0 until the next bot
     cycle reconciles via PositionMonitor.
 
-    This is a REPO-ONLY close (same as always — this endpoint never
+    This is a REPO-ONLY close (same as always â€” this endpoint never
     talks to the broker for a fresh market sell, live or paper). That
     trade-off is fine for the documented "clean paper session before
     going live" use case, but Sprint 46I adds one exception: if the
@@ -907,11 +905,11 @@ def close_position(
     "native_oco"), we CANCEL it here first. Without that, marking the
     position closed in the repo while the exchange still has a live
     OCO order resting would create the mirror-image of the "ghost
-    position" bug this session has been fixing all along — a phantom
+    position" bug this session has been fixing all along â€” a phantom
     CLOSE instead of a phantom OPEN: the bot stops tracking it
     (exposure/mandate no longer count it) while the exchange could
     still fill that OCO order later, completely outside the bot's
-    view. NOTE: canceling the OCO does NOT sell the underlying asset —
+    view. NOTE: canceling the OCO does NOT sell the underlying asset â€”
     if this was a real LIVE position, the crypto itself is still held
     in the account, just no longer protected or tracked by the bot.
 
@@ -941,7 +939,7 @@ def close_position(
                 pass
         note = (
             "This position had a real exchange-side OCO order. The dashboard's "
-            "close action does not place a market sell — the underlying asset "
+            "close action does not place a market sell â€” the underlying asset "
             "may still be held on the exchange. Verify on binance.us directly "
             "if you intended to fully exit the market position."
         )
@@ -989,19 +987,19 @@ def close_all_positions(
     positions_path: str = "data_store/positions.json",
     fee_pct_for_asset=None,
 ) -> List[Dict]:
-    """Sprint 46H: bulk version of `close_position` — Carlos's ask:
-    "que se puedan detener las entradas que están abiertas, y así
-    quede la sesión completamente limpia" before flipping from paper
+    """Sprint 46H: bulk version of `close_position` â€” Carlos's ask:
+    "que se puedan detener las entradas que estÃ¡n abiertas, y asÃ­
+    quede la sesiÃ³n completamente limpia" before flipping from paper
     to live. Loops the SAME per-position close logic `close_position`
     already uses (repo-only close at entry_price, audit-logged as
-    MANUAL_CLOSE) — no new order logic, just applied to every open
+    MANUAL_CLOSE) â€” no new order logic, just applied to every open
     position instead of one.
 
     Same trade-off as `close_position`: this clears the LOCAL repo
     (correct and sufficient in PAPER mode, where paper positions never
     existed on a real exchange anyway). In LIVE mode this does NOT
-    place real exchange orders — see `close_position`'s docstring.
-    Carlos's stated use case is specifically "mientras esté en paper",
+    place real exchange orders â€” see `close_position`'s docstring.
+    Carlos's stated use case is specifically "mientras estÃ© en paper",
     so the dashboard should only surface this action prominently in
     paper mode (still callable in live, just not the intended flow).
 
@@ -1029,29 +1027,29 @@ def close_all_positions(
 
 
 # ----------------------------------------------------------------------
-# Manual trading pause (Sprint 46H) — dashboard Stop/Start toggle
+# Manual trading pause (Sprint 46H) â€” dashboard Stop/Start toggle
 # ----------------------------------------------------------------------
 #
 # Carlos: "en el dashboard hay manera de tener como un stop y un start?
-# para que mientras esté en paper se puedan detener las entradas que
-# están abiertas, y así quede la sesión completamente limpia y a la
+# para que mientras estÃ© en paper se puedan detener las entradas que
+# estÃ¡n abiertas, y asÃ­ quede la sesiÃ³n completamente limpia y a la
 # hora de pasarlo a live el sistema pueda correr limpio, sin la
-# posibilidad de un bug que el sistema crea que tiene alguna posición
+# posibilidad de un bug que el sistema crea que tiene alguna posiciÃ³n
 # abierta."
 #
 # Same override-file pattern as mode_override.json / *_config_override
-# .json — but checked EVERY CYCLE (not just at startup), same as
+# .json â€” but checked EVERY CYCLE (not just at startup), same as
 # mode_override.json's mandate_enabled flag: main.py's job_with_monitor
 # reads this file each cycle and, if paused, skips ONLY step 2 (new
-# entries via the normal workflow). Step 1 (PositionMonitor — SL/TP,
+# entries via the normal workflow). Step 1 (PositionMonitor â€” SL/TP,
 # smart profit-take) ALWAYS runs regardless, exactly like the existing
-# drawdown-kill-switch and capital-routing gates — pausing new entries
+# drawdown-kill-switch and capital-routing gates â€” pausing new entries
 # must never also pause protection on positions already open.
 #
 # This does NOT touch the filesystem KillSwitch (src/safety/kill_switch
 # .py) on purpose: that one is checked at bot STARTUP too and refuses
 # to even boot the trading loop while armed (main.py's kill_switch.
-# is_triggered() gate) — a much harder stop than "pause new entries,
+# is_triggered() gate) â€” a much harder stop than "pause new entries,
 # keep monitoring what's open," and arming it while positions are open
 # would leave them unprotected across a restart. This pause flag never
 # affects startup at all.
@@ -1065,7 +1063,7 @@ def _trading_pause_path(audit_path: Optional[str] = None) -> Path:
 def read_trading_pause(audit_path: Optional[str] = None) -> Dict[str, Any]:
     """Current pause state: {"paused": bool, "paused_at": float|None,
     "paused_by": str|None}. Defaults to not-paused if the file doesn't
-    exist or is malformed (fail-open — same rationale as every other
+    exist or is malformed (fail-open â€” same rationale as every other
     override file in this codebase: a missing/corrupt override file
     must fall back to normal operation, not an unexpected halt)."""
     path = _trading_pause_path(audit_path)
@@ -1092,7 +1090,7 @@ def write_trading_pause(
 ) -> Dict[str, Any]:
     """Set the pause flag. Atomic write (tmp file + `.replace()`), same
     as every other override file here. Takes effect on the bot's NEXT
-    cycle — no restart needed, unlike trading_config_override.json /
+    cycle â€” no restart needed, unlike trading_config_override.json /
     risk_config_override.json (which main.py only reads at startup)."""
     path = _trading_pause_path(audit_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1101,7 +1099,8 @@ def write_trading_pause(
         "paused_at": time.time() if paused else None,
         "paused_by": updated_by,
     }
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    tmp.replace(path)  # atomic on POSIX
+    # Sprint 46R (audit B8): use the shared atomic_write_text helper
+    # so the trading-pause state file is fsync'd before the rename.
+    atomic_write_text(path, json.dumps(data, indent=2))
     return read_trading_pause(audit_path)
+

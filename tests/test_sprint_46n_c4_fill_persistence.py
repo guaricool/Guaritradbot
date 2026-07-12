@@ -218,7 +218,13 @@ class _FakeCryptoBrokerWithFee:
             "fee": {"currency": "BTC", "cost": self.fee_cost},
         }
 
-    def create_oco_sell_order(self, symbol, amount, take_profit_price, stop_price):
+    def create_oco_sell_order(self, symbol, amount, take_profit_price, stop_price,
+                              stop_limit_buffer_pct=1.5):
+        # Sprint 46Q (audit M5): ExecutionNode now passes the configurable
+        # `stop_limit_buffer_pct` so the STOP_LOSS_LIMIT's limit price
+        # sits the configured % below the stop trigger. The fake broker
+        # accepts it as a kwarg (mirroring the real `BrokerClient` sig)
+        # so the call doesn't TypeError before the assertions can run.
         self.oco_calls.append(amount)
         return {"status": "ok", "orderListId": "123"}
 

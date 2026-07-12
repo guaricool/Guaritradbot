@@ -41,6 +41,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from src.core.atomic_write import atomic_write_text
+from src.core.logging_setup import get_logger
+
+logger = get_logger(__name__)
+
 
 # === Kelly Criterion ===
 
@@ -251,9 +256,16 @@ class DrawdownKillSwitch:
             "triggered_at": self.triggered_at,
             "saved_at": time.time(),
         }
-        tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        tmp.replace(p)
+        # Sprint 46R (audit B8): use the shared atomic_write_text
+        # helper so the kill switch state file is fsync'd before
+        # the rename. This is the exact file the audit's A1 finding
+        # was worried about ("a restart borra silenciosamente un
+        # kill switch activo") — a torn write here would defeat
+        # the persistence the audit depends on.
+        atomic_write_text(
+            p,
+            json.dumps(payload, indent=2),
+        )
 
     @classmethod
     def load(

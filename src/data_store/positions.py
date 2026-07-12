@@ -23,6 +23,11 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List, Optional
 
+from src.core.atomic_write import atomic_write_text
+from src.core.logging_setup import get_logger
+
+logger = get_logger(__name__)
+
 
 @dataclass
 class Position:
@@ -189,10 +194,14 @@ class PositionRepository:
     def _save(self):
         with self._lock:
             data = {"positions": [asdict(p) for p in self.positions], "saved_at": time.time()}
-            # Atomic write: temp + replace
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
-            tmp.replace(self.path)
+            # Atomic write: temp + fsync + replace (Sprint 46R audit B8).
+            # Uses src.core.atomic_write.atomic_write_text so a power
+            # loss between the write and the rename can't leave the
+            # rename persisted with stale/empty file contents.
+            atomic_write_text(
+                self.path,
+                json.dumps(data, indent=2, default=str),
+            )
             # Sprint 11: también escribir al volumen compartido (audit/) para
             # que el dashboard container pueda ver las posiciones. El bot
             # container NO comparte data_store/ con el dashboard, pero sí

@@ -37,6 +37,10 @@ from pathlib import Path
 from typing import Deque, Dict, List, Optional
 
 from src.data_store.positions import PositionRepository
+from src.core.atomic_write import atomic_write_text
+from src.core.logging_setup import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -253,9 +257,18 @@ def persist_tracker(tracker: EquityTracker, path: str) -> None:
         "saved_at": time.time(),
         "history": [s.to_dict() for s in tracker.history],
     }
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
-    tmp.replace(p)
+    # Sprint 46R (audit B8): use the shared atomic_write_text helper
+    # so the equity state file is fsync'd before the rename. Pre-46R
+    # the write+rename pattern was correct on POSIX (rename is
+    # atomic) but had a power-loss window: the rename could land
+    # before the data was on disk, leaving a 0-byte or stale
+    # equity_state.json that the drawdown kill switch would then
+    # silently clear (the exact failure mode audit A1 fixed for
+    # the kill switch's own state file).
+    atomic_write_text(
+        p,
+        json.dumps(payload, indent=2, default=str),
+    )
 
 
 def load_tracker(path: str, position_repo: Optional[PositionRepository] = None,

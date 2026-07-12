@@ -18,6 +18,7 @@ import sys
 import time
 import json
 import argparse
+import logging
 import threading
 
 import schedule
@@ -42,6 +43,18 @@ from src.safety.mandate_gate import MandateGate, MandateConfig
 from src.data_store.positions import PositionRepository
 from src.data_store.position_monitor import PositionMonitor
 from src.agents.researchers import DebateAgent
+from src.core.logging_setup import setup_logging
+
+# Sprint 46R (audit B9): configure the root logger once at
+# startup. Every module that does `logger = get_logger(__name__)`
+# inherits this config; every print() in the codebase keeps
+# working unchanged (Python's print() writes to stdout, the
+# StreamHandler also writes to stdout, so they coexist).
+# The migration of the remaining ~221 print() calls is
+# tracked as a follow-up series — the framework is in place
+# for the critical-path files to opt in incrementally.
+setup_logging(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def _audit_path(config: dict) -> str:
