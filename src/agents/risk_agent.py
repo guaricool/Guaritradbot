@@ -44,6 +44,7 @@ from src.data.asset_allocation import (
 from src.analysis.asset_correlation import analyze_assets
 from src.analysis.stress_test import stress_portfolio_all_scenarios, worst_case_drawdown
 from src.analysis.tail_risk import compute_portfolio_tail_risk
+from src.safety.kelly_drawdown import KellyConfig, kelly_fraction
 
 
 class RiskManagerAgent:
@@ -113,6 +114,22 @@ class RiskManagerAgent:
         # bot open a simultaneous BTC-USD long + short every cycle,
         # committing the whole account and producing unclosable pairs.
         block_conflicting_asset_positions: bool = True,
+        # Sprint 46S (audit Taleb #2 / Munger #11): Kelly fractional
+        # sizing as an OPT-IN replacement for the fixed
+        # `risk_per_trade_pct` (default 1%). When enabled, the risk
+        # per trade is derived from the configured R:R ratio and an
+        # assumed win probability (configurable; default 0.55 is
+        # conservative for a system with no validated track record).
+        # The Kelly-derived fraction is HARD-CAPPED at
+        # `kelly_max_risk_pct` (default 5%) to prevent the
+        # "concave Kelly in a 1.0-fraction regime" tail where an
+        # inflated win_prob estimate would size a single trade at
+        # 10%+ of bankroll. Default OFF so existing paper/live
+        # behavior is preserved until Carlos flips the toggle.
+        kelly_sizing_enabled: bool = False,
+        kelly_fractional_multiplier: float = 0.25,
+        kelly_assumed_win_prob: float = 0.55,
+        kelly_max_risk_pct: float = 5.0,
         # Sprint 46N (audit C1/C2): route position-REPLACEMENT closes by
         # asset class (crypto → broker_client, equity → alpaca_broker)
         # instead of always calling broker_client, and never place a
@@ -143,6 +160,10 @@ class RiskManagerAgent:
         # `_fee_pct_for_asset` closure PositionMonitor already uses.
         # None (the default) preserves the old fee-free behavior.
         fee_pct_for_asset=None,
+        # Sprint 46S (audit Taleb #2 / Munger #11): Kelly fractional
+        # sizing kwargs. Storing the values here so the sizing path
+        # can read them. See the `kelly_sizing_enabled` constructor
+        # kwarg docstring above for the full opt-in rationale.
     ):
         self.broker = broker_client
         self.risk_per_trade_pct = risk_per_trade_pct
@@ -162,6 +183,14 @@ class RiskManagerAgent:
         self.mandate = mandate_gate
         self.audit = audit
         self.position_repo = position_repo
+        # Sprint 46S (audit Taleb #2 / Munger #11): store the
+        # Kelly-sizing config. Default OFF; the sizing path checks
+        # `self.kelly_sizing_enabled` and falls through to the
+        # original fixed `risk_per_trade_pct` path when False.
+        self.kelly_sizing_enabled = kelly_sizing_enabled
+        self.kelly_fractional_multiplier = kelly_fractional_multiplier
+        self.kelly_assumed_win_prob = kelly_assumed_win_prob
+        self.kelly_max_risk_pct = kelly_max_risk_pct
         # Sprint 18: portfolio management
         self.enable_position_replacement = enable_position_replacement
         # New hypothesis must score at least +20% above the worst open position
@@ -548,7 +577,84 @@ class RiskManagerAgent:
                 take_profit = entry_price - tp_distance
 
             # --- Position sizing: qty = risk / distance ---
-            risk_amount_usd = account_balance * (self.risk_per_trade_pct / 100.0)
+            #
+            # Sprint 46S (audit Taleb #2 / Munger #11): when Kelly
+            # sizing is enabled, replace the fixed `risk_per_trade_pct`
+            # with a Kelly fractional derived from the configured
+            # R:R ratio (`risk_reward_ratio`) and an assumed win
+            # probability. Kelly is the convex sizing function that
+            # Taleb/Thorp call the only guaranteed-positive-return
+            # improvement with edge -- a fixed 1% bet can't grow with
+            # positive expectancy, but Kelly-sized bets can.
+            #
+            # Wiring is conservative:
+            #   - opt-in (`kelly_sizing_enabled=False` by default --
+            #     all existing behavior preserved)
+            #   - hard cap at `kelly_max_risk_pct` (default 5%) so a
+            #     miscalibrated win_prob estimate can't blow past the
+            #     `max_capital_per_trade_pct` safety cap
+            #   - explicit AUDIT_KELLY_SIZED event on every Kelly-sized
+            #     trade so you can correlate the new sizing behavior
+            #     with realized P&L in the audit ledger
+            effective_risk_pct = self.risk_per_trade_pct
+            if self.kelly_sizing_enabled:
+                kelly_cfg = KellyConfig(
+                    fractional_multiplier=self.kelly_fractional_multiplier,
+                    # min_edge=0 to avoid silently rejecting trades
+                    # that pass the strategy's other filters but
+                    # don't meet an arbitrary Kelly minimum -- the
+                    # strategy is the gate, Kelly is just the size.
+                    min_edge=0.0,
+                    # No minimum win_prob floor here either -- the
+                    # operator's `kelly_assumed_win_prob` IS the
+                    # input; gating on a separate minimum would be a
+                    # second opinion that can fight the first.
+                    min_win_prob=0.0,
+                    # Position cap is the caller's responsibility
+                    # (max_capital_per_trade_pct below), so don't
+                    # pre-cap Kelly at 20% of bankroll.
+                    max_position_pct=1.0,
+                )
+                kelly_pct_of_bankroll = kelly_fraction(
+                    win_prob=self.kelly_assumed_win_prob,
+                    # Use the configured R:R as avg_win/avg_loss
+                    # proxy (the bot's strategy signals are R:R
+                    # targets, not free-form expected values).
+                    avg_win=self.risk_reward_ratio,
+                    avg_loss=1.0,
+                    cfg=kelly_cfg,
+                )
+                kelly_risk_pct = kelly_pct_of_bankroll * 100.0
+                # Hard cap at kelly_max_risk_pct so a miscalibrated
+                # win_prob can't size a single trade above the
+                # operator-set ceiling. ALSO bounded above by the
+                # pre-existing `risk_per_trade_pct` -- Kelly is
+                # allowed to scale the operator's risk DOWN, never
+                # UP. This bot has been run on 1% risk for months;
+                # flipping Kelly on with a 0.55 win_prob would
+                # otherwise inflate a $20 account's per-trade risk
+                # from $0.20 to $1.00, which is exactly the silent
+                # inflation the auto-adjust gate guards against
+                # (audit A2) and which the operator never asked
+                # for. The conservative default behavior: Kelly
+                # reduces position size when edge is small, never
+                # grows it past the operator's existing ceiling.
+                effective_risk_pct = min(
+                    kelly_risk_pct,
+                    self.kelly_max_risk_pct,
+                    self.risk_per_trade_pct,
+                )
+                if self.audit:
+                    self.audit.append("KELLY_SIZED", {
+                        "asset": h.get("asset"),
+                        "kelly_pct_of_bankroll": round(kelly_pct_of_bankroll, 6),
+                        "kelly_risk_pct": round(kelly_risk_pct, 4),
+                        "effective_risk_pct": round(effective_risk_pct, 4),
+                        "configured_risk_pct": self.risk_per_trade_pct,
+                        "assumed_win_prob": self.kelly_assumed_win_prob,
+                        "fractional_multiplier": self.kelly_fractional_multiplier,
+                    })
+            risk_amount_usd = account_balance * (effective_risk_pct / 100.0)
             quantity = risk_amount_usd / stop_distance
 
             # --- Cap por max_capital_per_trade_pct ---
