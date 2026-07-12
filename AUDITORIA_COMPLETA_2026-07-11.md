@@ -205,7 +205,7 @@ Contenedores en UTC sin `TZ`; nada limita la generación de señales de acciones
 Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against_policy` (`asset_allocation.py:212-254`) hace los pesos grumosos: una segunda posición cripto es "100% > cap 50%" hasta que haya ≥$20 en otras clases; GLD/USO (cap 20%) son **imposibles hasta tener ≥5 posiciones abiertas**. El comportamiento "diversificado" configurado no puede materializarse a este tamaño de cuenta.
 
 ### M16 — Profit-take inteligente con señales viejas
-`main.py:919-931` alimenta `check_with_signals` con hipótesis de hasta 1h de antigüedad del audit log contra precios frescos — la reversión puede estar ya invalidada.
+`main.py:919-931` alimenta `check_with_signals` con hipótesis de hasta 1h de antigüedad del audit log contra precios frescos — la reversión puede estar ya invalidada. ✅ **CERRADO Sprint 46R** (commit `b318cf1`): dos capas de fix. (1) main.py lee `smart_profit_take_max_signal_age_s` (default 300s = 5 min) del config en vez de hardcoded 3600s. (2) `position_monitor.check_with_signals` defensivamente filtra signals más viejos que `max_signal_age_s` en su frontera, y descarta signals sin `ts` (no se puede verificar edad = no se actúa). 8 tests en `test_sprint_46r_m16_fresh_signals.py`.
 
 ---
 
@@ -280,7 +280,7 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 29. **M15**: adaptar la política de allocation al tamaño real de la cuenta (o desactivar caps imposibles).
 30. ✅ **CERRADO** (commit `bb5d763` Sprint 46N follow-up): `_is_us_equity_market_open()` con `pytz/America/New_York` (Mon-Fri 09:30-16:00) y `_resample_ohlcv(..., asset=...)` con wall-clock completeness check para equities/ETFs. Holiday calendar no cubierto (queda bajo M12).
 31. **B5**: decidir sobre ETH/SOL — agregar estrategia + workflow, o quitarlos del config.
-32. **B1/M16/B10**: piso para el TP ✅, señales frescas para el profit-take (M16), revisar la economía del reemplazo (B10).
+32. ✅ **B1/M16 parcial**; **B10** sigue. B1: piso para el TP ✅, M16: señales frescas para el profit-take ✅ (`smart_profit_take_max_signal_age_s=300`), B10: revisar la economía del reemplazo.
 
 ---
 
@@ -350,6 +350,7 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 | B1 | 46R | `d0f9c7e` | `tp_distance = max(atr*mult, entry*0.005)` — TP floor mirrors stop's 0.5% floor |
 | M9 (parcial) | 46R | `6c20df3` | `last_errors` → `deque(maxlen=50)` + generic exception path publishes SYSTEM_ERROR (mirror del branch WorkflowAgentFaultError) |
 | M9 (resto) | 46R | `948d169` | `engine.py` rechaza `result is None` con `WorkflowStepReturnedNoneError` (unless `optional: true`); `_check_depends_on` también verifica `state[dep] is not None` |
+| M16 | 46R | `b318cf1` | `smart_profit_take_max_signal_age_s=300` + `check_with_signals` defensivamente filtra signals más viejos que `max_signal_age_s` y descarta signals sin `ts` |
 | **B9** (parcial) | 46R | `8fb3f16` | **framework `logging_setup` + get_logger en `main.py` + 3 archivos críticos migrados** (4 tests); ~218 `print()` restantes como follow-up |
 
 ### PENDIENTES (no tocados en Sprints 46N-46R)
@@ -359,6 +360,7 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 | M4 (resample) | ✅ Cerrado por `bb5d763` Sprint 46N follow-up. Equities ya tienen staleness + 4h-bucket aware de NYSE/Nasdaq. Holiday calendar queda bajo M12. |
 | M6 (BotRuntime refactor) | Fase 3 #24 — main.py sigue siendo god-file (75K LOC) |
 | M9 (resto) | ✅ Cerrado por `948d169`: `engine.py` rechaza `result is None`; `_check_depends_on` trata None como "step no produjo data". 16 tests totales en 2 archivos. |
+| M16 | ✅ Cerrado por `b318cf1`: `smart_profit_take_max_signal_age_s=300` en config + `check_with_signals` defensivamente filtra signals viejos. 8 tests. |
 | M11.5 (backup volumen) | ✅ Cerrado por ops en el VPS — cron diario a las 03:17, 14 días retención, script en `/root/scripts/backup_bot_state.sh`, log en `/var/log/guaritradbot-backup.log`. |
 | M1 (debate recalibración) | Fase 4 #28 |
 | M15 (allocation scaling) | Fase 4 #29 |
