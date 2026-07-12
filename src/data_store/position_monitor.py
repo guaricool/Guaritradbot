@@ -50,6 +50,18 @@ class PositionMonitor:
         event_bus=None,
         broker=None,
         min_profit_to_protect: float = 0.0,
+        # Sprint 46O (audit M2): multiplier applied on top of the
+        # round-trip fee when computing the effective "minimum profit
+        # to protect" floor. Default 2.0 = require gross profit to
+        # clear 2x the round-trip fee before allowing a
+        # SMART_PROFIT_TAKE close, so a $0.01 gross profit on a $10
+        # position (~$0.004 round-trip on the real 0.02% binance.us
+        # tier — but ~$0.04 at the conservative 0.1% configured
+        # default) never triggers a NET realized loss. The audit's
+        # exact wording: "min_profit_to_protect ≥ 2× fee". 1.0 would
+        # reproduce the pre-fix behavior (1x fee, breakeven after
+        # fees — every basis point of slippage becomes a loss).
+        min_profit_fee_multiplier: float = 2.0,
         fee_pct_for_asset=None,
         # Sprint 46N (audit C1/C2): route closes by asset class instead
         # of always hitting `broker` (the crypto client), and never send
@@ -104,6 +116,11 @@ class PositionMonitor:
         self.event_bus = event_bus
         self.broker = broker
         self.min_profit_to_protect = min_profit_to_protect
+        # Clamp the multiplier to a sane range: 0 means "don't pad fee
+        # at all" (pre-Sprint-46O behavior — only useful for tests
+        # asserting that exact path); values above 10x are almost
+        # certainly a typo. Negative makes no economic sense.
+        self.min_profit_fee_multiplier = max(0.0, min(float(min_profit_fee_multiplier), 10.0))
         self.fee_pct_for_asset = fee_pct_for_asset
         self.alpaca_broker = alpaca_broker
         self.brokers_config = brokers_config or {}
@@ -291,7 +308,16 @@ class PositionMonitor:
             round_trip_fee = (
                 (pos.entry_price * pos.qty) + (price * pos.qty)
             ) * fee_pct if fee_pct else 0.0
-            effective_min_profit = max(self.min_profit_to_protect, round_trip_fee)
+            # Sprint 46O (audit M2): pad the round-trip fee with the
+            # configured multiplier (default 2.0x) so a SMART_PROFIT_TAKE
+            # close always nets strictly more than 0 after fees — the
+            # pre-fix 1x floor was the exact breakeven point and any
+            # basis point of slippage or rounding turned it into a
+            # realized loss. Higher multiplier = more conservative
+            # (skips marginal profits); lower = more aggressive
+            # (catches more reversals but risks fee-negative closes).
+            fee_adjusted_min = round_trip_fee * self.min_profit_fee_multiplier
+            effective_min_profit = max(self.min_profit_to_protect, fee_adjusted_min)
             if upnl <= effective_min_profit:
                 # No hay profit que proteger (neto de fees)
                 continue

@@ -127,6 +127,64 @@ class BrokerClient:
             print(f"[BrokerClient] -> Error ejecutando orden: {e}")
             return {"status": "failed", "error": str(e)}
 
+    def fetch_fee_rate(self, symbol: str = None) -> tuple[float | None, float | None]:
+        """Sprint 46O (audit M2): auto-detect THIS account's actual
+        maker/taker fee from the broker.
+
+        Why: config.yaml's `crypto_taker_fee_pct` (default 0.001 = 0.1%)
+        is a *guess* about the user's fee tier. On binance.us the real
+        per-account rate depends on BNB holdings + 30-day volume and
+        ranges from ~0.02% to ~0.6%. The break-even on a $10 round-trip
+        changes 30x between those, so a strategy that looks profitable
+        with the configured 0.1% can actually be a fee-loser at 0.6%,
+        or look 5x worse than reality at 0.02% (also bad — caps
+        min_profit_to_protect too high, blocks legitimate closes).
+
+        How: binance.us publishes the user's per-account commission
+        tier inside `fetch_balance()['info']['commissionRates']`
+        (taker/maker/buyer/seller as decimal fractions). Some older
+        accounts only return `takerCommission` / `makerCommission` in
+        basis points (e.g. "2" = 0.02%) — we fall back to those and
+        convert. Both are SIGNED: 0.00020000 means you PAY 0.02%.
+
+        Returns:
+            (maker_pct, taker_pct) as decimal fractions (0.0002 = 0.02%).
+            Returns (None, None) on any failure — the caller should
+            fall back to the configured value with a WARNING, not
+            silently assume the broker is free.
+
+        Never raises (this is a best-effort diagnostic that must not
+        break startup if the broker endpoint is rate-limited or
+        temporarily down).
+        """
+        try:
+            bal = self.exchange.fetch_balance()
+            info = bal.get("info", {}) if isinstance(bal, dict) else {}
+            rates = info.get("commissionRates", {}) if isinstance(info, dict) else {}
+            maker = rates.get("maker")
+            taker = rates.get("taker")
+            # Fallback: older shape uses basis points (e.g. "2" = 0.02%).
+            if taker is None:
+                taker_bps = info.get("takerCommission")
+                if taker_bps is not None:
+                    try:
+                        taker = float(taker_bps) / 10000.0
+                    except (TypeError, ValueError):
+                        pass
+            if maker is None:
+                maker_bps = info.get("makerCommission")
+                if maker_bps is not None:
+                    try:
+                        maker = float(maker_bps) / 10000.0
+                    except (TypeError, ValueError):
+                        pass
+            if maker is not None and taker is not None:
+                return (float(maker), float(taker))
+            return (None, None)
+        except Exception as e:
+            print(f"[BrokerClient] ⚠️ fetch_fee_rate falló ({type(e).__name__}: {e})")
+            return (None, None)
+
     def get_ticker_price(self, symbol: str) -> float | None:
         """Sprint 46N (audit A7): live price for SL/TP trigger comparisons.
 

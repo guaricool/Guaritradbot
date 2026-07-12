@@ -72,6 +72,16 @@ trading:
   enable_position_replacement: true        # if max_open reached, try to replace worst with better signal
   replacement_score_threshold: 0.20        # new signal must score at least +0.20 above worst open position
   min_profit_to_protect: 0.0               # USD; if open position has unrealized >= this AND reversal signal, smart-close
+  # Sprint 46O (audit M2): multiplier on top of the round-trip fee
+  # when computing the "effective minimum profit" floor for
+  # SMART_PROFIT_TAKE closes. 2.0 = require gross profit to clear
+  # 2x the round-trip fee before allowing an early reversal close,
+  # so the bot never realises a NET loss on a fee when an operator
+  # leaves min_profit_to_protect at the 0.0 default. The audit's
+  # exact wording: "min_profit_to_protect ≥ 2× fee". Lower this
+  # toward 1.0 only if you've deliberately accepted the breakeven
+  # risk (e.g. very low fee tier + small account).
+  min_profit_fee_multiplier: 2.0
   # Sprint 46I: place a REAL OCO (stop-loss + take-profit) order on
   # binance.us at entry time for crypto LONG positions, instead of
   # relying only on the bot polling prices each cycle. The exchange

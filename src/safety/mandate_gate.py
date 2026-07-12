@@ -174,6 +174,25 @@ class MandateGate:
         asset = trade_proposal.get("asset", "")
         notional = float(trade_proposal.get("notional_usd", 0.0))
         risk = float(trade_proposal.get("risk_usd", 0.0))
+        # Sprint 46O (audit M2): prefer the all-in cost (notional +
+        # entry fee) when sizing the cap checks. The fee is debited
+        # from the asset bought on binance.us, but the USD cash side
+        # of the trade still pays it — the account's available cash
+        # drops by notional+entry_fee, not just notional. Pre-fix, the
+        # mandate's caps systematically undercounted real capital
+        # tied up by 0.02-0.1% per trade (depending on the user's
+        # tier). On a $20 account with 0.1% fee this lets the cap
+        # leak 1 extra cent of exposure per trade — tiny, but the
+        # audit asked for the fix and it's strictly more correct.
+        # Falls back to `notional` for proposals that don't carry the
+        # new field (e.g. older callers, tests, the API path) so we
+        # never fail-closed on a missing field.
+        notional_with_fees = float(
+            trade_proposal.get(
+                "notional_with_fees_usd",
+                notional + float(trade_proposal.get("entry_fee_usd", 0.0) or 0.0),
+            )
+        )
 
         # Sprint 43 C3 fix: reject NaN/Inf BEFORE running the cap checks.
         # Python's `NaN > x` returns False, so a NaN notional would
@@ -195,17 +214,19 @@ class MandateGate:
                 reason=f"symbol_not_allowed:{asset}",
             )
 
-        # 2. Per-trade size
-        if notional > self.config.max_position_usd:
+        # 2. Per-trade size (use notional+fee, not just notional).
+        if notional_with_fees > self.config.max_position_usd:
             verdict = MandateVerdict(
                 ok=False,
-                reason=f"notional_exceeds_max:${notional:.2f}>${self.config.max_position_usd:.2f}",
+                reason=f"notional_exceeds_max:${notional_with_fees:.2f}>${self.config.max_position_usd:.2f}",
             )
             self._publish_system_error("MANDATE_NOTIONAL_EXCEEDED", {
                 "asset": asset,
                 "notional_usd": notional,
+                "notional_with_fees_usd": notional_with_fees,
+                "entry_fee_usd": trade_proposal.get("entry_fee_usd", 0.0),
                 "max_position_usd": self.config.max_position_usd,
-                "error": f"🚫 Mandate reject: {asset} notional ${notional:.2f} > max ${self.config.max_position_usd:.2f}",
+                "error": f"🚫 Mandate reject: {asset} notional+fees ${notional_with_fees:.4f} > max ${self.config.max_position_usd:.2f}",
             })
             return verdict
 
@@ -251,9 +272,12 @@ class MandateGate:
             })
             return verdict
 
-        # 4. Total exposure (open positions + este trade) — REAL exposure (Sprint 18 fix)
+        # 4. Total exposure (open positions + este trade) — REAL exposure (Sprint 18 fix).
+        # Use notional+fees for the projected total so a series of
+        # near-cap trades can't collectively overflow the cap by the
+        # accumulated entry fees (Sprint 46O / audit M2).
         open_exp = self._open_exposure_usd()
-        projected = open_exp + notional
+        projected = open_exp + notional_with_fees
         if projected > self.config.max_total_exposure_usd:
             verdict = MandateVerdict(
                 ok=False,
@@ -264,6 +288,7 @@ class MandateGate:
                 "asset": asset,
                 "open_exposure_usd": open_exp,
                 "trade_notional_usd": notional,
+                "trade_notional_with_fees_usd": notional_with_fees,
                 "projected_exposure_usd": projected,
                 "max_total_exposure_usd": self.config.max_total_exposure_usd,
                 "error": (f"📊 Exposure cap: {asset} blocked. "

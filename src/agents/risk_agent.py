@@ -744,6 +744,35 @@ class RiskManagerAgent:
                 "balance_source": balance_source,
             }
 
+            # Sprint 46O (audit M2): include the entry-side exchange fee
+            # in the trade proposal so the mandate and the audit trail
+            # can account for it. Before this fix, notional_usd
+            # described what the bot INTENDED to spend, but the
+            # realized capital outlay on binance.us is notional + fee
+            # (the fee is debited from the asset bought, so for a $10
+            # BTC buy at 0.02% taker the actual cash leaving the USD
+            # balance is $10.002, and the BTC received is worth $9.998
+            # at the same price). On a small account the difference is
+            # noise per-trade, but it makes the per-trade exposure
+            # reported by the mandate systematically undercount the
+            # real cash tied up, and the cap on max_daily_trades
+            # effectively allows 1 extra trade per 50x fee-pct — not
+            # catastrophic, but easy to fix and a step the audit
+            # explicitly asked for ("el fee de entrada tampoco está en
+            # el sizing ni en el mandato").
+            try:
+                entry_fee_pct = self._fee_pct(h["asset"])
+            except Exception:
+                entry_fee_pct = 0.0
+            entry_fee_usd = round(float(notional) * entry_fee_pct, 6)
+            trade["entry_fee_usd"] = entry_fee_usd
+            trade["entry_fee_pct"] = entry_fee_pct
+            # All-in cost the account actually has to cover to enter
+            # this position (notional + entry fee). The mandate uses
+            # this for caps so the limits reflect real cash, not the
+            # idealised notional.
+            trade["notional_with_fees_usd"] = round(float(notional) + entry_fee_usd, 4)
+
             # --- Sprint 1: Mandate gate ---
             if self.mandate is not None:
                 verdict = self.mandate.validate(trade)

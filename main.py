@@ -486,6 +486,12 @@ def main():
     enable_position_replacement = trading_cfg.get("enable_position_replacement", True)
     replacement_score_threshold = float(trading_cfg.get("replacement_score_threshold", 0.20))
     min_profit_to_protect = float(trading_cfg.get("min_profit_to_protect", 0.0))
+    # Sprint 46O (audit M2): multiplier on top of the round-trip fee
+    # when computing the effective "minimum profit to protect" floor
+    # in PositionMonitor.check_with_signals. 2.0 = require gross
+    # profit to clear 2x the round-trip fee before allowing a
+    # SMART_PROFIT_TAKE close (the audit's exact recommendation).
+    min_profit_fee_multiplier = float(trading_cfg.get("min_profit_fee_multiplier", 2.0))
     # Sprint 46J: real binance.us taker fee (ONE-WAY, as a fraction —
     # e.g. 0.001 = 0.1%), charged on BOTH the entry and exit notional
     # when a crypto position closes (PositionRepository.close_position's
@@ -574,6 +580,68 @@ def main():
         print("[Init] ALPACA_API_KEY/ALPACA_SECRET_KEY no configuradas. Bot en modo crypto-only (equity signals fallarán con ALPACA_NOT_CONFIGURED).")
 
     brokers_config = config.get("brokers", {}) or {}
+
+    # Sprint 46O (audit M2): auto-detect the LIVE account's actual
+    # maker/taker fee from the broker and compare it to the configured
+    # `crypto_taker_fee_pct`. The audit found we were assuming 0.1%
+    # taker without ever checking — on a real binance.us account
+    # the tier can range from 0.02% to 0.6% depending on BNB
+    # holdings + 30-day volume, and that 30x range dramatically
+    # changes whether any given strategy is actually profitable
+    # after fees. We only WARN here (we do NOT auto-override the
+    # config — the operator should consciously pick their tier);
+    # if the live tier differs from the configured tier by more
+    # than 10% of itself, we audit `FEE_TIER_MISMATCH` so the event
+    # shows up in the dashboard's audit feed. Same fail-open
+    # philosophy as every other best-effort diagnostic at startup:
+    # a broker that's down or rate-limited must NOT block the bot
+    # from booting.
+    if broker_client is not None and hasattr(broker_client, "fetch_fee_rate"):
+        try:
+            detected_maker, detected_taker = broker_client.fetch_fee_rate()
+            if detected_maker is not None and detected_taker is not None:
+                cfg_taker = float(trading_cfg.get("crypto_taker_fee_pct", 0.001))
+                diff_pct = (
+                    abs(detected_taker - cfg_taker) / cfg_taker * 100.0
+                    if cfg_taker > 0
+                    else 0.0
+                )
+                print(
+                    f"[Init] 📊 binance.us fee tier detected: "
+                    f"maker={detected_maker*100:.4f}% taker={detected_taker*100:.4f}% "
+                    f"(config: {cfg_taker*100:.4f}% taker, diff {diff_pct:+.1f}%)"
+                )
+                if diff_pct > 10.0:
+                    msg = (
+                        f"⚠️ Live binance.us taker fee ({detected_taker*100:.4f}%) "
+                        f"differs from config crypto_taker_fee_pct "
+                        f"({cfg_taker*100:.4f}%) by {diff_pct:.1f}%. "
+                        f"Break-even on round-trips will be "
+                        f"{detected_taker/cfg_taker:.1f}x the bot's assumed cost — "
+                        f"update config.yaml or accept the more "
+                        f"{'conservative' if detected_taker > cfg_taker else 'aggressive'} "
+                        f"estimate."
+                    )
+                    print(f"[Init] {msg}")
+                    if audit is not None:
+                        try:
+                            audit.append("FEE_TIER_MISMATCH", {
+                                "config_taker_pct": cfg_taker,
+                                "detected_taker_pct": detected_taker,
+                                "detected_maker_pct": detected_maker,
+                                "diff_pct": round(diff_pct, 2),
+                                "asset_class": "crypto",
+                                "broker": "binance.us",
+                                "source": "fetch_balance().info.commissionRates",
+                            })
+                        except Exception as _e:
+                            print(f"[Init] ⚠️ No pude auditar FEE_TIER_MISMATCH: {_e}")
+            else:
+                print("[Init] ℹ️ No pude auto-detectar el fee tier de binance.us "
+                      "(fetch_fee_rate() devolvió None); usando config crypto_taker_fee_pct.")
+        except Exception as _e:
+            print(f"[Init] ⚠️ Auto-detección de fee tier falló: {type(_e).__name__}: {_e}; "
+                  f"sigo con el valor del config.")
 
     # Sprint 12: mode_override.json takes precedence over config.yaml.
     # The dashboard writes here when the user toggles PAPER/LIVE.
@@ -859,6 +927,11 @@ def main():
         event_bus=event_bus,
         broker=broker_client,
         min_profit_to_protect=min_profit_to_protect,
+        # Sprint 46O (audit M2): 2x round-trip fee pad on
+        # SMART_PROFIT_TAKE so the bot never realises a net loss
+        # from fees alone when an operator leaves
+        # min_profit_to_protect at the 0.0 default.
+        min_profit_fee_multiplier=min_profit_fee_multiplier,
         fee_pct_for_asset=_fee_pct_for_asset,
         # Sprint 46N (audit C1/C2): route closes by asset class + never
         # send a real order in paper mode.
