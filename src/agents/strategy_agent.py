@@ -36,6 +36,11 @@ import numpy as np
 # use — a genuinely new information source, not a re-parameterization
 # of an existing one.
 from src.analysis.alpha_factors import latest_alpha_snapshot
+# Sprint 46S (audit M1 follow-up): needed to filter out crypto "short"
+# hypotheses before they reach the Debate Agent — see the
+# `allow_crypto_short` filtering block at the end of
+# `evaluate_strategies` below for the full rationale.
+from src.data.asset_class import get_asset_class, AssetClass
 
 
 def _was_in_zone_recently(series: pd.Series, threshold: float, lookback: int = 5, direction: str = "below") -> bool:
@@ -208,7 +213,8 @@ class StrategyAgent:
     """
 
     def __init__(self, strategy_params: dict = None, audit=None, ml_predictors: dict = None,
-                 ml_long_threshold: float = 0.6, ml_short_threshold: float = 0.4):
+                 ml_long_threshold: float = 0.6, ml_short_threshold: float = 0.4,
+                 allow_crypto_short: bool = False):
         self.params = strategy_params or {
             "rsi_oversold": 30,         # cruce estricto
             "rsi_overbought": 70,
@@ -232,6 +238,21 @@ class StrategyAgent:
         self.ml_predictors = ml_predictors or {}
         self.ml_long_threshold = ml_long_threshold
         self.ml_short_threshold = ml_short_threshold
+        # Sprint 46S (audit M1 follow-up): mirrors RiskManagerAgent's
+        # `allow_crypto_short` (default False — binance.us spot has no
+        # margin/borrow, so a crypto "short" hypothesis can never
+        # actually execute). Before this, StrategyAgent generated crypto
+        # short hypotheses same as any other, the DebateAgent spent a
+        # full cycle scoring/approving one, and ONLY THEN did
+        # RiskManagerAgent's `validate_and_size` reject it as
+        # `crypto_short_not_supported` — by which point the cycle's
+        # only other candidate (the long side) may have already lost
+        # the debate on its own merits, so the bot took zero trades
+        # that hour even though a non-crypto-short cycle might have
+        # let the debate focus solely on the executable long. See
+        # `evaluate_strategies`'s filtering block below for where this
+        # is actually applied.
+        self.allow_crypto_short = allow_crypto_short
 
     def _add_hyp(self, hypotheses, asset, tf, direction, strategy, price, **extras):
         hypotheses.append({
@@ -715,6 +736,62 @@ class StrategyAgent:
             seen.add(key)
             deduped.append(h)
         hypotheses = deduped
+
+        # ============================================================
+        # Sprint 46S (audit M1 follow-up) — drop crypto "short"
+        # hypotheses BEFORE the Debate Agent ever sees them.
+        #
+        # binance.us spot has no margin/borrow, so a crypto short was
+        # never a real exchange position — RiskManagerAgent already
+        # rejects these as `crypto_short_not_supported` (Sprint 46M),
+        # but that rejection happens AFTER `debate_hypotheses`, which
+        # means every cycle with a crypto short candidate spent real
+        # debate work approving a trade that could never execute. Live
+        # audit evidence (2026-07-12, ~10:21 and ~11:21 cycles): BTC-USD
+        # generated a Resistance_Fade SHORT (4h) and a MACD_BullCross
+        # LONG (1h) every hour; the debate approved the short and
+        # rejected the long on its own merits — net zero trades that
+        # hour, even though nothing was actually wrong with the market
+        # data or the bot's health. Filtering here instead of only in
+        # RiskManagerAgent means the debate's attention (and the audit
+        # trail) focuses on hypotheses that can actually be executed.
+        # `allow_crypto_short=True` (opt-in, e.g. once real margin/
+        # futures trading is wired in) disables this filter entirely,
+        # mirroring RiskManagerAgent's own flag of the same name.
+        # ============================================================
+        if not self.allow_crypto_short:
+            kept = []
+            suppressed = []
+            for h in hypotheses:
+                if h["direction"] == "short" and get_asset_class(h["asset"]) == AssetClass.CRYPTO:
+                    suppressed.append(h)
+                else:
+                    kept.append(h)
+            if suppressed:
+                for h in suppressed:
+                    print(
+                        f"  🚫 {h['asset']:8} short — crypto_short_not_supported "
+                        f"(binance.us spot, no margin) — suprimida antes del debate "
+                        f"(via {h['strategy']})"
+                    )
+                    if self.audit is not None:
+                        self.audit.append("HYPOTHESIS_SUPPRESSED", {
+                            "asset": h["asset"],
+                            "tf": h.get("tf", ""),
+                            "direction": h["direction"],
+                            "strategy": h["strategy"],
+                            "price": h["price"],
+                            "reason": "crypto_short_not_supported",
+                            "detail": (
+                                "binance.us spot has no margin/borrow; a short "
+                                "here is not a real exchange position. Suppressed "
+                                "before the debate stage instead of wasting a "
+                                "debate cycle on it. Set trading.allow_crypto_short"
+                                "=true only if real margin/futures trading is "
+                                "wired in."
+                            ),
+                        })
+            hypotheses = kept
 
         if hypotheses:
             print(f"[StrategyAgent] → {len(hypotheses)} hipótesis nuevas:")

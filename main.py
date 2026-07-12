@@ -978,7 +978,16 @@ def main():
 
     registry = {
         "MarketAnalystAgent": MarketAnalystAgent(event_bus=event_bus, audit=audit),
-        "StrategyAgent": StrategyAgent(strategy_params=strategy_params, audit=audit),
+        "StrategyAgent": StrategyAgent(
+            strategy_params=strategy_params, audit=audit,
+            # Sprint 46S (audit M1 follow-up): same flag RiskManagerAgent
+            # gets below — suppress crypto short hypotheses before the
+            # debate stage instead of letting RiskManagerAgent reject
+            # them after a wasted debate cycle. See strategy_agent.py's
+            # `evaluate_strategies` filtering block for the full
+            # rationale.
+            allow_crypto_short=allow_crypto_short,
+        ),
         "RiskManagerAgent": RiskManagerAgent(
             broker_client=broker_client,
             risk_per_trade_pct=risk_per_trade_pct,
