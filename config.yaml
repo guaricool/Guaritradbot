@@ -96,6 +96,26 @@ trading:
   # signals count); higher = more lenient (accepts older signals
   # at the cost of acting on potentially stale info).
   smart_profit_take_max_signal_age_s: 300
+  # Sprint 46R (audit B2): minimum strength for a reversal signal
+  # to trigger a SMART_PROFIT_TAKE close. Pre-46R, main.py hard-
+  # coded `signal_min_strength=0.6`. Now this is a config knob —
+  # the audit's complaint: "numeros magicos fuera de config:
+  # signal_min_strength=0.6 (main.py:930)". Range 0..1; higher =
+  # stricter (only strong reversal signals close a profitable
+  # position), lower = more aggressive (any reversal hint counts).
+  smart_profit_take_min_signal_strength: 0.6
+  # Sprint 46R (audit B2): the SL/TP minimum-distance floor as a
+  # percent of entry price. Pre-46R (and pre-46R audit B1), this
+  # was hard-coded `entry_price * 0.005` in risk_agent.py — when
+  # ATR was near 0, the SL/TP would collapse to 0.5% of entry
+  # (B1 fix). Now this is a config knob, so an operator can
+  # tighten/loosen the floor per market. The audit's complaint:
+  # "numeros magicos fuera de config: ... entry_price * 0.005".
+  # SL and TP can have different floors - in practice they're
+  # the same (B1's symmetric floor), but exposed separately in
+  # case asymmetric risk management is wanted.
+  min_sl_floor_pct: 0.005
+  min_tp_floor_pct: 0.005
   # Sprint 46I: place a REAL OCO (stop-loss + take-profit) order on
   # binance.us at entry time for crypto LONG positions, instead of
   # relying only on the bot polling prices each cycle. The exchange

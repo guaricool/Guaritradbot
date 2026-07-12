@@ -97,6 +97,16 @@ class RiskManagerAgent:
         # simulates fine in paper mode and then fails outright in
         # live. Default OFF, mirroring allow_crypto_short above. See
         # config.yaml's allow_equity_short comment.
+        # Sprint 46R (audit B1 + B2): the SL/TP minimum-distance
+        # floor as a percent of entry price. Pre-46R this was the
+        # hard-coded `entry_price * 0.005` (B1 fix). Now exposed
+        # as constructor kwargs so config.yaml's
+        # `min_sl_floor_pct` / `min_tp_floor_pct` flow through.
+        # Defaults preserve the B1 fix behavior (0.5% on both
+        # sides). The audit's B2 complaint: "numeros magicos fuera
+        # de config: ... entry_price * 0.005".
+        min_sl_floor_pct: float = 0.005,
+        min_tp_floor_pct: float = 0.005,
         allow_equity_short: bool = False,
         # Sprint 46M: reject a new trade if an OPEN position already
         # exists on the same asset (any direction). This is what let the
@@ -139,6 +149,12 @@ class RiskManagerAgent:
         self.max_capital_per_trade_pct = max_capital_per_trade_pct
         self.atr_stop_multiplier = atr_stop_multiplier
         self.atr_take_profit_multiplier = atr_take_profit_multiplier
+        # Sprint 46R audit B2: SL/TP minimum-distance floor as
+        # percent of entry (the B1 fix's 0.005). Defaults
+        # preserve the pre-46R hard-coded behavior; config.yaml
+        # can tighten/loosen.
+        self.min_sl_floor_pct = min_sl_floor_pct
+        self.min_tp_floor_pct = min_tp_floor_pct
         self.risk_reward_ratio = risk_reward_ratio
         self.max_open_trades = max_open_trades
         self.min_order_usd = min_order_usd
@@ -511,8 +527,19 @@ class RiskManagerAgent:
             # kept as the audit's contract for the SL side; the TP
             # floor uses the same percent so the R:R ratio stays
             # intact at its lowest-volatility corner.
-            stop_distance = max(atr * self.atr_stop_multiplier, entry_price * 0.005)
-            tp_distance = max(atr * self.atr_take_profit_multiplier, entry_price * 0.005)
+            #
+            # Sprint 46R (audit B2): the 0.005 was a hard-coded
+            # magic number; now it flows from
+            # config.yaml's `min_sl_floor_pct` / `min_tp_floor_pct`.
+            # Defaults (0.005) preserve the B1 behavior.
+            stop_distance = max(
+                atr * self.atr_stop_multiplier,
+                entry_price * self.min_sl_floor_pct,
+            )
+            tp_distance = max(
+                atr * self.atr_take_profit_multiplier,
+                entry_price * self.min_tp_floor_pct,
+            )
             if direction == "long":
                 stop_loss = entry_price - stop_distance
                 take_profit = entry_price + tp_distance

@@ -931,6 +931,13 @@ def main():
         # (paper/no-broker) fills — see config.yaml's
         # paper_slippage_pct comment.
         paper_slippage_pct=float(trading_cfg.get("paper_slippage_pct", 0.0005)),
+        # Sprint 46R audit B2: the SL/TP minimum-distance floor as
+        # a percent of entry price. Pre-46R these were hard-coded
+        # `entry_price * 0.005` inside RiskManagerAgent. Now the
+        # config can tighten/loosen per market. Default 0.005
+        # preserves the audit B1 behavior.
+        min_sl_floor_pct=float(trading_cfg.get("min_sl_floor_pct", 0.005)),
+        min_tp_floor_pct=float(trading_cfg.get("min_tp_floor_pct", 0.005)),
     )
     def _fee_pct_for_asset(asset: str) -> float:
         """Sprint 46J: crypto assets (binance.us) get the real taker
@@ -1255,7 +1262,9 @@ def main():
                     early_closed = position_monitor.check_with_signals(
                         current_prices=prices,
                         signals=signals,
-                        signal_min_strength=0.6,
+                        signal_min_strength=float(trading_cfg.get(
+                            "smart_profit_take_min_signal_strength", 0.6
+                        )),
                         max_signal_age_s=_max_age,
                     )
                     if early_closed:
