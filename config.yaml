@@ -190,7 +190,25 @@ trading:
   paper_slippage_pct: 0.0005
 
 schedule:
-  run_interval_hours: 1
+  # Sprint 46S: was 1 (hourly). Carlos wanted more chances to catch a
+  # good entry, especially since crypto trades 24/7 and doesn't wait
+  # for a clean hourly boundary. Technical note that shaped the choice
+  # of 0.5 (not smaller): every strategy hinges on CLOSED candles (the
+  # bot trims the still-forming in-progress bar -- see M4b), so
+  # re-running the full cycle more often than a candle actually closes
+  # doesn't surface anything new -- it just re-evaluates the same bar.
+  # The fastest candle any strategy uses is 15m (SPY/QQQ mean-reversion/
+  # Stochastic/Bollinger); everything else is 1h/4h. 0.5h (30 min)
+  # catches every OTHER 15m close without doubling yfinance load as
+  # much as going all the way to 0.25h (15 min) would. Chosen as the
+  # more conservative of the two given the full cycle can already take
+  # 10-20 min under Yahoo Finance rate limiting at the OLD hourly
+  # cadence (see job_with_monitor's docstring in main.py) -- halving
+  # the interval doubles that request volume; going to 15 min would
+  # have quadrupled it. Revisit tightening to 0.25h once 0.5h is
+  # confirmed stable (no sustained yfinance rate-limit errors) for a
+  # few days.
+  run_interval_hours: 0.5
   epoch_duration_days: 7
   # Sprint 46I: independent, faster cadence just for the position
   # monitor (stop-loss/take-profit polling + OCO reconciliation) — see
@@ -266,28 +284,4 @@ mandate:
   audit_log_dir: "audit"
 
 # === Sprint 44B — Allocation policy (BlackRock-style) ===
-# Target weights per asset class. Sum MUST equal 1.0.
-# drift_tolerance_pct is the per-class allowed deviation from target
-# before the pre-trade gate rejects. 10% on a 40% crypto target
-# means crypto can grow to 50% before trades are blocked — equivalent
-# to the Sprint 44A hard 60% cap, but expressed as a drift band.
-# enabled=false disables the drift gate; the 44A concentration cap
-# (max_asset_class_concentration_pct) still runs as a backstop.
-allocation_policy:
-  enabled: true
-  drift_tolerance_pct: 10
-  targets:
-    crypto: 0.40
-    equity_growth: 0.40
-    commodity_safe: 0.10
-    commodity_energy: 0.10
-
-# === Sprint 22 — Paper→Live Transition Safety ===
-# What should the pre-flight checklist do with paper positions when
-# switching to live? Only applies when interactive=False (e.g., daemon mode).
-# - close:  mark them closed in repo, P&L=0, proceed to live
-# - ignore: keep them in repo but warn that they don't exist in live exchange
-# - abort:   refuse to proceed (DEFAULT — safest)
-live_transition:
-  auto_action: "abort"              # default safe option for non-interactive mode
-  dry_run_qty: 0.00001              # BTC qty for dry-run validation order (~50¢ at $50k)
+# Target weights
