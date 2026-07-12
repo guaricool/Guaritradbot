@@ -249,6 +249,12 @@ class ExecutionNode:
         mode_override_path="audit/mode_override.json",
         position_repo=None,
         use_native_crypto_stops: bool = False,
+        # Sprint 46Q (audit M5): % that the STOP_LOSS_LIMIT's limit
+        # price sits below the stop trigger. Default 1.5% (widened
+        # from the pre-Sprint-46Q 0.5% to survive typical crypto
+        # gap moves). Configurable via
+        # `trading.native_oco_stop_buffer_pct` in config.yaml.
+        native_oco_stop_buffer_pct: float = 1.5,
         # Sprint 46N (audit C3): Alpaca market orders come back from
         # submit_order() as "new"/"accepted", not "filled" — the fill
         # itself is confirmed a moment later. Poll get_order() up to
@@ -287,6 +293,7 @@ class ExecutionNode:
         # — see src/execution/broker.py's OCO methods for the "not
         # exercised against the live API yet" caveat.
         self.use_native_crypto_stops = use_native_crypto_stops
+        self.native_oco_stop_buffer_pct = float(native_oco_stop_buffer_pct)
         # Sprint 43 C5 fix: ExecutionNode now owns the position persistence
         # (was previously owned by RiskManagerAgent). Adding a position
         # to the repo is the LAST step of a successful fill, not part of
@@ -980,11 +987,18 @@ class ExecutionNode:
                         # actually hold (oco_amount), not the requested
                         # amount — selling more than the fee-netted
                         # balance would reject the OCO order outright.
+                        # Sprint 46Q (audit M5): pass the configurable
+                        # `native_oco_stop_buffer_pct` so the STOP_LOSS_LIMIT
+                        # limit price sits the right % below the stop
+                        # trigger (default 1.5%, widened from the
+                        # pre-Sprint-46Q 0.5% to survive typical crypto
+                        # gap moves).
                         oco_response = broker.create_oco_sell_order(
                             symbol=symbol,
                             amount=oco_amount,
                             take_profit_price=take_profit,
                             stop_price=stop_loss,
+                            stop_limit_buffer_pct=self.native_oco_stop_buffer_pct,
                         )
                         if isinstance(oco_response, dict) and oco_response.get("status") != "failed":
                             broker_oco_order_id = str(

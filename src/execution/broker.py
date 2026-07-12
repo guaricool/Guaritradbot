@@ -271,7 +271,20 @@ class BrokerClient:
         take_profit_price: float,
         stop_price: float,
         stop_limit_price: float = None,
-        stop_limit_buffer_pct: float = 0.5,
+        # Sprint 46Q (audit M5): default buffer widened from 0.5% to
+        # 1.5% on the STOP_LOSS_LIMIT price. The stop-limit price is
+        # the actual sell limit once the stop trigger fires; with
+        # only 0.5% below stopPrice, a 0.6% gap (common in thin
+        # crypto books — BTC regularly moves 0.5-1% in seconds on
+        # a liquidation cascade) would trigger the stop but leave
+        # the limit price above the new market, so the order rests
+        # unfilled while the position loses more than expected.
+        # 1.5% covers the typical overnight BTC gap and is still
+        # well within the 2x ATR stop the bot's signal layer
+        # configured. Configurable via
+        # `trading.native_oco_stop_buffer_pct` in config.yaml for
+        # operators who want to tune it.
+        stop_limit_buffer_pct: float = 1.5,
     ) -> dict:
         """Place a real OCO sell order protecting a LONG crypto position.
 

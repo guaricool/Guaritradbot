@@ -190,14 +190,30 @@ class PositionMonitor:
         own close order here, it's purely catching up to what the
         exchange already did.
 
+        Sprint 46Q (audit M5): `listOrderStatus == ALL_DONE` is the
+        exchange's terminal state for BOTH a successful OCO fill AND
+        a manual cancellation of the orderList. The pre-fix code
+        treated every ALL_DONE as a fill, which produced two bugs:
+        (a) a manual cancel in the binance.us UI would mark the
+        position closed with a `TP_HIT_OCO` reason and a phantom
+        profit (the close was never executed, so a realized gain
+        was recorded against money that never moved), and (b) the
+        fallback "no price feed at this exact tick" path used
+        `pos.take_profit` as a neutral default — the SAME phantom
+        profit bug in a different trigger. Both are now fixed:
+        we parse `orderReports` to see the actual sub-order status
+        and only close on a real FILLED leg, and a missing price
+        feed produces an audit event and a `None` return (the
+        position stays open and we retry next tick — the live OCO
+        on the exchange is unaffected by our reconcile either way).
+
         Close-price approximation: OCO legs fill AT (or extremely
         close to) their specified trigger price, so we use
-        `pos.take_profit`/`pos.stop_loss` (whichever the current
-        observed price is on the correct side of) rather than trying
-        to fetch the exact fill price from a second API call — same
-        "good enough, reconciles further next cycle if wrong" spirit
-        as the dashboard's manual-close endpoint (see
-        src/api/state.py::close_position).
+        `pos.take_profit`/`pos.stop_loss` (whichever the leg's
+        trigger was) rather than trying to fetch the exact fill
+        price from a second API call — same "good enough, reconciles
+        further next cycle if wrong" spirit as the dashboard's
+        manual-close endpoint (see src/api/state.py::close_position).
 
         Fail-safe: any error talking to the exchange (network, auth,
         unexpected response shape) leaves the position untouched — it
@@ -223,22 +239,136 @@ class PositionMonitor:
             # non-terminal state — nothing to reconcile yet.
             return None
 
-        price = current_prices.get(pos.asset)
-        if price is not None and price >= pos.take_profit:
-            close_price = pos.take_profit
+        # Sprint 46Q (audit M5): inspect the per-leg status BEFORE
+        # assuming the OCO actually filled. `orderReports` is binance's
+        # list of the two sub-orders (the LIMIT take-profit and the
+        # STOP_LOSS_LIMIT); each has a `status` of FILLED, CANCELED,
+        # REJECTED, EXPIRED, etc. Only FILLED means a real close
+        # happened. If BOTH legs are CANCELED/REJECTED/EXPIRED, the
+        # operator (or the exchange) cancelled the OCO without a
+        # fill — the position is still open in the broker sense
+        # and we MUST NOT mark it closed in the repo.
+        order_reports = status.get("orderReports") or []
+        filled_legs = [
+            r for r in order_reports
+            if isinstance(r, dict) and str(r.get("status", "")).upper() == "FILLED"
+        ]
+        if not filled_legs:
+            # The OCO reached ALL_DONE but no leg FILLED — was a
+            # manual/system cancel. Leave the position open, audit
+            # the situation, retry next cycle (the position is now
+            # unprotected; the next `_execute_close` flow from
+            # PositionMonitor.check — or a manual dashboard close —
+            # is what should close it from here on).
+            if self.audit is not None:
+                try:
+                    self.audit.append("OCO_CANCELLED_NOT_FILLED", {
+                        "asset": pos.asset,
+                        "direction": pos.direction,
+                        "order_list_id": pos.broker_oco_order_id,
+                        "list_status": list_status,
+                        "order_reports_statuses": [
+                            str(r.get("status")) for r in order_reports
+                            if isinstance(r, dict)
+                        ],
+                        "detail": (
+                            "Exchange reports the OCO as ALL_DONE but no "
+                            "sub-order FILLED. This means the OCO was "
+                            "cancelled (manually on the exchange, by the "
+                            "system, or by another bot instance), NOT filled "
+                            "by the take-profit or stop-loss. Position is "
+                            "left open in the repo and the next check() will "
+                            "arm its polling fallback. Audit-only event — no "
+                            "realized PnL is recorded because no real close "
+                            "happened on the exchange."
+                        ),
+                    })
+                except Exception as _audit_err:
+                    print(f"[PositionMonitor] ⚠️ No pude auditar OCO_CANCELLED_NOT_FILLED: {_audit_err}")
+            print(
+                f"  ⚠️ OCO cancelado sin fill: {pos.asset} {pos.direction} — "
+                f"position sigue abierta, armando polling fallback."
+            )
+            return None
+
+        # Identify WHICH leg filled (the higher of the two prices is
+        # the TP LIMIT, the lower is the STOP trigger). For a
+        # long-protect OCO, FILLED at price >= take_profit is the
+        # take-profit leg, FILLED at price <= stop_loss is the stop
+        # leg. For a short-protect OCO (not yet used by this bot but
+        # future-proof) the same shape works because we only protect
+        # longs right now (see execution_node.py:974).
+        filled_leg = filled_legs[0]  # at most one leg fills
+        try:
+            # STOP_LOSS_LIMIT legs report the actual sell-limit
+            # price in `price` (not `stopPrice` — that's just the
+            # trigger). The pre-Sprint-46Q code ignored this and
+            # used pos.stop_loss for realized PnL, silently
+            # under-reporting slippage on stop fills.
+            filled_price = float(
+                filled_leg.get("price")
+                or filled_leg.get("stopPrice")
+                or 0.0
+            )
+        except (TypeError, ValueError):
+            filled_price = 0.0
+
+        if filled_price >= pos.take_profit:
+            # Normal take-profit fill (or marginal slippage above TP).
+            # Use the exchange-reported fill price for accurate
+            # realized PnL — the pre-Sprint-46Q code used
+            # pos.take_profit, which silently rounded the slip into
+            # the bot's equity curve as "no slippage".
+            close_price = filled_price if filled_price > 0 else pos.take_profit
             reason = "TP_HIT_OCO"
-        elif price is not None and price <= pos.stop_loss:
-            close_price = pos.stop_loss
-            reason = "STOP_HIT_OCO"
+        elif filled_price > 0 and filled_price <= pos.stop_loss:
+            # Normal stop fill. If the fill is well outside the
+            # configured 1.5% buffer (i.e. >2% below the trigger),
+            # label it OCO_FILL_OUTSIDE_TRIGGER_RANGE so the operator
+            # can see this was a gap event in the audit feed — the
+            # stop LIMIT filled, just not at the planned price.
+            buffer_pct = 2.0  # anything past 2% below stop = gap
+            buffer_floor = pos.stop_loss * (1.0 - buffer_pct / 100.0)
+            if filled_price < buffer_floor:
+                close_price = filled_price
+                reason = "OCO_FILL_OUTSIDE_TRIGGER_RANGE"
+                if self.audit is not None:
+                    try:
+                        self.audit.append("OCO_FILL_SLIPPAGE", {
+                            "asset": pos.asset,
+                            "expected_tp": pos.take_profit,
+                            "expected_sl": pos.stop_loss,
+                            "actual_fill": filled_price,
+                            "buffer_floor": buffer_floor,
+                            "using_as_close": close_price,
+                        })
+                    except Exception as _audit_err:
+                        print(f"[PositionMonitor] ⚠️ No pude auditar OCO_FILL_SLIPPAGE: {_audit_err}")
+            else:
+                # Fill is within the stop buffer — the stop LIMIT
+                # honored its guarantee within 2% of the trigger.
+                # Use the trigger price for the label but the actual
+                # fill for the accounting (rare slippage of a few
+                # bps is normal).
+                close_price = filled_price
+                reason = "STOP_HIT_OCO"
         else:
-            # OCO says done but we don't have a current price to decide
-            # which leg — fall back to take_profit as a neutral default
-            # rather than guessing wrong; the realized_pnl will be
-            # close enough (both legs are known, fixed prices) and this
-            # is a rare edge case (missing price feed at the exact
-            # moment of reconciliation).
-            close_price = pos.take_profit
-            reason = "OCO_ALL_DONE_PRICE_UNKNOWN"
+            # Malformed response (e.g. filled_price is 0 or NaN).
+            # Fall back to the more conservative of the two triggers
+            # (the SL) so we don't accidentally record a phantom
+            # profit at the TP for an exchange fill we can't price.
+            close_price = pos.stop_loss
+            reason = "OCO_FILL_PRICE_UNREADABLE"
+            if self.audit is not None:
+                try:
+                    self.audit.append("OCO_FILL_PRICE_UNREADABLE", {
+                        "asset": pos.asset,
+                        "expected_tp": pos.take_profit,
+                        "expected_sl": pos.stop_loss,
+                        "raw_leg": filled_leg,
+                    })
+                except Exception as _audit_err:
+                    print(f"[PositionMonitor] ⚠️ No pude auditar OCO_FILL_PRICE_UNREADABLE: {_audit_err}")
 
         closed = self._finalize_close(pos, close_price, reason)
         if closed:

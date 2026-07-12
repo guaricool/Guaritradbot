@@ -906,6 +906,14 @@ def main():
         # see src/execution/broker.py's OCO methods for the testing
         # caveat before enabling this in live mode).
         use_native_crypto_stops=bool(trading_cfg.get("use_native_crypto_stops", False)),
+        # Sprint 46Q (audit M5): the STOP_LOSS_LIMIT's limit price
+        # sits this % below the stop trigger. Default 1.5% (widened
+        # from the pre-46Q 0.5% to survive typical crypto gap
+        # moves). See config.yaml's native_oco_stop_buffer_pct
+        # comment for the full rationale.
+        native_oco_stop_buffer_pct=float(
+            trading_cfg.get("native_oco_stop_buffer_pct", 1.5)
+        ),
         # Sprint 46N (audit M3): realistic slippage on simulated
         # (paper/no-broker) fills — see config.yaml's
         # paper_slippage_pct comment.

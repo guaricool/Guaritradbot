@@ -92,6 +92,17 @@ trading:
   # apply to equities/ETFs (Alpaca) — see alpaca_broker.py, fractional
   # shares can't be combined with bracket/OCO orders there.
   use_native_crypto_stops: false
+  # Sprint 46Q (audit M5): the STOP_LOSS_LIMIT's limit price sits
+  # `native_oco_stop_buffer_pct`% BELOW the stop trigger so a fast
+  # drop can still fill instead of resting above the falling market.
+  # Sprint 46Q widened the default from 0.5% to 1.5% — the prior
+  # 0.5% was vulnerable to typical crypto gaps (BTC regularly
+  # moves 0.5-1% in seconds on liquidation cascades). 1.5% covers
+  # the typical overnight BTC gap and is still well inside the
+  # 2x ATR stop the signal layer uses. Increase further only if
+  # you deliberately accept more slippage in exchange for higher
+  # fill probability on the stop leg.
+  native_oco_stop_buffer_pct: 1.5
   # Sprint 46J: real binance.us taker fee (one-way, as a fraction —
   # 0.001 = 0.1%), charged on both entry AND exit notional when
   # realized P&L is recorded for a crypto close. Previously the bot's
