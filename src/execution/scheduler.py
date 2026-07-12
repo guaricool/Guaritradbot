@@ -180,9 +180,31 @@ class EpochScheduler:
                 except Exception as pub_err:
                     logger.error(f"[Scheduler] No se pudo publicar SYSTEM_ERROR: {pub_err}")
         except Exception as e:
+            # Sprint 46R audit M9: the generic exception path used
+            # to log to stdout + write one audit event, but it did
+            # NOT publish SYSTEM_ERROR — so a cycle that crashed
+            # unexpectedly (an unrelated bug in a step body, a
+            # library exception, etc.) silently disappeared with
+            # no Telegram alert. Carlos had no way to know the
+            # cycle had died until he happened to look at the
+            # dashboard. Mirror the same alerting pattern that the
+            # WorkflowAgentFaultError / WorkflowDependencyError
+            # branch above (lines 157-181) uses, so ANY cycle
+            # crash surfaces as SYSTEM_ERROR + audit + Telegram.
             logger.error(f"Error during workflow execution: {e}")
             if self.audit is not None:
                 self.audit.append("WORKFLOW_CYCLE_ERROR", {"error": str(e)[:500]})
+            if self.event_bus is not None:
+                try:
+                    self.event_bus.publish("SYSTEM_ERROR", {
+                        "kind": "WORKFLOW_CYCLE_ERROR",
+                        "error": f"⛔ Workflow cycle crashed: {e}",
+                    })
+                except Exception as pub_err:
+                    logger.error(
+                        f"[Scheduler] No se pudo publicar SYSTEM_ERROR "
+                        f"WORKFLOW_CYCLE_ERROR: {pub_err}"
+                    )
 
         logger.info("--- Scheduled run complete. Waiting for next interval ---")
 
