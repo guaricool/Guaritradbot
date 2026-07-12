@@ -222,6 +222,26 @@ notifications:
   # dust-sized positions). Set to 0 to always send.
   position_update_min_pnl_usd: 0.0
 
+# === Sprint 46S (audit B8 + Taleb P0 #1) — risk knobs surfaced in config ===
+# Pre-Sprint-46S, `max_stress_drawdown_pct` lived only in code defaults
+# (risk_agent.py:83, RISK_CONFIG_DEFAULTS in src/api/state.py:670) and
+# was effectively hard-coded at 70%. Taleb's audit P0 #1 flagged that as
+# fail-open: a 70% portfolio drawdown is the "destruction of account"
+# threshold, not a preservation threshold, so the stress-test guardrail
+# was validating trades whose worst historical scenario was ruina
+# efectiva instead of preventing them.
+#
+# Default 30% (per Taleb's 25-35% recommendation) — a single
+# concentrated crypto position (BTC/ETH alone shows ~-64% under the
+# 2022 rate-hike scenario) will trip this gate, which is the point:
+# a single-asset concentrated bet is exactly what the stress test
+# is supposed to filter.
+#
+# Note: a bot restart is required for changes to take effect
+# (main.py reads this at startup, not per-cycle).
+risk:
+  max_stress_drawdown_pct: 30.0
+
 # === Sprint 0 (preview sin enforcement real; Sprint 1 lo enchufa) ===
 mandate:
   enabled: false                    # toggle del Mandate Gate
@@ -235,9 +255,10 @@ mandate:
   # closing, and re-opening positions many times a day if signals keep
   # firing — each round-trip pays fees (see trading.crypto_taker_fee_pct)
   # and overtrading was explicitly flagged as a risk to guard against.
-  # 0 = unlimited (default, unchanged behavior) — set a real number
-  # (e.g. 10-20) once you want this guard active.
-  max_daily_trades: 0
+  # 0 = unlimited (legacy default). Sprint 46S: 10 — a reasonable cap
+  # for a small account where each round-trip pays fees
+  # (trading.crypto_taker_fee_pct). Set to 0 to restore unlimited.
+  max_daily_trades: 10
   kill_switch_file: "/tmp/GUARITRADBOT_KILL"
   audit_log_dir: "audit"
 
