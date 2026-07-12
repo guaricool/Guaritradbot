@@ -169,7 +169,7 @@ Solo los cierres vía `PositionMonitor` cobran fee (`position_monitor.py:374-375
 El mandato está deshabilitado en paper (`config.yaml:124`) — los resultados de paper nunca ven los caps que restringirán live. Los fills de paper son siempre completos, al precio de la señal, sin slippage ni fee de entrada ni mínimos del exchange — optimistas por construcción. Y los **shorts de acciones** pasan todos los gates y simulan bien en paper, pero Alpaca los rechaza con órdenes fraccionales/notional → path de fallo garantizado en live (solo los shorts cripto se bloquearon en Sprint 46M).
 
 ### M4 — Staleness y resample penalizan a las acciones
-El umbral de staleness de 3× el intervalo (`market_analyst.py:365-382`) hace que SPY/QQQ/GLD/USO fallen validación cada noche/fin de semana → feeds descartados y componente `DEGRADED` (ruido de alertas, señales 4h indisponibles gran parte del día). El chequeo de completitud del resample a 4h espera 4 barras fuente (`market_analyst.py:196-208`), pero las barras de 60m de acciones empiezan 9:30 → el bucket matutino completo (3 barras) se descarta como "en progreso" — las señales 4h de acciones llegan con hasta un bucket de retraso.
+El umbral de staleness de 3× el intervalo (`market_analyst.py:365-382`) hace que SPY/QQQ/GLD/USO fallen validación cada noche/fin de semana → feeds descartados y componente `DEGRADED` (ruido de alertas, señales 4h indisponibles gran parte del día). El chequeo de completitud del resample a 4h espera 4 barras fuente (`market_analyst.py:196-208`), pero las barras de 60m de acciones empiezan 9:30 → el bucket matutino completo (3 barras) se descarta como "en progreso" — las señales 4h de acciones llegan con hasta un bucket de retraso. ✅ **CERRADO** — commit `bb5d763` (Sprint 46N follow-up): `_is_us_equity_market_open()` con pytz/America/New_York (Mon-Fri 09:30-16:00) + `_resample_ohlcv(..., asset=...)` con wall-clock completeness check para non-crypto. Caveat conocido: holiday calendar NO cubierto (el audit M12 lo cubre).
 
 ### M5 — Edge cases del OCO nativo
 `_reconcile_native_oco` (`position_monitor.py:132-196`): `ALL_DONE` también es el estado terminal tras una **cancelación** (p. ej. manual en el exchange) — el bot registraría un cierre a precios de TP/SL que nunca se ejecutaron; el fallback de precio desconocido registra el cierre **al take-profit** (ganancia fantasma). El stop es un STOP_LOSS_LIMIT con buffer de solo 0.5% (`broker.py:151,177`) — en un gap puede dispararse y quedar sin llenar, y el bot nunca cae a un cierre de mercado para una posición `native_oco` varada.
@@ -278,7 +278,7 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 ### Fase 4 — Estrategia (cuando lo anterior esté estable)
 28. **M1**: recalibrar el debate para que lo neutro no pase el umbral (o simplificarlo a logging); revisar el sesgo anti-MACD-bajo-cero.
 29. **M15**: adaptar la política de allocation al tamaño real de la cuenta (o desactivar caps imposibles).
-30. **M4**: staleness consciente del calendario de mercado; fix del bucket matutino en el resample 4h.
+30. ✅ **CERRADO** (commit `bb5d763` Sprint 46N follow-up): `_is_us_equity_market_open()` con `pytz/America/New_York` (Mon-Fri 09:30-16:00) y `_resample_ohlcv(..., asset=...)` con wall-clock completeness check para equities/ETFs. Holiday calendar no cubierto (queda bajo M12).
 31. **B5**: decidir sobre ETH/SOL — agregar estrategia + workflow, o quitarlos del config.
 32. **B1/M16/B10**: piso para el TP, señales frescas para el profit-take, revisar la economía del reemplazo.
 
@@ -345,13 +345,14 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 | M7/B3 | 46R | `06ee77b` | `dashboard.py` (4043 LOC) + Streamlit stack borrados |
 | B6 | 46R | `6541057` | GitHub Actions CI (`.github/workflows/tests.yml`) |
 | **B8** | 46R | `8fb3f16` | **`atomic_write_text` con fsync en 7 sitios tmp+replace** (5 tests) |
+| M4 | 46N-fu | `bb5d763` | `_is_us_equity_market_open()` pytz + `_resample_ohlcv(asset=)` wall-clock check |
 | **B9** (parcial) | 46R | `8fb3f16` | **framework `logging_setup` + get_logger en `main.py` + 3 archivos críticos migrados** (4 tests); ~218 `print()` restantes como follow-up |
 
 ### PENDIENTES (no tocados en Sprints 46N-46R)
 
 | ID | Razón / siguiente sprint |
 |----|--------------------------|
-| M4 (resample) | En WIP local (D:\tradbot, sin commit) — staleness + 4h-bucket aware de NYSE/Nasdaq. Esperar merge. |
+| M4 (resample) | ✅ Cerrado por `bb5d763` Sprint 46N follow-up. Equities ya tienen staleness + 4h-bucket aware de NYSE/Nasdaq. Holiday calendar queda bajo M12. |
 | M6 (BotRuntime refactor) | Fase 3 #24 — main.py sigue siendo god-file (75K LOC) |
 | M9 (workflow observability) | Fase 3 #25 — last_errors deque + SYSTEM_ERROR en path genérico |
 | M11 (healthcheck, log rotation, dead-man's switch, backup) | Fase 3 #26 |
