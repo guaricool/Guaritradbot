@@ -190,7 +190,7 @@ La ejecución real ocurre dentro de `EventBus.publish` (paso llamado, irónicame
 Se escribe con `write_text` directo (`positions.py:136`) — un lector puede ver un archivo cortado. Y en la arquitectura actual **nada lo lee**: el dashboard Next.js solo usa el API HTTP, y el contenedor del dashboard ni monta el volumen `bot_audit`. Borrarlo, o promoverlo a mecanismo real de durabilidad (ver C6).
 
 ### M11 — Observabilidad: sin rotación de logs, healthcheck de mentira, Telegram como único canal
-Ningún servicio configura `logging:` en compose (los logs crecen sin límite según el default del host). El healthcheck del bot es `pgrep` — pasa aunque el bot esté colgado; un `/health` que verifique "último ciclo < 2× intervalo, auditoría escribible" detectaría fallos reales. Si Telegram cae, toda la alertería desaparece en silencio: `send_telegram_message` (`notification_agent.py:100-124`) hace 1 intento, sin retry, sin cola, sin meta-alerta. Considerar un dead-man's switch (ping a healthchecks.io por ciclo).
+Ningún servicio configura `logging:` en compose (los logs crecen sin límite según el default del host). El healthcheck del bot es `pgrep` — pasa aunque el bot esté colgado; un `/health` que verifique "último ciclo < 2× intervalo, auditoría escribible" detectaría fallos reales. Si Telegram cae, toda la alertería desaparece en silencio: `send_telegram_message` (`notification_agent.py:100-124`) hace 1 intento, sin retry, sin cola, sin meta-alerta. Considerar un dead-man's switch (ping a healthchecks.io por ciclo). ✅ **CERRADO Sprint 46R** (commit `104ef31` + ops en el VPS): M11.1 (log rotation: json-file 20MB × 5 en compose) ✅, M11.2 (Telegram retry con 3 attempts + backoff 1s/2s/4s + meta-alert SYSTEM_ERROR + side-channel JSONL) ✅, M11.3 (`/api/health` ahora valida `last_analysis_cycle_at` + `last_fast_monitor_at` + `audit_writable`, retorna 503 si falla) ✅, M11.4 (dead-man's switch en `src/observability/dead_mans_switch.py`, ping a `HEALTHCHECKS_PING_URL` cada 2 min) ✅, **M11.5** (backup diario vía cron en el VPS a `/backups/`, 14 días de retención, log a `/var/log/guaritradbot-backup.log` — script en `/root/scripts/backup_bot_state.sh`, cron en `/etc/cron.d/guaritradbot-backup`) ✅.
 
 ### M12 — Zona horaria y horario de mercado ignorados
 Contenedores en UTC sin `TZ`; nada limita la generación de señales de acciones por sesión de mercado. Las órdenes de Alpaca son `TimeInForce.DAY` (`alpaca_broker.py:283-291`) — enviadas fuera de horario quedan encoladas al open y se llenan a un precio potencialmente lejano de la señal. Los timestamps de `audit.jsonl` son naive, sin offset. Gatear entradas de acciones con `GET /v2/clock` de Alpaca.
@@ -272,7 +272,7 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 23. ✅ **CERRADO Sprint 46R** (commit `6541057`): `.github/workflows/tests.yml` con Python 3.11 + `pip install -r requirements.lock` + `python -m unittest discover` (excluyendo ml_pipeline y h5_l8 sklearn). 2 tests stale arreglados (Dockerfile USER directive, fee tier assertion).
 24. **M6**: refactor de `main()` a un `BotRuntime` testeable; tests para `fast_monitor_tick` y `job_with_monitor`.
 25. **M9**: resultado de ejecución verificable por el paso del workflow; `last_errors` con `deque(maxlen)`; SYSTEM_ERROR en el path genérico del scheduler.
-26. **M11**: healthcheck funcional, rotación de logs en compose, retry + meta-alerta de Telegram, dead-man's switch, backup del volumen.
+26. ✅ **CERRADO Sprint 46R** (commit `104ef31` + VPS ops): M11.1, M11.2, M11.3, M11.4 (log rotation, Telegram retry+meta-alert, healthcheck funcional, dead-man's switch) y M11.5 (backup diario vía cron en el VPS, 14 días retención, audit + data_store volúmenes).
 27. ✅ **PARCIAL Sprint 46R** (commit `8fb3f16`): **B8** cerrado (atomic_write_text + fsync en 7 sitios); **B9** parcial (framework logging_setup + get_logger en main.py + 3 archivos críticos migrados, ~218 print() restantes como follow-up); **B2** sigue pendiente.
 
 ### Fase 4 — Estrategia (cuando lo anterior esté estable)
@@ -346,6 +346,7 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 | B6 | 46R | `6541057` | GitHub Actions CI (`.github/workflows/tests.yml`) |
 | **B8** | 46R | `8fb3f16` | **`atomic_write_text` con fsync en 7 sitios tmp+replace** (5 tests) |
 | M4 | 46N-fu | `bb5d763` | `_is_us_equity_market_open()` pytz + `_resample_ohlcv(asset=)` wall-clock check |
+| M11.1, M11.2, M11.3, M11.4 | 46R | `104ef31` | log rotation 20MB×5 + Telegram retry+meta-alert + healthcheck 3-checks (análisis/fast/audit-writable) + dead-man's switch |
 | **B9** (parcial) | 46R | `8fb3f16` | **framework `logging_setup` + get_logger en `main.py` + 3 archivos críticos migrados** (4 tests); ~218 `print()` restantes como follow-up |
 
 ### PENDIENTES (no tocados en Sprints 46N-46R)
@@ -355,7 +356,7 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 | M4 (resample) | ✅ Cerrado por `bb5d763` Sprint 46N follow-up. Equities ya tienen staleness + 4h-bucket aware de NYSE/Nasdaq. Holiday calendar queda bajo M12. |
 | M6 (BotRuntime refactor) | Fase 3 #24 — main.py sigue siendo god-file (75K LOC) |
 | M9 (workflow observability) | Fase 3 #25 — last_errors deque + SYSTEM_ERROR en path genérico |
-| M11 (healthcheck, log rotation, dead-man's switch, backup) | Fase 3 #26 |
+| M11.5 (backup volumen) | ✅ Cerrado por ops en el VPS — cron diario a las 03:17, 14 días retención, script en `/root/scripts/backup_bot_state.sh`, log en `/var/log/guaritradbot-backup.log`. |
 | M1 (debate recalibración) | Fase 4 #28 |
 | M15 (allocation scaling) | Fase 4 #29 |
 | B1, B2, B4, B5, B7, B10 | Pendientes menores |
