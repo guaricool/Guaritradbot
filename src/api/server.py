@@ -74,6 +74,7 @@ import json
 import os
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -407,15 +408,137 @@ async def _start_background_tasks() -> None:
 
 @app.get("/api/health")
 def health() -> Dict[str, Any]:
-    return {
-        "ok": True,
-        "ts": time.time(),
+    """Sprint 46R audit M11.3: real health check, not a liveness ping.
+
+    Pre-46R the endpoint just returned {"ok": True, ...}, which a
+    Docker healthcheck would happily accept even if the bot's main
+    loop had deadlocked hours ago — exactly the audit's concern
+    ("el healthcheck del bot es pgrep — pasa aunque el bot esté
+    colgado"). The endpoint now actively reports:
+
+      1. last_analysis_cycle_at   - when the hourly analysis cycle
+         last completed (set by main.py's job_with_monitor wrapper).
+         If > 2× the configured run_interval_hours, the bot is
+         effectively dead and we return 503 so Docker restarts it.
+      2. last_fast_monitor_at     - same idea for the 2-minute
+         position-protect tick. A dead fast_monitor means SL/TP is
+         unprotected for open positions (audit A5 was the original
+         concern that motivated the separate thread).
+      3. audit_writable           - we actually try to append a
+         test event to audit.jsonl, then remove it. A read-only
+         filesystem (e.g. bot_audit volume full, or perms wrong)
+         would otherwise surface only when Carlos tried to read
+         the ledger and saw it was hours stale.
+
+    Returns 200 if everything green, 503 if any check failed.
+    The body always has the per-check booleans + last-* timestamps
+    so the operator (or dashboard) can see WHAT failed without
+    scraping logs.
+    """
+    from fastapi.responses import JSONResponse
+
+    now = time.time()
+    cfg = APP_STATE.get("config") or {}
+    sched = cfg.get("schedule", {}) if isinstance(cfg, dict) else {}
+    run_interval_h = float(sched.get("run_interval_hours", 1))
+    fast_interval_min = float(sched.get("fast_monitor_interval_minutes", 2))
+
+    last_analysis = float(APP_STATE.get("last_analysis_cycle_at") or 0.0)
+    last_fast = float(APP_STATE.get("last_fast_monitor_at") or 0.0)
+
+    # Tolerate one missed cycle: 2x the interval. If run_interval=1h,
+    # the bot is allowed to be up to 2h late before we say "stuck".
+    # Below that, transient slowness (a 15yfinance cycle that
+    # hits retries, a manual pause) shouldn't trigger a restart.
+    analysis_threshold_s = run_interval_h * 3600.0 * 2.0
+    fast_threshold_s = fast_interval_min * 60.0 * 2.0
+
+    analysis_ok = (last_analysis <= 0) or ((now - last_analysis) <= analysis_threshold_s)
+    fast_ok = (last_fast <= 0) or ((now - last_fast) <= fast_threshold_s)
+
+    audit_path = _audit_path()
+    audit_writable = False
+    audit_writable_error = None
+    try:
+        # Append a sentinel event, then immediately remove the line
+        # we just wrote. The atomic_write_text helper isn't needed
+        # here — this is a 1-shot test that the OS allows us to
+        # open(append), and on any failure (full disk, perms,
+        # missing dir) we report the error verbatim.
+        os.makedirs(os.path.dirname(audit_path) or ".", exist_ok=True)
+        sentinel = json.dumps({
+            "ts": now,
+            "iso": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+            "event_type": "HEALTH_CHECK_SENTINEL",
+            "payload": {},
+        }, ensure_ascii=False) + "\n"
+        with open(audit_path, "a", encoding="utf-8") as f:
+            f.write(sentinel)
+        # Remove the last line. Use a simple "truncate to before last \n"
+        # so we don't need to read + parse the full ledger.
+        with open(audit_path, "rb+") as f:
+            f.seek(0, os.SEEK_END)
+            end = f.tell()
+            if end > 0:
+                # Walk backwards to the previous newline
+                pos = end - 1
+                while pos > 0:
+                    f.seek(pos)
+                    if f.read(1) == b"\n":
+                        break
+                    pos -= 1
+                f.seek(pos + 1 if pos > 0 else 0)
+                f.truncate()
+        audit_writable = True
+    except Exception as e:
+        audit_writable_error = f"{type(e).__name__}: {e}"
+
+    overall_ok = analysis_ok and fast_ok and audit_writable
+    # Sprint 46R audit M11.4: surface the dead-man's switch state too.
+    # We deliberately don't fail the healthcheck on a stale OOB ping —
+    # healthchecks.io being unreachable is an OOB problem, not a
+    # bot problem. We just include the info for the operator.
+    dms_state: Dict[str, Any] = {}
+    try:
+        from src.observability.dead_mans_switch import get_ping_state
+        dms_state = get_ping_state()
+    except Exception:
+        dms_state = {"error": "dead_mans_switch module not importable"}
+
+    body = {
+        "ok": overall_ok,
+        "ts": now,
         "started_at": APP_STATE.get("started_at"),
-        "audit_path": _audit_path(),
+        "audit_path": audit_path,
         "positions_path": _positions_path(),
         "config_path": _config_path(),
         "ws_clients": len(APP_STATE.get("ws_clients", set())),
+        "checks": {
+            "analysis_cycle": {
+                "ok": analysis_ok,
+                "last_at": last_analysis or None,
+                "age_s": (now - last_analysis) if last_analysis else None,
+                "threshold_s": analysis_threshold_s,
+                "interval_h": run_interval_h,
+            },
+            "fast_monitor": {
+                "ok": fast_ok,
+                "last_at": last_fast or None,
+                "age_s": (now - last_fast) if last_fast else None,
+                "threshold_s": fast_threshold_s,
+                "interval_min": fast_interval_min,
+            },
+            "audit_writable": {
+                "ok": audit_writable,
+                "error": audit_writable_error,
+            },
+            "dead_mans_switch": dms_state,
+        },
     }
+    return JSONResponse(
+        status_code=200 if overall_ok else 503,
+        content=body,
+    )
 
 
 # ----------------------------------------------------------------------

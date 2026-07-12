@@ -1322,6 +1322,39 @@ def main():
         except Exception as e:
             print(f"[PositionMonitor] check falló: {e}")
 
+        # Sprint 46R audit M11.3: heartbeat update for the enhanced
+        # /api/health endpoint. Pre-46R the healthcheck was just a
+        # liveness ping (the FastAPI server was up = healthy), which
+        # is what the audit called "pgrep — pasa aunque el bot esté
+        # colgado". Now the endpoint reads `APP_STATE["last_fast_monitor_at"]`
+        # and returns 503 if it's older than 2x the configured fast
+        # interval. Set it on EVERY tick (even when there are 0 open
+        # positions and the body of the tick is a no-op) so a stuck
+        # fast_monitor_tick shows up as a stuck healthcheck.
+        try:
+            from src.api.server import APP_STATE as _api_app_state
+            _api_app_state["last_fast_monitor_at"] = time.time()
+        except Exception:
+            # The API server may not be started yet in --once mode
+            # or in tests. Best-effort only — no audit, no log spam.
+            pass
+
+        # Sprint 46R audit M11.4: dead-man's switch. Best-effort GET
+        # against the configured HEALTHCHECKS_PING_URL (healthchecks.io
+        # in production). Runs on the 2-min fast tick so an OOB
+        # service can detect a dead bot within a couple of minutes —
+        # much faster than the 1h analysis cycle. The ping never
+        # raises (see ping_dead_mans_switch's docstring); a failure
+        # is logged + reflected in the next /api/health body.
+        try:
+            from src.observability.dead_mans_switch import ping_dead_mans_switch
+            ping_dead_mans_switch()
+        except Exception as _dms_err:
+            # The import could fail in --once mode / older tests where
+            # the observability package isn't on sys.path yet. Don't
+            # crash the cycle.
+            print(f"[DeadMansSwitch] ping skipped (import failed): {_dms_err}")
+
     def job_with_monitor():
         # Sprint 46I: position protection (stop-loss/take-profit,
         # smart profit-take, OCO reconciliation, equity tracking) no
@@ -1499,6 +1532,21 @@ def main():
             print("[CapitalRouting] Ciclo de nuevas entradas SALTADO (sin capital disponible). Monitor de SL/TP sigue corriendo normalmente.")
         else:
             print("[TradingPause] Ciclo de nuevas entradas SALTADO (pausado manualmente desde el dashboard). Monitor de SL/TP sigue corriendo normalmente.")
+
+        # Sprint 46R audit M11.3: heartbeat for the enhanced /api/health
+        # endpoint. Update on every cycle (gates-skipped or not) so the
+        # healthcheck can distinguish "scheduler thread is alive" from
+        # "scheduler thread is alive AND the bot is making forward
+        # progress". The endpoint returns 503 if this is older than 2x
+        # the configured run_interval_hours — Docker will then restart
+        # the container instead of leaving a zombie alive forever.
+        try:
+            from src.api.server import APP_STATE as _api_app_state
+            _api_app_state["last_analysis_cycle_at"] = time.time()
+        except Exception:
+            # API may not be started yet in --once mode / tests. Best-
+            # effort only — no log spam, no audit.
+            pass
 
     scheduler.job = job_with_monitor
 

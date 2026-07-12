@@ -410,7 +410,16 @@ class TestTelegramSmokeTestTest(unittest.TestCase):
                 post.assert_not_called()
 
     def test_send_test_message_reports_telegram_api_error(self):
-        with patch("src.agents.notification_agent.requests.post") as post:
+        # Sprint 46R (audit M11.2): the post-46R send_telegram_message
+        # makes up to 4 attempts with exponential backoff (1s/2s/4s)
+        # before giving up. Mocking the post to return 400 alone is
+        # not enough — the backoff sleeps would add ~7s to the test
+        # (which used to complete in <100ms). Mock time.sleep to a
+        # no-op so the retry behavior is exercised but the wall clock
+        # stays fast. We don't need to count attempts here — that's
+        # the dedicated M11.2 test's job.
+        with patch("src.agents.notification_agent.requests.post") as post, \
+             patch("src.agents.notification_agent.time.sleep"):
             post.return_value.status_code = 400
             post.return_value.text = '{"ok":false,"error":"chat not found"}'
             with patch.dict(os.environ, {

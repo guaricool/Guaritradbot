@@ -104,6 +104,19 @@ services:
         reservations:
           cpus: '0.25'
           memory: 256M
+    # Sprint 46R audit M11.1: cap container log size to 20MB x 5 files
+    # (= 100MB max per service). Without this, json-file's default
+    # behavior on a long-running bot is to grow the log file
+    # indefinitely until the disk fills — exactly the failure mode the
+    # audit flagged ("logs crecen sin límite según el default del host").
+    # The Coolify proxy itself is unaffected (it reads from the
+    # container's stdout via the standard Docker log driver, which
+    # the rotate-by-size driver supports transparently).
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
     healthcheck:
       # Same rationale as the healthcheck in Dockerfile.bot: hit the
       # actual /api/health endpoint (public per Sprint 46N audit C5)
@@ -182,6 +195,15 @@ services:
         reservations:
           cpus: '0.5'
           memory: 512M
+    # Sprint 46R audit M11.1: same log rotation as the bot. Next.js
+    # logs every request + re-render + build output, and the dashboard
+    # container can easily grow its log past 1GB in a week of normal
+    # use without rotation.
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000', r => process.exit(r.statusCode === 200 || r.statusCode === 307 || r.statusCode === 302 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 60s

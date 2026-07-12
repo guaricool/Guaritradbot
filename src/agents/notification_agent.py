@@ -18,6 +18,17 @@ What changed vs Sprint 18 version:
     a position, not when the ExecutionNode reports a fill — fills and
     position opens can diverge on dry-runs / partial fills).
 
+Sprint 46R audit M11.2: `send_telegram_message` used to do a single
+POST attempt and silently drop on failure — the audit's exact wording
+was "send_telegram_message hace 1 intento, sin retry, sin cola, sin
+meta-alerta. Si Telegram cae, toda la alertería desaparece en silencio".
+Now: exponential-backoff retry (1s/2s/4s, 3 attempts), and on final
+failure we emit a `SYSTEM_ERROR` audit event with
+`kind=TELEGRAM_DELIVERY_FAILED` AND write the failed payload to
+`audit/telegram_failures.json` as a side-channel — both so the
+dashboard can surface "Telegram is down" and so Carlos can
+recover/replay the lost message when Telegram comes back.
+
 The `TRADES_EXECUTED` event is still published by ExecutionNode for
 backward compat with any other subscribers (audit log readers, etc).
 """
@@ -26,6 +37,7 @@ import logging
 import os
 import platform
 import socket
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -97,8 +109,36 @@ class NotificationAgent:
     # ------------------------------------------------------------------
     #  Telegram transport
     # ------------------------------------------------------------------
+    # Sprint 46R audit M11.2: retry budget for the Telegram API. Pre-46R
+    # the bot did exactly one attempt and dropped the message on any
+    # network blip — a real production gap. With 3 attempts and exp
+    # backoff (1s/2s/4s = 7s total), a single 5s timeout × 3 attempts
+    # is well under the audit's "even a sustained 30s Telegram outage
+    # should be detected and meta-alerted" requirement (the meta-alert
+    # is the SYSTEM_ERROR emit + side-channel file write below).
+    _TELEGRAM_RETRY_BACKOFFS_S = (1.0, 2.0, 4.0)
+    _TELEGRAM_REQUEST_TIMEOUT_S = 5.0
+    _TELEGRAM_FAILURES_LOG = "audit/telegram_failures.jsonl"
+
     def send_telegram_message(self, text: str) -> bool:
-        """Send a message via Telegram Bot API. Returns True on success."""
+        """Send a message via Telegram Bot API. Returns True on success.
+
+        Sprint 46R audit M11.2: tries up to 3 attempts with exponential
+        backoff (1s/2s/4s). On any non-2xx response OR a network-level
+        exception, sleeps the backoff and retries. After the last
+        retry fails, we DON'T just return False (the pre-46R behavior)
+        — that would silently drop a critical alert. Instead we:
+          1. emit a SYSTEM_ERROR audit event with
+             kind=TELEGRAM_DELIVERY_FAILED, so the EventBus subscribers
+             (dashboard WS feed, kill-switch logic, etc.) see the
+             failure
+          2. append the failed payload to
+             `audit/telegram_failures.jsonl` so Carlos can replay
+             manually when Telegram comes back, and so the dashboard
+             can surface a "Telegram is down" banner
+
+        Returns True ONLY if a 200 was received within the retry budget.
+        """
         if not self.bot_token or not self.chat_id:
             logger.warning("Telegram not configured. Skipping notification.")
             return False
@@ -110,18 +150,93 @@ class NotificationAgent:
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
-        try:
-            response = requests.post(url, json=payload, timeout=5)
-            if response.status_code != 200:
-                logger.error(
-                    "Telegram send failed [%d]: %s",
-                    response.status_code, response.text[:200],
+        last_error = None
+        for attempt, backoff in enumerate((0.0,) + self._TELEGRAM_RETRY_BACKOFFS_S, start=1):
+            if backoff:
+                time.sleep(backoff)
+            try:
+                response = requests.post(url, json=payload, timeout=self._TELEGRAM_REQUEST_TIMEOUT_S)
+                if response.status_code == 200:
+                    if attempt > 1:
+                        # Succeeded on retry — log the recovery so
+                        # Carlos can see in the audit ledger that
+                        # there was a transient Telegram outage.
+                        logger.info(
+                            "Telegram send recovered on attempt %d/%d",
+                            attempt, len(self._TELEGRAM_RETRY_BACKOFFS_S) + 1,
+                        )
+                    return True
+                last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+                logger.warning(
+                    "Telegram send failed (attempt %d/%d): %s",
+                    attempt, len(self._TELEGRAM_RETRY_BACKOFFS_S) + 1, last_error,
                 )
-                return False
-            return True
+            except Exception as e:
+                last_error = f"{type(e).__name__}: {e}"
+                logger.warning(
+                    "Telegram send exception (attempt %d/%d): %s",
+                    attempt, len(self._TELEGRAM_RETRY_BACKOFFS_S) + 1, last_error,
+                )
+
+        # All retries exhausted. The pre-46R code would return here
+        # silently. Audit M11.2 says: that's the exact failure mode
+        # to fix. Emit a SYSTEM_ERROR event + side-channel the
+        # payload so a future operator (or Carlos reading the audit
+        # ledger) can recover the message.
+        self._meta_alert_telegram_failure(text, last_error)
+        return False
+
+    def _meta_alert_telegram_failure(self, text: str, last_error: str) -> None:
+        """Persist a Telegram-delivery failure for postmortem + replay.
+
+        Two side effects:
+          1. Emit SYSTEM_ERROR via the EventBus if available, so the
+             dashboard's WS feed + kill-switch logic see the failure.
+          2. Append a JSONL line to `audit/telegram_failures.jsonl` —
+             operator can replay later by hand.
+
+        Never raises — failure to write the meta-alert must NOT crash
+        the bot. A log line is the worst-case outcome.
+        """
+        ts = time.time()
+        record = {
+            "ts": ts,
+            "iso": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+            "text": text,
+            "last_error": last_error,
+        }
+        # 1. Side-channel file
+        try:
+            os.makedirs(os.path.dirname(self._TELEGRAM_FAILURES_LOG) or ".", exist_ok=True)
+            with open(self._TELEGRAM_FAILURES_LOG, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
         except Exception as e:
-            logger.error("Telegram send error: %s", e)
-            return False
+            logger.error("Failed to write telegram_failures.jsonl: %s", e)
+        # 2. EventBus SYSTEM_ERROR
+        try:
+            if self.event_bus is not None:
+                self.event_bus.publish("SYSTEM_ERROR", {
+                    "kind": "TELEGRAM_DELIVERY_FAILED",
+                    "error": (
+                        f"Telegram send failed after "
+                        f"{len(self._TELEGRAM_RETRY_BACKOFFS_S) + 1} attempts: {last_error}"
+                    ),
+                    "ts": ts,
+                    "text_preview": text[:500],
+                })
+        except Exception as e:
+            logger.error("Failed to publish SYSTEM_ERROR TELEGRAM_DELIVERY_FAILED: %s", e)
+        # 3. Also write to the main audit ledger if available, so
+        #    existing audit-log readers see this critical event.
+        if self.audit is not None:
+            try:
+                self.audit.append("TELEGRAM_DELIVERY_FAILED", {
+                    "last_error": last_error,
+                    "ts": ts,
+                    "text_preview": text[:500],
+                })
+            except Exception as e:
+                logger.error("Failed to append TELEGRAM_DELIVERY_FAILED to audit: %s", e)
 
     # ------------------------------------------------------------------
     #  Event handlers
