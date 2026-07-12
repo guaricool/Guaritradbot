@@ -12,6 +12,17 @@ services:
   # "port is already allocated" error at container start. The
   # browser-facing URL is http://13.140.181.29:8088, which
   # docker-proxy routes to the bot's internal 8080.
+  #
+  # Sprint 46P (audit A10): the `ports: 8088:8080` direct mapping
+  # below is a **plain-HTTP** public exposure — the audit flagged it
+  # as the primary attack surface (bearer token in clear, no TLS).
+  # The intent is to close this direct mapping and expose the bot
+  # only via Coolify's Traefik with a Let's Encrypt cert
+  # (`guaritradbot.13.140.181.29.sslip.io` — the same sslip.io
+  # pattern already used by riskfxprep on this VPS). For now, both
+  # paths run in parallel so the dashboard doesn't break mid-cutover;
+  # once HTTPS is verified working, remove this `ports:` block.
+  # See docs/HTTPS_SETUP.md for the full procedure.
   guaritradbot:
     build:
       context: .
@@ -85,6 +96,12 @@ services:
   #   bot's publicly reachable URL. The build arg pulls it from
   #   the env_file / Coolify env so the same image can target
   #   different bot URLs.
+  # - Sprint 46P (audit A10): the `ports: 3050:3000` direct mapping
+  #   here is the same plain-HTTP public exposure as the bot's 8088.
+  #   Cutover target: `https://guaritradbot-dash.13.140.181.29.sslip.io`
+  #   via Coolify Traefik. NEXT_PUBLIC_API_URL should be updated to
+  #   `https://guaritradbot.13.140.181.29.sslip.io` at the same time.
+  #   See docs/HTTPS_SETUP.md.
   dashboard:
     build:
       context: .
