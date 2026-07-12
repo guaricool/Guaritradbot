@@ -166,9 +166,21 @@ schedule:
 notifications:
   enabled: true
   provider: "telegram"
-  # Sprint 34: only notify when in live trading (mandate.enabled=true).
-  # Set to false if you want notifications in paper mode too (e.g. for testing).
-  live_only: true
+  # Sprint 34: when `live_only: true`, notifications only fire while
+  # the bot is in LIVE mode (mandate.enabled=true). When false,
+  # notifications fire in BOTH paper and live — useful when the bot
+  # is paused via the dashboard toggle (Carlos's preferred mode
+  # while he waits to flip the audit's remaining items).
+  #
+  # Note: SYSTEM_ERROR events ALWAYS bypass this gate (Sprint 43 C6
+  # fix) so critical failures reach Telegram regardless.
+  #
+  # Sprint 46R default: false. Carlos is running the bot in paused
+  # state and explicitly asked to keep receiving Telegram updates
+  # so he can monitor the bot's health while it isn't trading. Flip
+  # back to true once the bot is back in live mode if you want a
+  # quieter Telegram during paper.
+  live_only: false
   # Cadence for the "hourly" P&L update while a position is open.
   # 60 = once per hour per position. 0 = disable updates (entry/close only).
   position_update_minutes: 60
