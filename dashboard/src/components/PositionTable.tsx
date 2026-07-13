@@ -34,7 +34,15 @@ function readCollapsedSet(): Set<string> {
 function writeCollapsedSet(s: Set<string>) {
   if (typeof window === "undefined") return;
   try {
-    window.sessionStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify([...s]));
+    // Sprint 46Z (audit M13): use Array.from instead of `[...s]`.
+    // Spreading a Set requires either --downlevelIteration or an
+    // ES2015+ target; Array.from works under the default
+    // tsconfig (no downlevel) and is also explicit about the
+    // conversion. Same JSON output.
+    window.sessionStorage.setItem(
+      COLLAPSED_STORAGE_KEY,
+      JSON.stringify(Array.from(s)),
+    );
   } catch {
     // best-effort only
   }
