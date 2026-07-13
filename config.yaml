@@ -297,5 +297,17 @@ mandate:
   kill_switch_file: "/tmp/GUARITRADBOT_KILL"
   audit_log_dir: "audit"
 
+# === Sprint 47A (audit M15 Option B) — Allocation policy bypass for small accounts ===
+# With a $20-100 account and the $10 minimum order, the 44B drift policy
+# (40% crypto, 40% equity, 10% commodities + 10% drift tolerance) is
+# structurally unreachable — a single position is already 50-100% of the
+# book. For accounts below this threshold, we skip the drift policy
+# (returns ok=True with reason "small_account_policy_skipped") and rely
+# solely on the 44A concentration cap (60%) as backstop. Set to 0 to
+# disable the bypass (always enforce the drift policy). Set to 1000+
+# to effectively never enforce drift (use only concentration cap).
+allocation_policy:
+  small_account_threshold_usd: 50.0
+
 # === Sprint 44B — Allocation policy (BlackRock-style) ===
 # Target weights

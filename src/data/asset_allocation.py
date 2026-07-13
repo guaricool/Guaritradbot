@@ -48,10 +48,23 @@ class AllocationPolicy:
 
     `enabled=False` disables the drift gate entirely (the 44A
     concentration gate still runs as a hard backstop).
+
+    `small_account_threshold_usd` (Sprint 47A / audit M15 Option B):
+    if the total notional of the current positions PLUS the proposed
+    trade is below this dollar amount, the drift gate is skipped
+    (returns ok=True with reason "small_account_policy_skipped").
+    Rationale: with a $20-100 account and the $10 minimum order, the
+    44B drift policy (40% crypto, 40% equity, 10% commodities) is
+    structurally impossible — a single position is already >=50% of
+    the book. The audit's recommendation: for small accounts, mono-
+    position IS the correct behavior, and the concentration cap
+    (44A, 60%) is sufficient backstop. Default 50.0; set to 0 to
+    disable the bypass (always enforce the drift policy).
     """
     targets: Dict[str, float] = field(default_factory=dict)
     drift_tolerance_pct: float = 5.0
     enabled: bool = True
+    small_account_threshold_usd: float = 50.0
 
     def __post_init__(self):
         # Validate at construction time so misconfigured configs fail
@@ -73,6 +86,10 @@ class AllocationPolicy:
         if self.drift_tolerance_pct < 0 or self.drift_tolerance_pct > 50:
             raise ValueError(
                 f"drift_tolerance_pct must be in [0, 50]; got {self.drift_tolerance_pct}"
+            )
+        if self.small_account_threshold_usd < 0:
+            raise ValueError(
+                f"small_account_threshold_usd must be >= 0; got {self.small_account_threshold_usd}"
             )
 
     def target_for(self, asset_class: str) -> float:
@@ -238,6 +255,18 @@ def check_trade_against_policy(
     opens = list(current_positions)
     if not opens:
         return True, "empty_book"
+    # Sprint 47A (audit M15 Option B): bypass the drift policy on
+    # small accounts. With account <$50 and the $10 minimum, the
+    # 40/40/10/10 target + 10% drift is structurally unreachable —
+    # a single position is already 50-100% of the book. The 44A
+    # concentration cap (60%) is the appropriate backstop here.
+    if policy.small_account_threshold_usd > 0:
+        total_notional = (
+            sum(getattr(p, "notional_usd", 0.0) for p in opens)
+            + proposed_notional_usd
+        )
+        if total_notional < policy.small_account_threshold_usd:
+            return True, "small_account_policy_skipped"
     # Compute actual weights of current + proposed trade.
     proposed_positions = list(opens) + [_ProposedPosition(asset, proposed_notional_usd)]
     new_weights = current_actual_weights(proposed_positions)

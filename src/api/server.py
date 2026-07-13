@@ -972,6 +972,13 @@ def get_allocation(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
                 targets=policy_cfg.get("targets") or DEFAULT_POLICY.targets,
                 drift_tolerance_pct=float(policy_cfg.get("drift_tolerance_pct", 10.0)),
                 enabled=True,
+                # Sprint 47A (audit M15 Option B): small-account
+                # bypass threshold, read from config so the
+                # dashboard can tune it. 0 = always enforce the
+                # drift policy (legacy behavior).
+                small_account_threshold_usd=float(
+                    policy_cfg.get("small_account_threshold_usd", 50.0)
+                ),
             )
         except Exception:
             policy = DEFAULT_POLICY
