@@ -30,8 +30,6 @@ brokers:
     name: "binanceus"
     symbols:
       - "BTC-USD"
-      - "ETH-USD"
-      - "SOL-USD"
   equity:
     name: "alpaca"
     symbols:
@@ -266,7 +264,7 @@ risk:
 # === Sprint 0 (preview sin enforcement real; Sprint 1 lo enchufa) ===
 mandate:
   enabled: false                    # toggle del Mandate Gate
-  allowed_symbols: ["BTC-USD", "BTCUSDT", "ETH-USD", "GLD", "USO", "SPY", "QQQ"]
+  allowed_symbols: ["BTC-USD", "BTCUSDT", "GLD", "USO", "SPY", "QQQ"]
   max_position_usd: 20              # tope absoluto por trade
   max_daily_loss_usd: 5             # kill switch cuando esta banda se pierde en 24h (P&L realizado, no teórico)
   max_total_exposure_usd: 100       # tope de exposición total abierta simultánea
