@@ -1,9 +1,23 @@
 name: Daily Multi-Asset Trading Loop
-description: Orchestrates agents to analyze market, generate hypotheses, score them, manage risk, and execute.
+description: Orchestrates agents to scan news, analyze market, generate hypotheses, score them, manage risk, and execute.
 steps:
+  # Sprint 49: NewsAnalyst runs FIRST so the downstream
+  # HypothesisScorer can weight the bull/bear scores by the
+  # prevailing news sentiment for each asset. The result is
+  # stored in state["scan_news"]; the HypothesisScorer reads
+  # it via state.get("scan_news", {}). The scan is
+  # fault-tolerant -- if the RSS feed is unreachable, the
+  # step still succeeds with an empty news context.
+  - id: scan_news
+    agent: NewsAnalyst
+    action: scan_news
+    inputs:
+      assets: ["SPY", "QQQ", "BTC-USD", "GLD", "USO"]
+      lookback_hours: 24
   - id: analyze_market
     agent: MarketAnalystAgent
     action: fetch_and_analyze
+    depends_on: ["scan_news"]
     inputs:
       assets: ["SPY", "QQQ", "BTC-USD", "GLD", "USO"]
       timeframes: ["15m", "1h", "4h"]
@@ -14,11 +28,10 @@ steps:
   # Sprint 47B (audit M1 resto): renamed from "debate_hypotheses" /
   # "DebateAgent" to honest framing. The step is now a sequential
   # scoring (Bull/Bear/Risk) followed by threshold filtering -- not
-  # a real LLM-backed debate. The id is preserved as
-  # `score_hypotheses` so historical audit log entries referencing
-  # it stay searchable; the action is still `run_debate` (the
-  # method name on the orchestrator didn't change -- only the
-  # class was renamed to HypothesisScorer).
+  # a real LLM-backed debate. Sprint 49: also reads
+  # state["scan_news"] to weight scores by per-asset news
+  # sentiment (magnitude capped at +/- 5 so news is a
+  # tie-breaker, not a primary signal).
   - id: score_hypotheses
     agent: HypothesisScorer
     action: run_debate

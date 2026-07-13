@@ -48,7 +48,7 @@ forensics — the event type is still `DEBATE_APPROVED` /
 dashboard's audit feed).
 """
 from __future__ import annotations
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from src.core.logging_setup import get_logger
 logger = get_logger(__name__)
@@ -215,10 +215,56 @@ class ScoreSynthesizer:
     def __init__(self, audit=None):
         self.audit = audit
 
-    def decide(self, hypothesis: dict, open_positions: list) -> Dict[str, Any]:
+    def decide(self, hypothesis: dict, open_positions: list,
+               news_context: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """Score a hypothesis into a final approve/reject decision.
+
+        Sprint 49: added `news_context` parameter (optional dict
+        keyed by asset, with `news_sentiment` in [-1, +1] per
+        asset). When present, the sentiment is used as a small
+        TIE-BREAKER adjustment to the bull/bear scores:
+          - Positive news: +5 * sentiment to bull_score
+          - Negative news: -5 * sentiment to bear_score (so
+            negative sentiment raises the bear score)
+        The magnitude is intentionally small (+/- 5 max) so the
+        news context is a tie-breaker, not a primary signal --
+        technical indicators (BullScorer/BearScorer/RiskScorer)
+        still drive the decision.
+        """
         bull_score, bull_reasons = BullScorer.score(hypothesis)
         bear_score, bear_reasons = BearScorer.score(hypothesis)
         risk_penalty, risk_reasons = RiskScorer.score(hypothesis, open_positions)
+
+        # Sprint 49: news sentiment tie-breaker. Look up the
+        # hypothesis's asset in the news context (if any) and
+        # apply a small adjustment. Negative sentiment is
+        # expressed as a negative float, so to "raise the bear
+        # score on negative news" we SUBTRACT a positive
+        # fraction of the (negative) sentiment -- which adds to
+        # bear_score. Symmetric for positive news.
+        news_sentiment = 0.0
+        news_top_headline = ""
+        news_count = 0
+        if news_context:
+            asset = hypothesis.get("asset", "")
+            ctx = news_context.get(asset) or {}
+            news_sentiment = float(ctx.get("news_sentiment", 0.0) or 0.0)
+            news_top_headline = ctx.get("top_headline", "")
+            news_count = int(ctx.get("news_count", 0) or 0)
+            if news_sentiment != 0.0:
+                # Scale: +/- 5 max adjustment.
+                bull_adj = 5.0 * max(0.0, news_sentiment)
+                bear_adj = 5.0 * max(0.0, -news_sentiment)
+                if bull_adj > 0:
+                    bull_score += bull_adj
+                    bull_reasons = list(bull_reasons) + [
+                        f"news_sentiment +{news_sentiment:.2f} ({news_count} headlines) → bull +{bull_adj:.1f}"
+                    ]
+                if bear_adj > 0:
+                    bear_score += bear_adj
+                    bear_reasons = list(bear_reasons) + [
+                        f"news_sentiment {news_sentiment:.2f} ({news_count} headlines) → bear +{bear_adj:.1f}"
+                    ]
 
         final = 0.4 * bull_score + 0.4 * (100 - bear_score) - 0.2 * risk_penalty
 
@@ -293,10 +339,11 @@ class ScoreSynthesizer:
 
         return result
 
-    def decide_all(self, hypotheses: list, open_positions: list) -> List[Dict[str, Any]]:
+    def decide_all(self, hypotheses: list, open_positions: list,
+                   news_context: Optional[Dict[str, Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
         verdicts = []
         for h in hypotheses:
-            verdicts.append(self.decide(h, open_positions))
+            verdicts.append(self.decide(h, open_positions, news_context=news_context))
         return verdicts
 
     def filter_approved(self, hypotheses: list, verdicts: list) -> list:
@@ -323,16 +370,31 @@ class HypothesisScorer:
         # compatibility (the YAML step action: `run_debate`).
         # Internally this is just running the scorers, not a
         # real debate -- see the module docstring.
+        # Sprint 49: pull the news context (per-asset sentiment)
+        # from the upstream `scan_news` step. The HypothesisScorer
+        # uses it as a tie-breaker (magnitude capped at +/- 5).
+        # If `scan_news` is absent or failed, news_context is {}
+        # and the scorer runs as before with no news adjustment.
         hypotheses = state.get("generate_hypotheses", {}).get("hypotheses", [])
         open_positions = self.position_repo.open() if self.position_repo else []
+        news_context = state.get("scan_news", {}) or {}
 
         if not hypotheses:
             logger.info('[HypothesisScorer] sin hipótesis, debate vacío')
             return {"hypotheses": [], "verdicts": [], "approved_hypotheses": []}
 
         logger.info(f'[HypothesisScorer] {len(hypotheses)} hipótesis × {len(open_positions)} posiciones abiertas')
+        if news_context:
+            n_assets = len(news_context)
+            avg_sent = sum(
+                ctx.get("news_sentiment", 0.0) for ctx in news_context.values()
+            ) / max(n_assets, 1)
+            logger.info(
+                f'[HypothesisScorer] news_context: {n_assets} assets, '
+                f'avg sentiment {avg_sent:+.2f} (will apply as +/- 5 tie-breaker)'
+            )
 
-        verdicts = self.manager.decide_all(hypotheses, open_positions)
+        verdicts = self.manager.decide_all(hypotheses, open_positions, news_context=news_context)
         approved = self.manager.filter_approved(hypotheses, verdicts)
 
         for v in verdicts:

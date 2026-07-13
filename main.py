@@ -43,6 +43,7 @@ from src.safety.mandate_gate import MandateGate, MandateConfig
 from src.data_store.positions import PositionRepository
 from src.data_store.position_monitor import PositionMonitor
 from src.agents.researchers import HypothesisScorer
+from src.agents.news_analyst import NewsAnalyst  # Sprint 49
 from src.core.logging_setup import setup_logging
 from src.runtime.bot_runtime import BotRuntime  # Sprint 46T (audit M6)
 
@@ -979,6 +980,13 @@ def main():
 
     registry = {
         "MarketAnalystAgent": MarketAnalystAgent(event_bus=event_bus, audit=audit),
+        # Sprint 49: NewsAnalyst scans recent headlines via
+        # Yahoo Finance RSS and emits a per-asset sentiment
+        # score that the HypothesisScorer uses as a
+        # tie-breaker. The scan is fault-tolerant -- if the
+        # feed is unreachable, the workflow continues with
+        # empty news context (no harm, just no signal).
+        "NewsAnalyst": NewsAnalyst(),
         "StrategyAgent": StrategyAgent(
             strategy_params=strategy_params, audit=audit,
             # Sprint 46S (audit M1 follow-up): same flag RiskManagerAgent
