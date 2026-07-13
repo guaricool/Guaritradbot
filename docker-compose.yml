@@ -94,6 +94,20 @@ services:
       - traefik.http.routers.http-0-guaritradbot.middlewares=redirect-to-https
       - "traefik.http.routers.http-0-guaritradbot.rule=Host(`guaritradbot.13.140.181.29.sslip.io`) && PathPrefix(`/`)"
       - traefik.http.routers.http-0-guaritradbot.service=http-0-guaritradbot
+      # Sprint 55.1: dedicated WebSocket router. The main router
+      # applies `gzip` middleware which breaks the WebSocket upgrade
+      # (Traefik returns 403 Forbidden on the Upgrade request). The
+      # fix: a SECOND router that matches ONLY /ws/ paths and does
+      # NOT apply gzip, so the WebSocket upgrade passes through
+      # untouched. Traefik matches the most specific PathPrefix first,
+      # so /ws/live goes to this router; everything else stays on
+      # the gzip-enabled one. Reported 2026-07-13 from the dashboard
+      # console after Sprint 55 redeploy.
+      - traefik.http.routers.https-0-guaritradbot-ws.entryPoints=https
+      - 'traefik.http.routers.https-0-guaritradbot-ws.rule=Host(`guaritradbot.13.140.181.29.sslip.io`) && PathPrefix(`/ws/`)'
+      - traefik.http.routers.https-0-guaritradbot-ws.service=https-0-guaritradbot
+      - traefik.http.routers.https-0-guaritradbot-ws.tls.certresolver=letsencrypt
+      - traefik.http.routers.https-0-guaritradbot-ws.tls=true
       - traefik.http.routers.https-0-guaritradbot.entryPoints=https
       - traefik.http.routers.https-0-guaritradbot.middlewares=gzip
       - "traefik.http.routers.https-0-guaritradbot.rule=Host(`guaritradbot.13.140.181.29.sslip.io`) && PathPrefix(`/`)"
