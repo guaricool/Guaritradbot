@@ -217,7 +217,8 @@ class StrategyAgent:
 
     def __init__(self, strategy_params: dict = None, audit=None, ml_predictors: dict = None,
                  ml_long_threshold: float = 0.6, ml_short_threshold: float = 0.4,
-                 allow_crypto_short: bool = False):
+                 allow_crypto_short: bool = False, decision_log=None,
+                 loss_streak_suppress: int = 3):
         self.params = strategy_params or {
             "rsi_oversold": 30,         # cruce estricto
             "rsi_overbought": 70,
@@ -256,6 +257,19 @@ class StrategyAgent:
         # `evaluate_strategies`'s filtering block below for where this
         # is actually applied.
         self.allow_crypto_short = allow_crypto_short
+        # Sprint 52.4: optional decision_log reference so the
+        # StrategyAgent can suppress hypotheses for (asset,
+        # direction) combinations with a losing streak. The
+        # bot already records every outcome in the decision
+        # log (Sprint 48), so the data is there — we just
+        # need to read it before generating. Set
+        # `loss_streak_suppress=0` to disable the suppression
+        # (the scorer still consults `recent_lessons_for` on
+        # its own — this is an additional, source-side filter
+        # that prevents the most clearly-broken setups from
+        # even reaching the score debate).
+        self.decision_log = decision_log
+        self.loss_streak_suppress = int(loss_streak_suppress)
 
     def _add_hyp(self, hypotheses, asset, tf, direction, strategy, price, **extras):
         hypotheses.append({
@@ -791,6 +805,67 @@ class StrategyAgent:
                             ),
                         })
             hypotheses = kept
+
+        # Sprint 52.4: loss-streak suppression. The bot already
+        # records every closed position in the decision log
+        # (Sprint 48). Before sending a hypothesis to the score
+        # debate, ask the log "have the last N outcomes for this
+        # (asset, direction) all been losses?" If yes, suppress.
+        # Defense-in-depth: the scorer still consults
+        # `recent_lessons_for` on its own, but suppressing at the
+        # source saves a full debate cycle and prevents the most
+        # clearly-broken setups from even reaching the risk gate.
+        if self.decision_log is not None and self.loss_streak_suppress > 0 and hypotheses:
+            suppressed_streak = []
+            kept_after_streak = []
+            for h in hypotheses:
+                try:
+                    recent = self.decision_log.recent_outcomes_for(
+                        asset=h["asset"],
+                        direction=h["direction"],
+                        n=self.loss_streak_suppress,
+                    )
+                except Exception as _e:
+                    # Decision log failure must NEVER block a trade
+                    # — same fail-open pattern as researchers.py.
+                    logger.info(f"[DecisionLog] could not query outcomes: {_e}")
+                    recent = []
+                if len(recent) >= self.loss_streak_suppress and all(
+                    (r.get("pnl_usd", 0.0) or 0.0) < 0 for r in recent
+                ):
+                    suppressed_streak.append((h, recent))
+                else:
+                    kept_after_streak.append(h)
+            if suppressed_streak:
+                for h, recent in suppressed_streak:
+                    pnl_summary = ", ".join(
+                        f"${r.get('pnl_usd', 0):.2f}"
+                        for r in recent[: self.loss_streak_suppress]
+                    )
+                    logger.info(
+                        f"  📉 {h['asset']:8} {h['direction']:5} "
+                        f"— {len(recent)} pérdidas consecutivas "
+                        f"[{pnl_summary}] — suprimida por loss-streak (Sprint 52.4)"
+                    )
+                    if self.audit is not None:
+                        self.audit.append("HYPOTHESIS_SUPPRESSED", {
+                            "asset": h["asset"],
+                            "tf": h.get("tf", ""),
+                            "direction": h["direction"],
+                            "strategy": h["strategy"],
+                            "price": h["price"],
+                            "reason": "loss_streak",
+                            "detail": (
+                                f"last {len(recent)} outcomes for "
+                                f"{h['asset']} {h['direction']} all had "
+                                f"pnl_usd<0 [{pnl_summary}]. Suppressed at "
+                                f"source to avoid wasting a debate cycle on "
+                                f"a strategy the recent track record says "
+                                f"is broken. Set loss_streak_suppress=0 to "
+                                f"disable."
+                            ),
+                        })
+            hypotheses = kept_after_streak
 
         if hypotheses:
             logger.info(f'[StrategyAgent] → {len(hypotheses)} hipótesis nuevas:')

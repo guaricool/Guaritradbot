@@ -40,6 +40,7 @@ from src.safety.audit_ledger import AuditLedger
 from src.safety.kill_switch import KillSwitch
 from src.safety.kelly_drawdown import DrawdownKillSwitch  # Sprint 43 H3
 from src.safety.mandate_gate import MandateGate, MandateConfig
+from src.safety.decision_log import get_decision_log  # Sprint 52.4
 from src.data_store.positions import PositionRepository
 from src.data_store.position_monitor import PositionMonitor
 from src.agents.researchers import HypothesisScorer
@@ -1005,6 +1006,15 @@ def main():
             # `evaluate_strategies` filtering block for the full
             # rationale.
             allow_crypto_short=allow_crypto_short,
+            # Sprint 52.4: wire the process-wide DecisionLog so
+            # the StrategyAgent can suppress hypotheses for
+            # (asset, direction) combinations with a losing
+            # streak (default: 3 consecutive losses -> suppress
+            # the next hypothesis at the source, before the
+            # score debate). The HypothesisScorer still consults
+            # `recent_lessons_for` on its own — this is a
+            # defense-in-depth, source-side filter.
+            decision_log=get_decision_log(),
         ),
         "RiskManagerAgent": RiskManagerAgent(
             broker_client=broker_client,

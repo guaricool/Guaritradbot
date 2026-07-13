@@ -416,6 +416,45 @@ class DecisionLog:
                     break
             return lessons
 
+    def recent_outcomes_for(
+        self,
+        asset: str,
+        direction: Optional[str] = None,
+        n: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """Sprint 52.4: return the last N outcome records for
+        `asset` (optionally filtered to a specific direction),
+        most recent first.
+
+        Used by the StrategyAgent to suppress new hypotheses
+        when the recent track record for an (asset, direction)
+        is uniformly bad — e.g. "the last 3 BTC-USD longs all
+        lost", which is a stronger signal than a lesson string
+        the scorer has to interpret.
+
+        Unlike `recent_lessons_for` (which returns human-readable
+        strings), this returns the raw structured record so the
+        caller can apply its own threshold logic (e.g. count
+        how many had `pnl_usd < 0`).
+
+        Returns an empty list if there are no prior outcomes
+        for the filter. Direction filter is optional — if
+        omitted, returns all directions for the asset.
+        """
+        with self._lock:
+            out: List[Dict[str, Any]] = []
+            for rec in reversed(self._cache):
+                if rec.get("kind") != "outcome":
+                    continue
+                if rec.get("asset") != asset:
+                    continue
+                if direction is not None and rec.get("direction") != direction:
+                    continue
+                out.append(dict(rec))
+                if len(out) >= n:
+                    break
+            return out
+
     def recent_decisions(self, n: int = 20) -> List[Dict[str, Any]]:
         """Return the last N records (any kind), most recent first.
         Used by the dashboard's audit feed / decision-log tile.
