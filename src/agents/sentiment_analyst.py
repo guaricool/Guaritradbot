@@ -187,8 +187,8 @@ class SentimentAnalyst:
 
     def scan_social_sentiment(
         self,
-        assets: List[str],
-        use_cache: bool = True,
+        *args,
+        **kwargs,
     ) -> Dict[str, Dict[str, Any]]:
         """Scan social sentiment for each asset. Returns a
         dict keyed by asset with the per-asset context. Empty
@@ -205,7 +205,34 @@ class SentimentAnalyst:
               "scanned_at": str,
               "from_cache": bool,
           }
+
+        Sprint 51: dual signature. The workflow engine
+        (`src/workflows/engine.py:133`) calls every action as
+        `action_method(inputs=<dict>, state=<dict>)`. Older
+        callers and the Sprint 50 tests invoke this method
+        directly as `scan_social_sentiment(assets=[...],
+        use_cache=True)`. We support both to avoid the same
+        production TypeError documented in the live VPS log
+        on 2026-07-13 for NewsAnalyst.scan_news.
         """
+        from src.agents.news_analyst import _resolve_wf_args
+        inputs, state = _resolve_wf_args(args, kwargs, param_names=("assets", "use_cache"))
+        assets = inputs.get("assets", []) if isinstance(inputs, dict) else []
+        use_cache = bool(inputs.get("use_cache", True)) if isinstance(inputs, dict) else True
+        # `state` is accepted for API uniformity with the
+        # other workflow actions; scan_social_sentiment is
+        # read-only and does not consume it.
+        del state
+        return self._scan_social_sentiment_impl(assets, use_cache)
+
+    def _scan_social_sentiment_impl(
+        self,
+        assets: List[str],
+        use_cache: bool = True,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Implementation body of scan_social_sentiment. See
+        scan_social_sentiment() for the dual signature and
+        return contract."""
         cache_raw = _load_cache_file(self.cache_path, self.ttl_seconds) if use_cache else {}
         cache = {k: _CacheEntry(**v) for k, v in cache_raw.items()}
         out: Dict[str, Dict[str, Any]] = {}

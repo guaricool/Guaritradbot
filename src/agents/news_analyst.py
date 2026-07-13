@@ -334,9 +334,8 @@ class NewsAnalyst:
 
     def scan_news(
         self,
-        assets: List[str],
-        lookback_hours: int = 24,
-        use_cache: bool = True,
+        *args,
+        **kwargs,
     ) -> Dict[str, Dict[str, Any]]:
         """Scan news for each asset. Returns a dict keyed by asset
         with the per-asset news context. Empty dict per asset on
@@ -353,7 +352,39 @@ class NewsAnalyst:
               "scanned_at": str,               # ISO 8601 UTC
               "from_cache": bool,             # whether this was a cache hit
           }
+
+        Sprint 51: dual signature. The workflow engine
+        (`src/workflows/engine.py:133`) calls every action as
+        `action_method(inputs=<dict>, state=<dict>)`. Older
+        callers and the Sprint 49/50 tests invoke this method
+        directly as `scan_news(assets=[...], lookback_hours=24,
+        use_cache=True)`. We support both to avoid the
+        `TypeError: got an unexpected keyword argument 'inputs'`
+        production crash documented in the live VPS log on
+        2026-07-13.
         """
+        # Sprint 51: dispatch on call shape. Workflow engine
+        # passes (inputs=<dict>, state=<dict>); legacy callers
+        # pass (assets=<list>, lookback_hours=<int>, use_cache=<bool>).
+        inputs, state = _resolve_wf_args(args, kwargs, param_names=("assets", "lookback_hours", "use_cache"))
+        assets = inputs.get("assets", []) if isinstance(inputs, dict) else []
+        lookback_hours = int(inputs.get("lookback_hours", 24)) if isinstance(inputs, dict) else 24
+        use_cache = bool(inputs.get("use_cache", True)) if isinstance(inputs, dict) else True
+        # `state` is accepted for API uniformity with the
+        # other workflow actions (researchers.run_debate,
+        # strategy_agent.evaluate_strategies, etc.) but
+        # scan_news is read-only and does not need it.
+        del state
+        return self._scan_news_impl(assets, lookback_hours, use_cache)
+
+    def _scan_news_impl(
+        self,
+        assets: List[str],
+        lookback_hours: int = 24,
+        use_cache: bool = True,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Implementation body of scan_news. See scan_news() for
+        the dual signature and return contract."""
         cache = _load_cache(self.cache_path, self.ttl_seconds) if use_cache else {}
         out: Dict[str, Dict[str, Any]] = {}
         for asset in assets:
@@ -419,3 +450,47 @@ def _ts_to_iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
+
+
+def _resolve_wf_args(args, kwargs, param_names):
+    """Sprint 51: dual-signature dispatcher for workflow actions.
+
+    The workflow engine (`src/workflows/engine.py:133`) calls
+    every action as `action_method(inputs=<dict>, state=<dict>)`.
+    Legacy code paths (CLI, tests, library users) call the same
+    method with positional args matching `param_names`.
+
+    This helper normalizes both call shapes to a `(inputs, state)`
+    tuple so the method body can read `inputs.get("key")`
+    without caring which path the caller took.
+
+    Detection rule: if the first positional arg is a dict and has
+    at least one key matching a known engine field ("assets" /
+    "lookback_hours" / "use_cache"), OR if the kwargs contain an
+    `inputs` key whose value is a dict, treat it as the workflow
+    call shape. Otherwise it's a legacy call — synthesize an
+    inputs dict from the positional/kwargs.
+    """
+    ENGINE_KEYS = {"assets", "lookback_hours", "use_cache", "state"}
+    # Workflow engine call: scan_news(inputs={<dict>}, state={<dict>})
+    if args and isinstance(args[0], dict) and any(k in args[0] for k in param_names):
+        inputs = args[0]
+        state = args[1] if len(args) > 1 and isinstance(args[1], dict) else {}
+        return inputs, state
+    if "inputs" in kwargs and isinstance(kwargs["inputs"], dict):
+        inputs = kwargs["inputs"]
+        state = kwargs.get("state", {})
+        if not isinstance(state, dict):
+            state = {}
+        return inputs, state
+    # Legacy direct call: scan_news(assets=[...], lookback_hours=24, use_cache=True)
+    inputs = {}
+    if args:
+        inputs[param_names[0]] = args[0]
+    for i, name in enumerate(param_names[1:], start=1):
+        if i < len(args):
+            inputs[name] = args[i]
+    for k, v in kwargs.items():
+        if k in param_names:
+            inputs[k] = v
+    return inputs, {}
