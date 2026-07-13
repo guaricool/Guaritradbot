@@ -18,6 +18,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import pytz
+import time as _time
 from src.core.component import Component, ComponentState
 from src.core.data_validator import validate_dataframe, DataIntegrityError
 from src.data.yf_safe import safe_yf_download
@@ -504,6 +505,20 @@ class MarketAnalystAgent(Component):
             self.degrade(f"data integrity: {e}")
             return False
 
+    # Sprint 54: dedup window for the total-failure SYSTEM_ERROR alert.
+    # Pre-54 the bot sent one alert per cycle on a sustained yfinance
+    # outage, flooding Telegram. With a 30-minute window the operator
+    # gets one ping per outage, not one per 30-minute cycle. The window
+    # resets on a successful fetch (any non-total cycle).
+    _TOTAL_FAILURE_ALERT_DEDUP_S = 30 * 60
+    # Sprint 54: retry cooldown for the total-failure path. If the
+    # retry also fails, the agent faults but the NEXT cycle waits at
+    # least this long before retrying again — otherwise we'd burn a
+    # recursive call every cycle (and the corresponding 30s sleep)
+    # on what is clearly a sustained upstream problem, uselessly
+    # inflating the cycle duration.
+    _TOTAL_FAILURE_RETRY_COOLDOWN_S = 5 * 60
+
     def fetch_and_analyze(self, inputs: dict, state: dict):
         assets = inputs.get("assets", [])
         timeframes = inputs.get("timeframes", ["1h"])
@@ -514,7 +529,31 @@ class MarketAnalystAgent(Component):
             "4h":  ("60m", "4h"),
         }
 
-        self.start() if self.state == ComponentState.READY else None
+        # Sprint 54: auto-recover from FAULTED/DEGRADED at the top of
+        # each cycle. Pre-54, once `self.fault()` ran on a total
+        # yfinance failure, the agent was stuck in FAULTED forever —
+        # `Component.recover()` only handles DEGRADED → RUNNING, and
+        # `Component.start()` refuses non-READY states. Every
+        # subsequent cycle aborted with
+        # "Agent 'MarketAnalystAgent' is in state 'FAULTED'",
+        # flooding Telegram with hundreds of identical alerts.
+        # The fix: treat FAULTED as a recoverable state at the cycle
+        # boundary. The next cycle tries again; if the data comes
+        # back, we silently leave FAULTED behind. If it doesn't,
+        # the retry/recur logic below handles sustained outages.
+        if self.state == ComponentState.FAULTED:
+            logger.info(
+                "[MarketAnalyst] auto-recovering from FAULTED at cycle start "
+                "(Sprint 54 — pre-54 the agent was stuck here forever)"
+            )
+            self._transition(
+                ComponentState.RUNNING,
+                "auto-recover: try fresh at cycle start",
+            )
+        elif self.state == ComponentState.DEGRADED:
+            self.recover()
+        else:
+            self.start()  # READY → RUNNING (no-op if already RUNNING)
         logger.info(f'[MarketAnalystAgent] Fetching {len(assets)} assets × {len(timeframes)} timeframes...')
         data = {}
         fail_count = 0
@@ -604,27 +643,89 @@ class MarketAnalystAgent(Component):
                     logger.error(f'  ❌ {asset}@{tf}: {e}')
                     fail_count += 1
 
+        # Sprint 54: also reset the dedup/retry cooldown on a successful
+        # fetch. The total-failure path is rare; resetting on success is
+        # cheap and ensures the next real outage can fire a fresh alert
+        # + retry without being gated by a previous incident.
+        total_requested = len(assets) * len(timeframes)
+        if fail_count == 0:
+            self._last_total_failure_retry_at = 0.0
+            self._last_total_failure_alert_at = 0.0
+
         # Si fallaron demasiados assets, marcar como DEGRADED pero seguir
-        if fail_count > 0 and fail_count < len(assets) * len(timeframes):
+        if fail_count > 0 and fail_count < total_requested:
             self.degrade(f"{fail_count} feeds failed but workflow continues")
-        elif fail_count >= len(assets) * len(timeframes):
-            self.fault(f"all {fail_count} feeds failed")
+        elif fail_count >= total_requested and total_requested > 0:
+            # Sprint 54: TOTAL failure handling with retry + dedup.
+            # Pre-54, the agent went straight to FAULTED and stayed
+            # there. After 54:
+            #   1. If we haven't retried in the last 5 min, sleep 30s
+            #      and recurse into this method once. This catches
+            #      transient yfinance rate-limits (the dominant cause
+            #      in practice) without bothering the operator.
+            #   2. If we have retried recently, fault + emit ONE
+            #      SYSTEM_ERROR per 30 min, not one per cycle. This
+            #      keeps Telegram quiet during sustained outages.
+            now = _time.time()
+            last_retry = getattr(self, "_last_total_failure_retry_at", 0.0)
+            if (now - last_retry) > self._TOTAL_FAILURE_RETRY_COOLDOWN_S:
+                # First attempt (or cooldown elapsed) — try once more.
+                self._last_total_failure_retry_at = now
+                logger.warning(
+                    f"[MarketAnalyst] all {fail_count}/{total_requested} "
+                    f"feeds failed — retrying once in 30s "
+                    f"(Sprint 54 resilience; pre-54 the agent would have "
+                    f"faulted and stayed faulted forever)"
+                )
+                _time.sleep(30)
+                # Reset faulted state before recursing (the inner
+                # call's auto-recover block will re-emit a clean
+                # transition, but we want the state machine to be
+                # in a sane starting point for the retry).
+                if self.state == ComponentState.FAULTED:
+                    self._transition(
+                        ComponentState.RUNNING,
+                        "retry after total-failure backoff",
+                    )
+                elif self.state == ComponentState.DEGRADED:
+                    self.recover()
+                return self.fetch_and_analyze(inputs, state)
+
+            # Retry was already attempted recently and still failed.
+            # Fault + emit dedup'd alert.
+            self.fault(f"all {fail_count} feeds failed (retry exhausted)")
             # Sprint 43 C6 fix: total data-feed failure is a critical
             # state — the bot has no market context. Without this
             # alert Carlos would only know if he happened to look at
             # the dashboard. SYSTEM_ERROR → NotificationAgent →
             # Telegram, regardless of paper/live.
-            if self.event_bus is not None:
-                try:
-                    self.event_bus.publish("SYSTEM_ERROR", {
-                        "kind": "MARKET_DATA_TOTAL_FAILURE",
-                        "fail_count": fail_count,
-                        "assets_requested": len(assets) * len(timeframes),
-                        "error": (f"📉 Market data: TODOS los {fail_count} feeds fallaron. "
-                                  f"Bot operando a ciegas."),
-                    })
-                except Exception as e:
-                    logger.error(f'[MarketAnalyst] ⚠️ No se pudo publicar SYSTEM_ERROR: {e}')
+            #
+            # Sprint 54 dedup: don't re-publish the same alert more
+            # than once per _TOTAL_FAILURE_ALERT_DEDUP_S window.
+            # The next cycle (≤30 min later) will still attempt a
+            # fresh fetch (auto-recover at top), so the operator
+            # gets pinged at most once per outage window, not once
+            # per cycle.
+            last_alert = getattr(self, "_last_total_failure_alert_at", 0.0)
+            if (now - last_alert) > self._TOTAL_FAILURE_ALERT_DEDUP_S:
+                self._last_total_failure_alert_at = now
+                if self.event_bus is not None:
+                    try:
+                        self.event_bus.publish("SYSTEM_ERROR", {
+                            "kind": "MARKET_DATA_TOTAL_FAILURE",
+                            "fail_count": fail_count,
+                            "assets_requested": total_requested,
+                            "error": (f"📉 Market data: TODOS los {fail_count} feeds fallaron. "
+                                      f"Bot operando a ciegas."),
+                        })
+                    except Exception as e:
+                        logger.error(f'[MarketAnalyst] ⚠️ No se pudo publicar SYSTEM_ERROR: {e}')
+            else:
+                logger.info(
+                    f"[MarketAnalyst] total failure alert suppressed "
+                    f"(last alert {now - last_alert:.0f}s ago, "
+                    f"dedup window {self._TOTAL_FAILURE_ALERT_DEDUP_S}s)"
+                )
         else:
             self.recover()
 
