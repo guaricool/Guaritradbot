@@ -352,7 +352,14 @@ class StrategyAgent:
         # ============================================================
         # BTC → MACD cross (1h) con tolerancia + histogram turning
         # ============================================================
-        for asset in ("BTC-USD", "BTCUSDT"):
+        # Sprint 53: ETH-USD and SOL-USD joined BTC-USD/BTCUSDT
+        # in the crypto MACD momentum universe. Sprint 46X B5
+        # had removed ETH/SOL from operational config because
+        # "no strategy targets them" -- the right fix was to
+        # add the strategy, not remove the asset. The same
+        # MACD-crossover logic that worked for BTC also works
+        # for ETH and SOL; the indicators are asset-agnostic.
+        for asset in ("BTC-USD", "BTCUSDT", "ETH-USD", "SOL-USD"):
             df = market_data.get(asset, {}).get("1h")
             if df is None or len(df) < 30:
                 continue
@@ -489,7 +496,9 @@ class StrategyAgent:
         # ============================================================
         # NUEVO — Stochastic oversold/overbought (1h, todos los assets)
         # ============================================================
-        for asset in ("SPY", "QQQ", "BTC-USD", "GLD", "USO"):
+        # Sprint 53: ETH-USD and SOL-USD added to the universal
+        # asset list (Stochastic, BB, S/R, ADX all asset-agnostic).
+        for asset in ("SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO"):
             df = market_data.get(asset, {}).get("1h")
             if df is None or len(df) < 20:
                 continue
@@ -527,7 +536,7 @@ class StrategyAgent:
         # Si precio toca banda inferior + RSI<40 → long bounce
         # Si precio toca banda superior + RSI>60 → short fade
         # ============================================================
-        for asset in ("SPY", "QQQ", "BTC-USD", "GLD", "USO"):
+        for asset in ("SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO"):
             df = market_data.get(asset, {}).get("4h")
             if df is None or len(df) < 25:
                 continue
@@ -570,7 +579,7 @@ class StrategyAgent:
         # Si precio cerca de soporte 50-periodos → long
         # Si precio cerca de resistencia 50-periodos → short
         # ============================================================
-        for asset in ("SPY", "QQQ", "BTC-USD", "GLD", "USO"):
+        for asset in ("SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO"):
             df = market_data.get(asset, {}).get("4h")
             if df is None or len(df) < 55:
                 continue
@@ -620,7 +629,7 @@ class StrategyAgent:
         if self.ml_predictors:
             from src.ml.pipeline import FeatureExtractor
             _extractor = FeatureExtractor()
-            for asset in ("BTC-USD", "SPY", "QQQ", "GLD", "USO"):
+            for asset in ("BTC-USD", "ETH-USD", "SOL-USD", "SPY", "QQQ", "GLD", "USO"):
                 predictor = self.ml_predictors.get(asset)
                 if predictor is None:
                     continue
@@ -686,7 +695,7 @@ class StrategyAgent:
         # See src/analysis/alpha_factors.py for the exact formulas
         # (ported from qlib/contrib/data/loader.py).
         # ============================================================
-        for asset in ("SPY", "QQQ", "BTC-USD", "GLD", "USO"):
+        for asset in ("SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO"):
             df = market_data.get(asset, {}).get("1h")
             if df is None or len(df) < 25:
                 continue

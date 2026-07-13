@@ -8,11 +8,15 @@ steps:
   # it via state.get("scan_news", {}). The scan is
   # fault-tolerant -- if the RSS feed is unreachable, the
   # step still succeeds with an empty news context.
+  # Sprint 53: ETH-USD and SOL-USD added to the operational
+  # universe (revert of Sprint 46X B5). The bot can now
+  # take entries on any of the 3 cryptos for which binance.us
+  # has spot pairs, not just BTC.
   - id: scan_news
     agent: NewsAnalyst
     action: scan_news
     inputs:
-      assets: ["SPY", "QQQ", "BTC-USD", "GLD", "USO"]
+      assets: ["SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO"]
       lookback_hours: 24
   # Sprint 50: SentimentAnalyst runs after news (also a fast
   # RSS/JSON scan). The result is stored in
@@ -25,13 +29,13 @@ steps:
     action: scan_social_sentiment
     depends_on: ["scan_news"]
     inputs:
-      assets: ["SPY", "QQQ", "BTC-USD", "GLD", "USO"]
+      assets: ["SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO"]
   - id: analyze_market
     agent: MarketAnalystAgent
     action: fetch_and_analyze
     depends_on: ["scan_news"]
     inputs:
-      assets: ["SPY", "QQQ", "BTC-USD", "GLD", "USO"]
+      assets: ["SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO"]
       timeframes: ["15m", "1h", "4h"]
   - id: generate_hypotheses
     agent: StrategyAgent

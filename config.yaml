@@ -44,8 +44,21 @@ cache:
 brokers:
   crypto:
     name: "binanceus"
+    # Sprint 53 (revert of Sprint 46X B5): ETH-USD and SOL-USD
+    # re-enabled alongside BTC-USD. The 46X removal was based
+    # on "no strategy targets them" — the right fix was to
+    # add strategies for them, not remove them. With the
+    # StrategyAgent now generating MACD/Stochastic/BB/S&R/ADX
+    # signals for any crypto in this list (Sprint 53.3), ETH
+    # and SOL rejoin the operational universe and the bot
+    # can take entries on whichever coin gives a signal.
+    # Carlos's reasoning (2026-07-12 dashboard review):
+    # "BTC-only is more limited; should be able to search
+    # many more cryptos to take those entries."
     symbols:
       - "BTC-USD"
+      - "ETH-USD"
+      - "SOL-USD"
   equity:
     name: "alpaca"
     symbols:
@@ -290,7 +303,16 @@ risk:
 # === Sprint 0 (preview sin enforcement real; Sprint 1 lo enchufa) ===
 mandate:
   enabled: false                    # toggle del Mandate Gate
-  allowed_symbols: ["BTC-USD", "BTCUSDT", "GLD", "USO", "SPY", "QQQ"]
+  # Sprint 53 (revert of Sprint 46X B5): ETH-USD and SOL-USD
+  # back on the allowlist. The 46X removal was a "no strategy
+  # targets them" finding; Sprint 53 fixed the strategy side
+  # (StrategyAgent asset tuples in src/agents/strategy_agent.py
+  # now include all 3 cryptos), so the allowlist needs to
+  # match. ETHUSDT/SOLUSDT not on the allowlist because
+  # binance.us uses the "-USD" pair notation (not "-USDT");
+  # the asset_class taxonomy still maps both forms to
+  # CRYPTO for concentration calculations.
+  allowed_symbols: ["BTC-USD", "ETH-USD", "SOL-USD", "BTCUSDT", "GLD", "USO", "SPY", "QQQ"]
   max_position_usd: 20              # tope absoluto por trade
   max_daily_loss_usd: 5             # kill switch cuando esta banda se pierde en 24h (P&L realizado, no teórico)
   max_total_exposure_usd: 100       # tope de exposición total abierta simultánea
