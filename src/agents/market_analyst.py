@@ -359,9 +359,26 @@ class MarketAnalystAgent(Component):
     Sprint 6: hereda de Component con State Machine integrada.
     """
 
-    def __init__(self, event_bus=None, audit=None):
+    def __init__(self, event_bus=None, audit=None, staleness_multiplier: float = 6.0):
         super().__init__(name="MarketAnalystAgent", audit=audit)
         self.event_bus = event_bus
+        # Sprint 52.2: configurable staleness tolerance. The
+        # pre-52.2 hard-coded rule was "3x the bar's own
+        # interval" (Sprint 6, with a Sprint 46N M4 bypass for
+        # non-crypto when the US equity market is closed).
+        # That's been tripping on the live VPS since at least
+        # 2026-07-13: yfinance's 1h endpoint returns bars
+        # 5-6 hours old (well past the 3h threshold for a
+        # 1h bar) during US equity market hours, even though
+        # crypto trades 24/7 and the underlying asset (BTC-USD)
+        # is moving. The fetch itself succeeds — it's a
+        # data-freshness gap, not a network failure.
+        # 6x covers a full US trading session (1h × 6 = 6h)
+        # while still catching a delisted/paused symbol
+        # (where the same stale bar would persist for days).
+        # Override via the constructor for testing or
+        # non-default risk preferences.
+        self.staleness_multiplier = float(staleness_multiplier)
         self.ready()
 
     def fetch_one(self, asset: str, interval: str = "1d", period: str = "1y") -> "pd.DataFrame | None":
@@ -447,16 +464,23 @@ class MarketAnalystAgent(Component):
 
     def _validate_or_fault(self, df, asset_tf: str, tf: str = None, asset: str = None) -> bool:
         """Sprint 6: fail-fast. Devuelve False si los datos son corruptos."""
-        # Allow 3x the bar's own interval before flagging staleness —
+        # Allow N× the bar's own interval before flagging staleness —
         # generous enough to tolerate a slow/late data provider or a
         # weekend/holiday gap on daily bars, tight enough to still
-        # catch a symbol that's stopped updating entirely.
+        # catch a symbol that's stopped updating entirely. The
+        # multiplier is configurable per-instance (Sprint 52.2) and
+        # defaults to 6× (was 3× pre-52.2). The 3× value tripped
+        # constantly on the live VPS because yfinance's 1h endpoint
+        # routinely returns bars 5-6 hours old even for actively-
+        # traded crypto. 6× covers a full US trading session
+        # (1h × 6 = 6h) while still catching a delisted/paused
+        # symbol (where the same stale bar would persist for days).
         max_staleness = None
         if tf is not None:
             interval_s = self._TF_SECONDS.get(tf)
             if interval_s:
-                max_staleness = interval_s * 3
-        # Sprint 46N (audit M4): the 3x-interval rule above assumes the
+                max_staleness = interval_s * self.staleness_multiplier
+        # Sprint 46N (audit M4): the multiplier rule above assumes the
         # feed keeps updating continuously, which holds for crypto (24/7)
         # but not for equities/ETFs — SPY/QQQ/GLD/USO legitimately stop
         # updating every night and every weekend, which was tripping this
