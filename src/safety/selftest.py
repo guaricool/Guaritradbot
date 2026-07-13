@@ -35,6 +35,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from src.safety.kelly_drawdown import DrawdownKillSwitch
 
+from src.core.logging_setup import get_logger
+logger = get_logger(__name__)
+
 
 def _test_drawdown_triggers_on_breach() -> Tuple[bool, str]:
     """A drawdown past the threshold MUST trigger the kill switch."""
@@ -105,21 +108,12 @@ def run_startup_selftests(
             all_ok = False
 
     if all_ok:
-        print(f"[SelfTest] ✅ {len(_SELFTESTS)}/{len(_SELFTESTS)} startup self-tests passed.")
+        logger.info(f'[SelfTest] ✅ {len(_SELFTESTS)}/{len(_SELFTESTS)} startup self-tests passed.')
     else:
         failed = [n for n, r in results.items() if not r["ok"]]
-        print(
-            f"\n{'=' * 70}\n"
-            f"⚠️  STARTUP SELF-TEST FAILURE ⚠️\n"
-            f"{len(failed)}/{len(_SELFTESTS)} safety self-test(s) FAILED: {failed}\n"
-            f"The bot will continue starting (best-effort — a broken TEST is not\n"
-            f"itself a reason to halt trading), but this means a safety mechanism\n"
-            f"may not be working correctly. Check the details below and fix before\n"
-            f"trusting the affected safety net.\n"
-            f"{'=' * 70}\n"
-        )
+        logger.warning(f"\n{'=' * 70}\n⚠️  STARTUP SELF-TEST FAILURE ⚠️\n{len(failed)}/{len(_SELFTESTS)} safety self-test(s) FAILED: {failed}\nThe bot will continue starting (best-effort — a broken TEST is not\nitself a reason to halt trading), but this means a safety mechanism\nmay not be working correctly. Check the details below and fix before\ntrusting the affected safety net.\n{'=' * 70}\n")
         for n in failed:
-            print(f"  ❌ {n}: {results[n]['detail']}")
+            logger.error(f"  ❌ {n}: {results[n]['detail']}")
         if audit is not None:
             try:
                 audit.append("STARTUP_SELFTEST_FAILED", {

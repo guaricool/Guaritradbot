@@ -34,6 +34,9 @@ import time
 
 from src.data_store.positions import Position
 
+from src.core.logging_setup import get_logger
+logger = get_logger(__name__)
+
 
 # Sprint 43 H7 fix: known fill statuses from ccxt/Alpaca adapters.
 # Anything not in this set is treated as not-yet-confirmed and the
@@ -437,7 +440,7 @@ class ExecutionNode:
             # Persistence failure must NOT take down the broker path —
             # the order has been filled, the position is real on the
             # exchange. Log to audit and continue.
-            print(f"[ExecutionNode] ⚠️ _persist_filled_position failed: {e}")
+            logger.warning(f'[ExecutionNode] ⚠️ _persist_filled_position failed: {e}')
             if self.audit:
                 self.audit.append(
                     "POSITION_PERSIST_FAILED",
@@ -503,7 +506,7 @@ class ExecutionNode:
                 f"(only 'crypto' and 'equity' are supported). Rejecting the "
                 f"order instead of silently routing it to the crypto broker."
             )
-            print(warning_msg)
+            logger.info(warning_msg)
             if self.audit is not None:
                 self.audit.append(
                     "UNSUPPORTED_ASSET_CLASS_ROUTED",
@@ -531,7 +534,7 @@ class ExecutionNode:
             f"Rejecting the order (no broker). Add it to config.yaml `brokers:` "
             f"section under the right asset_class to fix."
         )
-        print(warning_msg)
+        logger.info(warning_msg)
         if self.audit is not None:
             self.audit.append(
                 "UNKNOWN_SYMBOL_ROUTED",
@@ -558,9 +561,7 @@ class ExecutionNode:
     def on_order_approved(self, data: dict):
         # Sprint 1: Kill switch filesystem (defensa en profundidad)
         if self.kill_switch and self.kill_switch.is_triggered():
-            print(
-                f"[ExecutionNode] ⛔ Kill switch ARMED — orden {data.get('asset')} NO ejecutada."
-            )
+            logger.info(f"[ExecutionNode] ⛔ Kill switch ARMED — orden {data.get('asset')} NO ejecutada.")
             if self.audit:
                 self.audit.append(
                     "TRADE_BLOCKED_KILLSWITCH",
@@ -569,11 +570,11 @@ class ExecutionNode:
             return
 
         if self.execution_mode == "human_in_the_loop":
-            print(f"\n[ExecutionNode] 🛑 ORDEN PENDIENTE DE APROBACIÓN HUMANA")
-            print(f"  Asset:       {data.get('asset')}")
-            print(f"  Dirección:   {data.get('direction')}")
-            print(f"  Tamaño:      {data.get('position_size', 0):.6f}")
-            print(f"  Stop loss:   {data.get('stop_loss', 0):.4f}")
+            logger.info(f'\n[ExecutionNode] 🛑 ORDEN PENDIENTE DE APROBACIÓN HUMANA')
+            logger.info(f"  Asset:       {data.get('asset')}")
+            logger.info(f"  Dirección:   {data.get('direction')}")
+            logger.info(f"  Tamaño:      {data.get('position_size', 0):.6f}")
+            logger.info(f"  Stop loss:   {data.get('stop_loss', 0):.4f}")
 
             if self.event_bus:
                 self.event_bus.publish(
@@ -584,7 +585,7 @@ class ExecutionNode:
             try:
                 decision = input("¿Aprobar? (Y/N, default=N en 30s): ").strip().upper()
                 if decision != "Y":
-                    print("[ExecutionNode] ❌ Orden rechazada por el humano.")
+                    logger.error('[ExecutionNode] ❌ Orden rechazada por el humano.')
                     if self.audit:
                         self.audit.append(
                             "TRADE_REJECTED_HUMAN",
@@ -592,7 +593,7 @@ class ExecutionNode:
                         )
                     return
             except (EOFError, KeyboardInterrupt):
-                print("[ExecutionNode] ⚠️ No hay TTY. SKIP seguro (cambia execution_mode a 'auto' para bypass).")
+                logger.warning("[ExecutionNode] ⚠️ No hay TTY. SKIP seguro (cambia execution_mode a 'auto' para bypass).")
                 if self.audit:
                     self.audit.append(
                         "TRADE_SKIPPED_NO_TTY",
@@ -620,7 +621,7 @@ class ExecutionNode:
                 self._supported_symbols_cache = list(symbols)
                 return self._supported_symbols_cache
         except Exception as e:
-            print(f"[ExecutionNode] ⚠️ Could not fetch supported symbols: {e}")
+            logger.warning(f'[ExecutionNode] ⚠️ Could not fetch supported symbols: {e}')
         return None
 
     def _apply_paper_slippage(self, entry_price: float, direction: str) -> float:
@@ -653,7 +654,7 @@ class ExecutionNode:
     def execute_order(self, order_data: dict):
         # Doble check del kill switch
         if self.kill_switch and self.kill_switch.is_triggered():
-            print("[ExecutionNode] ⛔ Kill switch ARMED — execute_order cancelado.")
+            logger.info('[ExecutionNode] ⛔ Kill switch ARMED — execute_order cancelado.')
             return
 
         asset = order_data.get("asset", "?")
@@ -661,10 +662,7 @@ class ExecutionNode:
         qty = order_data.get("position_size", 0)
         entry_price = float(order_data.get("entry_price", 0) or 0)
 
-        print(
-            f"[ExecutionNode] 🚀 EJECUTANDO ORDEN: "
-            f"{asset} {direction} qty={qty} @ ${entry_price:.2f}"
-        )
+        logger.info(f'[ExecutionNode] 🚀 EJECUTANDO ORDEN: {asset} {direction} qty={qty} @ ${entry_price:.2f}')
 
         # === Sprint 36: Resolve broker by asset class ===
         broker_instance, asset_class, broker_cfg = self._resolve_broker(asset)
@@ -681,11 +679,7 @@ class ExecutionNode:
         # the left side already covered).
         if asset_class == "unknown":
             status = f"FAILED (UNKNOWN_SYMBOL: {asset})"
-            print(
-                f"[ExecutionNode] ❌ UNKNOWN_SYMBOL: '{asset}' is not in the "
-                f"routing table. Order REJECTED. Add it to config.yaml "
-                f"`brokers:` section to enable trading."
-            )
+            logger.error(f"[ExecutionNode] ❌ UNKNOWN_SYMBOL: '{asset}' is not in the routing table. Order REJECTED. Add it to config.yaml `brokers:` section to enable trading.")
             if self.audit:
                 self.audit.append(
                     "TRADE_FAILED",
@@ -706,11 +700,7 @@ class ExecutionNode:
             return
         if broker_instance is None and asset_class not in ("equity", "crypto"):
             status = f"FAILED (UNSUPPORTED_ASSET_CLASS: {asset_class})"
-            print(
-                f"[ExecutionNode] ❌ UNSUPPORTED_ASSET_CLASS: '{asset}' has "
-                f"asset_class '{asset_class}', which has no broker wired up. "
-                f"Order REJECTED (not silently routed to crypto)."
-            )
+            logger.error(f"[ExecutionNode] ❌ UNSUPPORTED_ASSET_CLASS: '{asset}' has asset_class '{asset_class}', which has no broker wired up. Order REJECTED (not silently routed to crypto).")
             if self.audit:
                 self.audit.append(
                     "TRADE_FAILED",
@@ -733,11 +723,7 @@ class ExecutionNode:
         # If the asset is equity but Alpaca isn't configured, fail loudly.
         # We don't want a silent fallback to crypto for an SPY order.
         if asset_class == "equity" and broker_instance is None:
-            print(
-                f"[ExecutionNode] ❌ ALPACA_NOT_CONFIGURED: '{asset}' is an "
-                f"equity/ETF but no AlpacaBroker is configured. Set "
-                f"ALPACA_API_KEY + ALPACA_SECRET_KEY in Coolify Environment."
-            )
+            logger.error(f"[ExecutionNode] ❌ ALPACA_NOT_CONFIGURED: '{asset}' is an equity/ETF but no AlpacaBroker is configured. Set ALPACA_API_KEY + ALPACA_SECRET_KEY in Coolify Environment.")
             status = f"FAILED (ALPACA_NOT_CONFIGURED: {asset})"
             if self.audit:
                 self.audit.append(
@@ -770,10 +756,7 @@ class ExecutionNode:
             # simulated fill isn't recorded at the exact, frictionless
             # signal price.
             sim_fill_price = self._apply_paper_slippage(entry_price, direction)
-            print(
-                f"[ExecutionNode] 🟡 NO BROKER — orden {asset} {direction} "
-                f"simulada localmente @ ${sim_fill_price:.4f} (default dev behavior)."
-            )
+            logger.info(f'[ExecutionNode] 🟡 NO BROKER — orden {asset} {direction} simulada localmente @ ${sim_fill_price:.4f} (default dev behavior).')
             status = "FILLED (SIMULATED)"
             if self.audit:
                 self.audit.append(
@@ -818,11 +801,7 @@ class ExecutionNode:
             # paper fills as "always complete, at the exact signal
             # price, no slippage" as a cause of paper/live divergence.
             sim_fill_price = self._apply_paper_slippage(entry_price, direction)
-            print(
-                f"[ExecutionNode] 🟡 PAPER MODE — orden {asset} {direction} "
-                f"simulada @ ${sim_fill_price:.4f} via {asset_class} broker "
-                f"(NO enviada a broker real)"
-            )
+            logger.info(f'[ExecutionNode] 🟡 PAPER MODE — orden {asset} {direction} simulada @ ${sim_fill_price:.4f} via {asset_class} broker (NO enviada a broker real)')
             status = "FILLED (PAPER)"
             if self.audit:
                 self.audit.append(
@@ -889,12 +868,7 @@ class ExecutionNode:
         # Validate locally first.
         supported = self._get_supported_symbols()
         if supported is not None and symbol not in supported:
-            print(
-                f"[ExecutionNode] ❌ SYMBOL_NOT_SUPPORTED: '{symbol}' "
-                f"no está en {broker.exchange.id if hasattr(broker, 'exchange') and hasattr(broker.exchange, 'id') else 'el broker'}. "
-                f"binanceus solo soporta crypto. Si querés tradear "
-                f"este activo, agregalo a un exchange que lo soporte."
-            )
+            logger.error(f"[ExecutionNode] ❌ SYMBOL_NOT_SUPPORTED: '{symbol}' no está en {(broker.exchange.id if hasattr(broker, 'exchange') and hasattr(broker.exchange, 'id') else 'el broker')}. binanceus solo soporta crypto. Si querés tradear este activo, agregalo a un exchange que lo soporte.")
             status = f"FAILED (SYMBOL_NOT_SUPPORTED: {symbol})"
             if self.audit:
                 self.audit.append(
@@ -1008,16 +982,13 @@ class ExecutionNode:
                             if broker_oco_order_id:
                                 protection_mode = "native_oco"
                         if protection_mode != "native_oco":
-                            print(
-                                f"[ExecutionNode] ⚠️ OCO placement falló para {asset} "
-                                f"(quedará en modo polling): {oco_response}"
-                            )
+                            logger.warning(f'[ExecutionNode] ⚠️ OCO placement falló para {asset} (quedará en modo polling): {oco_response}')
                             if self.audit:
                                 self.audit.append("OCO_PLACEMENT_FAILED", {
                                     "asset": asset, "response": str(oco_response)[:300],
                                 })
                     except Exception as e:
-                        print(f"[ExecutionNode] ⚠️ OCO placement exception para {asset}: {e} (modo polling)")
+                        logger.warning(f'[ExecutionNode] ⚠️ OCO placement exception para {asset}: {e} (modo polling)')
                         if self.audit:
                             self.audit.append("OCO_PLACEMENT_FAILED", {
                                 "asset": asset, "error": str(e)[:300],
@@ -1076,11 +1047,7 @@ class ExecutionNode:
         # the next open at a price potentially far from the signal that
         # triggered it — exactly the audit's complaint.
         if hasattr(broker, "is_market_open") and not broker.is_market_open():
-            print(
-                f"[ExecutionNode] ⏸️  MARKET_CLOSED — orden de entrada {asset} "
-                f"{direction} SALTADA (Alpaca reporta mercado cerrado). "
-                f"Se reintentará en un ciclo futuro con el mercado abierto."
-            )
+            logger.info(f'[ExecutionNode] ⏸️  MARKET_CLOSED — orden de entrada {asset} {direction} SALTADA (Alpaca reporta mercado cerrado). Se reintentará en un ciclo futuro con el mercado abierto.')
             status = f"SKIPPED (MARKET_CLOSED: {asset})"
             if self.audit:
                 self.audit.append(
@@ -1105,10 +1072,7 @@ class ExecutionNode:
         # We don't fetch the full ~10k symbol list every order; just
         # query this one symbol's status (one network call, cheap).
         if not broker.is_symbol_tradeable(asset):
-            print(
-                f"[ExecutionNode] ❌ SYMBOL_NOT_TRADEABLE: '{asset}' is "
-                f"not active/tradeable on Alpaca."
-            )
+            logger.error(f"[ExecutionNode] ❌ SYMBOL_NOT_TRADEABLE: '{asset}' is not active/tradeable on Alpaca.")
             status = f"FAILED (SYMBOL_NOT_TRADEABLE: {asset})"
             if self.audit:
                 self.audit.append(

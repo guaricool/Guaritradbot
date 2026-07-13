@@ -28,6 +28,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from src.core.logging_setup import get_logger
+logger = get_logger(__name__)
+
 try:
     import fcntl  # POSIX-only (Linux/macOS). Not available on Windows.
     HAS_FCNTL = True
@@ -116,9 +119,9 @@ class AuditLedger:
             else:
                 os.rename(self.path, archive_path)
                 self.path.touch(exist_ok=True)
-            print(f"[AuditLedger] Rotated {file_month} events to {archive_path.name}")
+            logger.info(f'[AuditLedger] Rotated {file_month} events to {archive_path.name}')
         except OSError as e:
-            print(f"[AuditLedger] WARNING: monthly rotation check failed (continuing without rotating): {e}")
+            logger.warning(f'[AuditLedger] WARNING: monthly rotation check failed (continuing without rotating): {e}')
 
     def append(self, event_type: str, payload: dict[str, Any]) -> dict:
         self._maybe_rotate()
@@ -212,13 +215,10 @@ class AuditLedger:
                         # ledger is at least visible instead of just
                         # quietly missing events.
                         dropped += 1
-                        print(
-                            f"[AuditLedger] WARNING: dropping malformed "
-                            f"line {lineno} in {self.path} (invalid JSON)"
-                        )
+                        logger.warning(f'[AuditLedger] WARNING: dropping malformed line {lineno} in {self.path} (invalid JSON)')
                         continue
         if dropped:
-            print(f"[AuditLedger] WARNING: {dropped} malformed line(s) skipped in {self.path}")
+            logger.warning(f'[AuditLedger] WARNING: {dropped} malformed line(s) skipped in {self.path}')
         return out
 
     def read_since(self, ts: float) -> list[dict]:

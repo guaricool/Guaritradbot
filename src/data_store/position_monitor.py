@@ -35,6 +35,9 @@ dispara cierre temprano.
 from typing import Dict, Optional, List, Any
 import time
 from src.data_store.positions import PositionRepository, Position
+
+from src.core.logging_setup import get_logger
+logger = get_logger(__name__)
 from src.execution.broker_routing import (
     build_asset_to_class_map,
     is_mandate_enabled,
@@ -229,7 +232,7 @@ class PositionMonitor:
         try:
             status = self.broker.get_oco_order_status(symbol, pos.broker_oco_order_id)
         except Exception as e:
-            print(f"[PositionMonitor] ⚠️ OCO status check falló para {pos.asset}: {e} (reintenta próximo ciclo)")
+            logger.warning(f'[PositionMonitor] ⚠️ OCO status check falló para {pos.asset}: {e} (reintenta próximo ciclo)')
             return None
         if not isinstance(status, dict) or status.get("status") == "failed":
             # Query itself failed — leave untouched, retry next cycle.
@@ -285,11 +288,8 @@ class PositionMonitor:
                         ),
                     })
                 except Exception as _audit_err:
-                    print(f"[PositionMonitor] ⚠️ No pude auditar OCO_CANCELLED_NOT_FILLED: {_audit_err}")
-            print(
-                f"  ⚠️ OCO cancelado sin fill: {pos.asset} {pos.direction} — "
-                f"position sigue abierta, armando polling fallback."
-            )
+                    logger.warning(f'[PositionMonitor] ⚠️ No pude auditar OCO_CANCELLED_NOT_FILLED: {_audit_err}')
+            logger.warning(f'  ⚠️ OCO cancelado sin fill: {pos.asset} {pos.direction} — position sigue abierta, armando polling fallback.')
             return None
 
         # Identify WHICH leg filled (the higher of the two prices is
@@ -344,7 +344,7 @@ class PositionMonitor:
                             "using_as_close": close_price,
                         })
                     except Exception as _audit_err:
-                        print(f"[PositionMonitor] ⚠️ No pude auditar OCO_FILL_SLIPPAGE: {_audit_err}")
+                        logger.warning(f'[PositionMonitor] ⚠️ No pude auditar OCO_FILL_SLIPPAGE: {_audit_err}')
             else:
                 # Fill is within the stop buffer — the stop LIMIT
                 # honored its guarantee within 2% of the trigger.
@@ -369,14 +369,11 @@ class PositionMonitor:
                         "raw_leg": filled_leg,
                     })
                 except Exception as _audit_err:
-                    print(f"[PositionMonitor] ⚠️ No pude auditar OCO_FILL_PRICE_UNREADABLE: {_audit_err}")
+                    logger.warning(f'[PositionMonitor] ⚠️ No pude auditar OCO_FILL_PRICE_UNREADABLE: {_audit_err}')
 
         closed = self._finalize_close(pos, close_price, reason)
         if closed:
-            print(
-                f"  🔒 OCO reconciled: {pos.asset} {pos.direction} cerrado por el "
-                f"exchange ({reason}) @ ${close_price:.4f}"
-            )
+            logger.info(f'  🔒 OCO reconciled: {pos.asset} {pos.direction} cerrado por el exchange ({reason}) @ ${close_price:.4f}')
         return closed
 
     def check_with_signals(
@@ -508,11 +505,7 @@ class PositionMonitor:
             )
             if closed:
                 closes.append(closed)
-                print(
-                    f"  💎 SMART_PROFIT_TAKE {asset:8} {pos.direction:5} "
-                    f"@ ${price:.2f} (unrealized ${upnl:+.2f}, "
-                    f"signal {opposite} strength {matching_signal.get('strength'):.2f})"
-                )
+                logger.info(f"  💎 SMART_PROFIT_TAKE {asset:8} {pos.direction:5} @ ${price:.2f} (unrealized ${upnl:+.2f}, signal {opposite} strength {matching_signal.get('strength'):.2f})")
         return closes
 
     def _execute_close(self, pos: Position, price: float, reason: str):
@@ -555,11 +548,7 @@ class PositionMonitor:
                 symbol = pos.asset.replace("-", "/") if "-" in pos.asset else pos.asset
                 self.broker.cancel_oco_order(symbol, pos.broker_oco_order_id)
             except Exception as e:
-                print(
-                    f"[PositionMonitor] ⚠️ No se pudo cancelar OCO {pos.broker_oco_order_id} "
-                    f"para {pos.asset} antes del cierre manual: {e} (puede que ya se haya "
-                    f"ejecutado — continuando con el cierre)"
-                )
+                logger.warning(f'[PositionMonitor] ⚠️ No se pudo cancelar OCO {pos.broker_oco_order_id} para {pos.asset} antes del cierre manual: {e} (puede que ya se haya ejecutado — continuando con el cierre)')
 
         # Sprint 46N (audit C1/C2): resolve the broker for THIS asset's
         # class (crypto → self.broker, equity → self.alpaca_broker,
@@ -585,7 +574,7 @@ class PositionMonitor:
             except Exception as e:
                 msg = f"[PositionMonitor] ⚠️ Broker FAILED cerrando {pos.asset} ({reason}): {e}. " \
                       f"Position {pos.position_id} stays open in repo — will retry next cycle."
-                print(msg)
+                logger.info(msg)
                 if self.audit is not None:
                     self.audit.append(
                         "CLOSE_FAILED",

@@ -1,5 +1,8 @@
 import ccxt
 import os
+
+from src.core.logging_setup import get_logger
+logger = get_logger(__name__)
 try:
     from dotenv import load_dotenv
 except ImportError:
@@ -32,9 +35,9 @@ class BrokerClient:
 
         if use_testnet:
             self.exchange.set_sandbox_mode(True)
-            print(f"[BrokerClient] Conectado a {exchange_name.upper()} en modo TESTNET (Sandbox).")
+            logger.info(f'[BrokerClient] Conectado a {exchange_name.upper()} en modo TESTNET (Sandbox).')
         else:
-            print(f"[BrokerClient] ⚠️ Conectado a {exchange_name.upper()} en modo LIVE (Dinero Real).")
+            logger.warning(f'[BrokerClient] ⚠️ Conectado a {exchange_name.upper()} en modo LIVE (Dinero Real).')
 
     def get_usdt_balance(self) -> float:
         """
@@ -116,15 +119,15 @@ class BrokerClient:
             if quantized > 0:
                 amount = quantized
         except Exception as e:
-            print(f"[BrokerClient] ⚠️ amount_to_precision falló para {symbol} ({e}); usando cantidad sin cuantizar.")
+            logger.warning(f'[BrokerClient] ⚠️ amount_to_precision falló para {symbol} ({e}); usando cantidad sin cuantizar.')
         try:
-            print(f"[BrokerClient] Enviando orden {side.upper()} {amount} {symbol}...")
+            logger.info(f'[BrokerClient] Enviando orden {side.upper()} {amount} {symbol}...')
             # En un entorno de simulación sin API Keys válidas, esto fallará.
             order = self.exchange.create_market_order(symbol, side, amount)
-            print(f"[BrokerClient] -> Orden ejecutada: {order['id']}")
+            logger.info(f"[BrokerClient] -> Orden ejecutada: {order['id']}")
             return order
         except Exception as e:
-            print(f"[BrokerClient] -> Error ejecutando orden: {e}")
+            logger.info(f'[BrokerClient] -> Error ejecutando orden: {e}')
             return {"status": "failed", "error": str(e)}
 
     def fetch_fee_rate(self, symbol: str = None) -> tuple[float | None, float | None]:
@@ -182,7 +185,7 @@ class BrokerClient:
                 return (float(maker), float(taker))
             return (None, None)
         except Exception as e:
-            print(f"[BrokerClient] ⚠️ fetch_fee_rate falló ({type(e).__name__}: {e})")
+            logger.warning(f'[BrokerClient] ⚠️ fetch_fee_rate falló ({type(e).__name__}: {e})')
             return (None, None)
 
     def get_ticker_price(self, symbol: str) -> float | None:
@@ -219,7 +222,7 @@ class BrokerClient:
                 return float(close)
             return None
         except Exception as e:
-            print(f"[BrokerClient] ⚠️ fetch_ticker falló para {symbol} ({e}).")
+            logger.warning(f'[BrokerClient] ⚠️ fetch_ticker falló para {symbol} ({e}).')
             return None
 
     # ------------------------------------------------------------------
@@ -320,15 +323,12 @@ class BrokerClient:
                 "stopLimitPrice": self.exchange.price_to_precision(symbol, stop_limit_price),
                 "stopLimitTimeInForce": "GTC",
             }
-            print(
-                f"[BrokerClient] Colocando OCO real: {symbol} qty={amount} "
-                f"TP={take_profit_price} SL={stop_price} (stopLimit={stop_limit_price})"
-            )
+            logger.info(f'[BrokerClient] Colocando OCO real: {symbol} qty={amount} TP={take_profit_price} SL={stop_price} (stopLimit={stop_limit_price})')
             response = self.exchange.private_post_order_oco(params)
-            print(f"[BrokerClient] -> OCO colocada: orderListId={response.get('orderListId', '?')}")
+            logger.info(f"[BrokerClient] -> OCO colocada: orderListId={response.get('orderListId', '?')}")
             return response
         except Exception as e:
-            print(f"[BrokerClient] -> Error colocando OCO: {e}")
+            logger.info(f'[BrokerClient] -> Error colocando OCO: {e}')
             return {"status": "failed", "error": str(e)}
 
     def get_oco_order_status(self, symbol: str, order_list_id: str) -> dict:
@@ -344,7 +344,7 @@ class BrokerClient:
             params = {"symbol": market["id"], "orderListId": order_list_id}
             return self.exchange.private_get_order_list(params)
         except Exception as e:
-            print(f"[BrokerClient] -> Error consultando OCO {order_list_id}: {e}")
+            logger.info(f'[BrokerClient] -> Error consultando OCO {order_list_id}: {e}')
             return {"status": "failed", "error": str(e)}
 
     def cancel_oco_order(self, symbol: str, order_list_id: str) -> dict:
@@ -361,5 +361,5 @@ class BrokerClient:
             params = {"symbol": market["id"], "orderListId": order_list_id}
             return self.exchange.private_delete_order_list(params)
         except Exception as e:
-            print(f"[BrokerClient] -> Error cancelando OCO {order_list_id}: {e}")
+            logger.info(f'[BrokerClient] -> Error cancelando OCO {order_list_id}: {e}')
             return {"status": "failed", "error": str(e)}

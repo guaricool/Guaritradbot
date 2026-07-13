@@ -36,6 +36,9 @@ from typing import Optional, List
 
 from src.data_store.positions import PositionRepository, Position
 
+from src.core.logging_setup import get_logger
+logger = get_logger(__name__)
+
 
 # Minimum order qty for dry-run validation trades on binance.us (BTC is 0.00001).
 DRY_RUN_MIN_QTY = 0.00001
@@ -198,17 +201,17 @@ class PaperToLiveChecklist:
         balance in USDT/USD or None if unreachable.
         """
         if self.broker is None:
-            print("[Checklist] ❌ No broker configured. Aborting.")
+            logger.error('[Checklist] ❌ No broker configured. Aborting.')
             return None
         try:
             balance = self.broker.get_usdt_balance()
             if balance is None or balance <= 0:
-                print(f"[Checklist] ❌ Broker returned invalid balance: {balance}")
+                logger.error(f'[Checklist] ❌ Broker returned invalid balance: {balance}')
                 return None
-            print(f"[Checklist] ✅ Broker connected. Balance: ${balance:.2f}")
+            logger.info(f'[Checklist] ✅ Broker connected. Balance: ${balance:.2f}')
             return float(balance)
         except Exception as e:
-            print(f"[Checklist] ❌ Broker connection failed: {e}")
+            logger.error(f'[Checklist] ❌ Broker connection failed: {e}')
             return None
 
     def _count_paper_positions(self) -> int:
@@ -224,19 +227,15 @@ class PaperToLiveChecklist:
         - ignore: proceed with live, but log a WARNING about the discrepancy
         - abort: do not proceed to live
         """
-        print(
-            f"\n⚠️  LIVE TRANSITION CHECKLIST\n"
-            f"   {open_paper} paper positions detected in repo.\n"
-            f"   These DO NOT exist on the live exchange.\n"
-        )
-        print("What should we do with these positions?")
-        print(f"  [C]lose all (mark as closed in repo, simulated P&L)")
-        print(f"  [I]gnore (proceed with live; bot will track them but they don't exist on exchange)")
-        print(f"  [A]bort (do NOT proceed to live)")
+        logger.warning(f'\n⚠️  LIVE TRANSITION CHECKLIST\n   {open_paper} paper positions detected in repo.\n   These DO NOT exist on the live exchange.\n')
+        logger.info('What should we do with these positions?')
+        logger.info(f'  [C]lose all (mark as closed in repo, simulated P&L)')
+        logger.info(f"  [I]gnore (proceed with live; bot will track them but they don't exist on exchange)")
+        logger.info(f'  [A]bort (do NOT proceed to live)')
         try:
             choice = input("\nChoice (C/I/A): ").strip().upper()
         except (EOFError, KeyboardInterrupt):
-            print("\n[Checklist] No TTY. Defaulting to ABORT for safety.")
+            logger.info('\n[Checklist] No TTY. Defaulting to ABORT for safety.')
             return "abort"
 
         if choice in ("C", "CLOSE"):
@@ -246,7 +245,7 @@ class PaperToLiveChecklist:
         elif choice in ("A", "ABORT"):
             return "abort"
         else:
-            print(f"[Checklist] Unrecognized choice '{choice}'. Aborting.")
+            logger.info(f"[Checklist] Unrecognized choice '{choice}'. Aborting.")
             return "abort"
 
     def _close_paper_positions(self, reason: str = "PRE_LIVE_CLOSE") -> int:
@@ -274,7 +273,7 @@ class PaperToLiveChecklist:
                         "entry_price": closed.entry_price,
                         "reason": reason,
                     })
-        print(f"[Checklist] Closed {closed_count} paper positions.")
+        logger.info(f'[Checklist] Closed {closed_count} paper positions.')
         return closed_count
 
     def _validate_dry_run(self) -> bool:
@@ -324,17 +323,14 @@ class PaperToLiveChecklist:
             # things that the actual order path would fail on.
             bal = self.broker.get_usdt_balance()
             if bal is None or (isinstance(bal, float) and not (bal >= 0)):
-                print(f"[Checklist] ❌ Dry-run failed: invalid balance {bal!r}")
+                logger.error(f'[Checklist] ❌ Dry-run failed: invalid balance {bal!r}')
                 if self.audit is not None:
                     self.audit.append("DRY_RUN_FAILED", {
                         "reason": "invalid_balance",
                         "balance": bal,
                     })
                 return False
-            print(
-                f"[Checklist] ✅ Dry-run succeeded (read-only): "
-                f"balance=${bal:.2f}"
-            )
+            logger.info(f'[Checklist] ✅ Dry-run succeeded (read-only): balance=${bal:.2f}')
             if self.audit is not None:
                 self.audit.append("DRY_RUN_OK", {
                     "method": "read_only",
@@ -342,7 +338,7 @@ class PaperToLiveChecklist:
                 })
             return True
         except Exception as e:
-            print(f"[Checklist] ❌ Dry-run exception: {e}")
+            logger.error(f'[Checklist] ❌ Dry-run exception: {e}')
             if self.audit is not None:
                 self.audit.append("DRY_RUN_EXCEPTION", {"error": str(e)[:200]})
             return False
@@ -365,23 +361,16 @@ class PaperToLiveChecklist:
             return False
         try:
             symbol = "BTC/USDT"
-            print(
-                f"[Checklist] ⚠️ LEGACY destructive dry-run: "
-                f"placing real order on {symbol} qty={self.min_order_qty}. "
-                f"This is opt-in only — set live_transition.dry_run_placement=true."
-            )
+            logger.warning(f'[Checklist] ⚠️ LEGACY destructive dry-run: placing real order on {symbol} qty={self.min_order_qty}. This is opt-in only — set live_transition.dry_run_placement=true.')
             result = self.broker.create_market_order(symbol, "buy", self.min_order_qty)
             if result is None or result.get("status") == "failed":
-                print(f"[Checklist] ❌ Dry-run failed: {result}")
+                logger.error(f'[Checklist] ❌ Dry-run failed: {result}')
                 if self.audit is not None:
                     self.audit.append("DRY_RUN_FAILED", {
                         "result": str(result)[:200] if result else "None",
                     })
                 return False
-            print(
-                f"[Checklist] ⚠️ Dry-run succeeded but position is now OPEN and UNREGISTERED. "
-                f"Order id: {result.get('id', '?')}. Manually close the position."
-            )
+            logger.warning(f"[Checklist] ⚠️ Dry-run succeeded but position is now OPEN and UNREGISTERED. Order id: {result.get('id', '?')}. Manually close the position.")
             if self.audit is not None:
                 self.audit.append("DRY_RUN_LEGACY_PLACED_ORDER", {
                     "symbol": symbol,
@@ -391,7 +380,7 @@ class PaperToLiveChecklist:
                 })
             return True
         except Exception as e:
-            print(f"[Checklist] ❌ Dry-run exception: {e}")
+            logger.error(f'[Checklist] ❌ Dry-run exception: {e}')
             if self.audit is not None:
                 self.audit.append("DRY_RUN_EXCEPTION", {"error": str(e)[:200]})
             return False

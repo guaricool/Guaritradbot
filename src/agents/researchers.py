@@ -22,6 +22,9 @@ Cada paso debate se registra en el audit ledger para forensics.
 from __future__ import annotations
 from typing import List, Dict, Any
 
+from src.core.logging_setup import get_logger
+logger = get_logger(__name__)
+
 
 class BullResearcher:
     """Busca evidencia técnica a favor de cada hipótesis."""
@@ -257,20 +260,19 @@ class DebateAgent:
         open_positions = self.position_repo.open() if self.position_repo else []
 
         if not hypotheses:
-            print("[DebateAgent] sin hipótesis, debate vacío")
+            logger.info('[DebateAgent] sin hipótesis, debate vacío')
             return {"hypotheses": [], "verdicts": [], "approved_hypotheses": []}
 
-        print(f"[DebateAgent] {len(hypotheses)} hipótesis × {len(open_positions)} posiciones abiertas")
+        logger.info(f'[DebateAgent] {len(hypotheses)} hipótesis × {len(open_positions)} posiciones abiertas')
 
         verdicts = self.manager.decide_all(hypotheses, open_positions)
         approved = self.manager.filter_approved(hypotheses, verdicts)
 
         for v in verdicts:
             icon = "✅" if v["decision"] == "APPROVED" else "❌"
-            print(f"  {icon} {v['asset']:8} {v['direction']:5} | final={v['final_score']:5.1f} "
-                  f"(bull={v['bull_score']} bear={v['bear_score']} risk={v['risk_penalty']}) | {v['reason']}")
+            logger.info(f"  {icon} {v['asset']:8} {v['direction']:5} | final={v['final_score']:5.1f} (bull={v['bull_score']} bear={v['bear_score']} risk={v['risk_penalty']}) | {v['reason']}")
 
-        print(f"[DebateAgent] → {len(approved)}/{len(hypotheses)} hipótesis aprobadas por el debate")
+        logger.info(f'[DebateAgent] → {len(approved)}/{len(hypotheses)} hipótesis aprobadas por el debate')
 
         return {
             "hypotheses": hypotheses,          # todas (audit)

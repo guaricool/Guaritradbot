@@ -48,6 +48,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from src.core.logging_setup import get_logger
+logger = get_logger(__name__)
+
 
 # ============================================================
 # Primitives (from Sprint 41 — kept here for self-containment)
@@ -1035,11 +1038,7 @@ def evolve(
         }
         history.append(stats)
         if verbose:
-            print(
-                f"[GP gen {gen+1}/{n_generations}] best={stats['best_score']:.3f} "
-                f"avg={stats['avg_score']:.3f} median={stats['median_score']:.3f} "
-                f"best_sharpe={stats['best_sharpe']:.2f} robust={stats['n_robust']}"
-            )
+            logger.info(f"[GP gen {gen + 1}/{n_generations}] best={stats['best_score']:.3f} avg={stats['avg_score']:.3f} median={stats['median_score']:.3f} best_sharpe={stats['best_sharpe']:.2f} robust={stats['n_robust']}")
         # Build next generation
         next_population: List[StrategyTree] = []
         # Elitism: copy top N unchanged
@@ -1134,11 +1133,7 @@ def evolve(
             entry["per_symbol_oos"] = oos_entry.get("per_symbol", {})
             entry["is_oos_ratio"] = _safe_ratio(oos_score, is_score)
             if verbose:
-                print(
-                    f"[GP C7] candidate IS score={is_score:.3f}, "
-                    f"OOS score={oos_score:.3f}, "
-                    f"ratio={entry['is_oos_ratio']:.2f}"
-                )
+                logger.info(f"[GP C7] candidate IS score={is_score:.3f}, OOS score={oos_score:.3f}, ratio={entry['is_oos_ratio']:.2f}")
         # `best_ever` may be a stale object from an earlier generation
         # that never made it into `final_population` (rare — elitism
         # normally carries the true best forward, but a regression is
@@ -1278,7 +1273,7 @@ class StrategyLibrary:
             for i, e in enumerate(self.entries):
                 self._signatures[_tree_signature(e.tree)] = i
         except Exception as exc:
-            print(f"[StrategyLibrary] warning: failed to load {self.path}: {exc}")
+            logger.warning(f'[StrategyLibrary] warning: failed to load {self.path}: {exc}')
 
     def save(self) -> None:
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
@@ -1377,12 +1372,7 @@ class StrategyLibrary:
             if min_oos_ratio > 0 and "is_oos_ratio" in ind:
                 ratio = ind["is_oos_ratio"]
                 if ratio < min_oos_ratio:
-                    print(
-                        f"[StrategyLibrary C7] rejected candidate: "
-                        f"IS score {ind['score']:.3f} but OOS ratio "
-                        f"{ratio:.2f} < min_oos_ratio {min_oos_ratio:.2f}. "
-                        f"Strategy is overfit to the training window."
-                    )
+                    logger.info(f"[StrategyLibrary C7] rejected candidate: IS score {ind['score']:.3f} but OOS ratio {ratio:.2f} < min_oos_ratio {min_oos_ratio:.2f}. Strategy is overfit to the training window.")
                     continue
             ok = self.add(
                 tree=ind["tree"],
@@ -1589,7 +1579,7 @@ def run_evolution_cli(
             index=idx,
         )
     if verbose:
-        print(f"[GP] starting evolution: pop={population_size} gens={n_generations} seed={seed}")
+        logger.info(f'[GP] starting evolution: pop={population_size} gens={n_generations} seed={seed}')
     result = evolve(
         prices_by_symbol,
         population_size=population_size,
@@ -1616,11 +1606,11 @@ def run_evolution_cli(
         fee_pct=fee_pct,
     )
     if verbose:
-        print(f"\n[GP] best score: {result.best_score:.3f}")
-        print(f"[GP] best sharpe: {result.best_metrics.get('sharpe', 0):.3f}")
-        print(f"[GP] elapsed: {result.elapsed_seconds:.1f}s")
+        logger.info(f'\n[GP] best score: {result.best_score:.3f}')
+        logger.info(f"[GP] best sharpe: {result.best_metrics.get('sharpe', 0):.3f}")
+        logger.info(f'[GP] elapsed: {result.elapsed_seconds:.1f}s')
         if result.best_tree is not None:
-            print(f"\n[GP] best tree:\n{result.best_tree.to_string()}")
+            logger.info(f'\n[GP] best tree:\n{result.best_tree.to_string()}')
         # Sprint 46G: IC / Rank-IC diagnostic, ported from Qlib's
         # `qlib/contrib/eva/alpha.py::calc_ic` (see
         # src/analysis/alpha_factors.py's docstring for the adaptation
@@ -1647,20 +1637,17 @@ def run_evolution_cli(
                     if ic is not None:
                         ic_lines.append(f"{sym}: IC={ic:+.3f}  RankIC={rank_ic:+.3f}")
                 if ic_lines and verbose:
-                    print(
-                        "\n[GP] signal quality (Qlib-style IC/Rank-IC vs next-bar "
-                        "return — |IC| ~0.02-0.05 is a real, usable edge):"
-                    )
+                    logger.info('\n[GP] signal quality (Qlib-style IC/Rank-IC vs next-bar return — |IC| ~0.02-0.05 is a real, usable edge):')
                     for line in ic_lines:
-                        print(f"     {line}")
+                        logger.info(f'     {line}')
             except Exception as e:
                 if verbose:
-                    print(f"[GP] IC diagnostic skipped ({e})")
+                    logger.info(f'[GP] IC diagnostic skipped ({e})')
     # Save to library
     lib = StrategyLibrary(output_path)
     n_added = lib.add_from_evolution(result, top_k=5, min_oos_ratio=min_oos_ratio)
     lib.save()
     if verbose:
-        print(f"\n[GP] added {n_added} strategies to library ({len(lib)} total)")
-        print(f"[GP] library saved to {output_path}")
+        logger.info(f'\n[GP] added {n_added} strategies to library ({len(lib)} total)')
+        logger.info(f'[GP] library saved to {output_path}')
     return result

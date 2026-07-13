@@ -46,6 +46,9 @@ from src.analysis.stress_test import stress_portfolio_all_scenarios, worst_case_
 from src.analysis.tail_risk import compute_portfolio_tail_risk
 from src.safety.kelly_drawdown import KellyConfig, kelly_fraction
 
+from src.core.logging_setup import get_logger
+logger = get_logger(__name__)
+
 
 class RiskManagerAgent:
     def __init__(
@@ -317,7 +320,7 @@ class RiskManagerAgent:
                     f"fingir un balance contra una cuenta real)."
                 ) from e
             if os.getenv("GUARICO_ALLOW_SIMULATED_BALANCE", "1") == "1":
-                print(f"[RiskManagerAgent] ⚠️ Balance indisponible ({e}). SIMULATED fallback $100.")
+                logger.warning(f'[RiskManagerAgent] ⚠️ Balance indisponible ({e}). SIMULATED fallback $100.')
                 return (100.0, "testnet_sim")
             raise RuntimeError("Balance no disponible y simulación deshabilitada") from e
 
@@ -341,7 +344,7 @@ class RiskManagerAgent:
             else:
                 # No hay debate (caso legacy) → usa todas
                 hypotheses = all_hyps
-            print(f"[RiskManagerAgent] usando {len(hypotheses)} hipótesis post-debate")
+            logger.info(f'[RiskManagerAgent] usando {len(hypotheses)} hipótesis post-debate')
         else:
             hypotheses = state.get("generate_hypotheses", {}).get("hypotheses", [])
         # Sprint 46N (audit A4): this "headline" balance (crypto broker,
@@ -373,12 +376,7 @@ class RiskManagerAgent:
         # Sprint 2: cuántas posiciones abiertas ya tenemos
         open_count = self.position_repo.count_open() if self.position_repo else 0
         slots_left = max(0, self.max_open_trades - open_count)
-        print(
-            f"[RiskManagerAgent] {len(hypotheses)} hipótesis | "
-            f"Balance ${cycle_balance:.2f} ({cycle_balance_source}) | "
-            f"Posiciones abiertas {open_count}/{self.max_open_trades} | "
-            f"Riesgo {self.risk_per_trade_pct}% | R:R {self.risk_reward_ratio}:1"
-        )
+        logger.info(f'[RiskManagerAgent] {len(hypotheses)} hipótesis | Balance ${cycle_balance:.2f} ({cycle_balance_source}) | Posiciones abiertas {open_count}/{self.max_open_trades} | Riesgo {self.risk_per_trade_pct}% | R:R {self.risk_reward_ratio}:1')
 
         approved = []
         rejected = []
@@ -446,7 +444,7 @@ class RiskManagerAgent:
                             "margin/futures trading is wired in."
                         ),
                     })
-                print(f"  🚫 {asset:8} {direction:5} — crypto_short_not_supported (binance.us spot, no margin)")
+                logger.info(f'  🚫 {asset:8} {direction:5} — crypto_short_not_supported (binance.us spot, no margin)')
                 continue
 
             # --- Sprint 46N (audit M3): reject equity shorts (Alpaca
@@ -482,7 +480,7 @@ class RiskManagerAgent:
                             "eligibility is wired in for equities."
                         ),
                     })
-                print(f"  🚫 {asset:8} {direction:5} — equity_short_not_supported (Alpaca fractional/notional can't short)")
+                logger.info(f"  🚫 {asset:8} {direction:5} — equity_short_not_supported (Alpaca fractional/notional can't short)")
                 continue
 
             # --- Sprint 46M: reject if this asset already has an OPEN
@@ -512,12 +510,7 @@ class RiskManagerAgent:
                             "existing_directions": sorted(existing_directions),
                             "already_approved_this_cycle": already_approved_this_cycle,
                         })
-                    print(
-                        f"  🚫 {asset:8} {direction:5} — asset already has an "
-                        f"open or just-approved position "
-                        f"({', '.join(sorted(existing_directions)) or 'this cycle'}); "
-                        f"skipping to avoid conflicting/duplicate exposure"
-                    )
+                    logger.info(f"  🚫 {asset:8} {direction:5} — asset already has an open or just-approved position ({', '.join(sorted(existing_directions)) or 'this cycle'}); skipping to avoid conflicting/duplicate exposure")
                     continue
 
             if entry_price <= 0:
@@ -696,12 +689,7 @@ class RiskManagerAgent:
                         "adjusted_to_pct": round(adjusted_cap_pct, 2),
                         "adjusted_to_notional": round(notional, 2),
                     })
-                print(f"  ⚠️ {h['asset']:8} {direction:5} — "
-                      f"notional ${notional:.2f} < min ${self.min_order_usd:.2f} "
-                      f"({auto_adjust_reason}). "
-                      f"Bumping to ${notional:.2f} ({adjusted_cap_pct:.1f}% effective). "
-                      f"⚠️ FIX config.yaml: increase max_capital_per_trade_pct or risk_per_trade_pct, "
-                      f"or lower min_order_usd.")
+                logger.warning(f"  ⚠️ {h['asset']:8} {direction:5} — notional ${notional:.2f} < min ${self.min_order_usd:.2f} ({auto_adjust_reason}). Bumping to ${notional:.2f} ({adjusted_cap_pct:.1f}% effective). ⚠️ FIX config.yaml: increase max_capital_per_trade_pct or risk_per_trade_pct, or lower min_order_usd.")
 
             # --- Sprint 46N (audit A3): quantize to the exchange's real
             # lot step-size and re-buffer above its true min-notional,
@@ -778,21 +766,10 @@ class RiskManagerAgent:
                                 "exchange_min_notional": min_notional_exchange,
                                 "min_order_usd": self.min_order_usd,
                             })
-                        print(
-                            f"  🚫 {h['asset']:8} {direction:5} — notional "
-                            f"${notional:.4f} still below the exchange's real "
-                            f"minimum ${exchange_min_floor:.2f} AFTER step-size "
-                            f"quantization. Rejecting — sending this would just "
-                            f"bounce off the exchange."
-                        )
+                        logger.info(f"  🚫 {h['asset']:8} {direction:5} — notional ${notional:.4f} still below the exchange's real minimum ${exchange_min_floor:.2f} AFTER step-size quantization. Rejecting — sending this would just bounce off the exchange.")
                         continue
                 except Exception as _quantize_err:
-                    print(
-                        f"  ⚠️ {h.get('asset', '?'):8} {direction:5} — lot-size/"
-                        f"min-notional quantization skipped ({_quantize_err}); "
-                        f"using unquantized sizing (8-decimal rounding at order "
-                        f"time only)."
-                    )
+                    logger.warning(f"  ⚠️ {h.get('asset', '?'):8} {direction:5} — lot-size/min-notional quantization skipped ({_quantize_err}); using unquantized sizing (8-decimal rounding at order time only).")
                     if self.audit:
                         self.audit.append("QUANTIZE_SKIPPED", {
                             "asset": h.get("asset"),
@@ -832,14 +809,7 @@ class RiskManagerAgent:
                             "max_allowed_multiplier": self.max_auto_adjust_risk_multiplier,
                             "min_order_usd": self.min_order_usd,
                         })
-                    print(
-                        f"  🚫 {h['asset']:8} {direction:5} — auto-adjust to "
-                        f"min_order_usd would risk ${risk_amount_usd_eff:.4f} vs "
-                        f"${risk_amount_usd:.4f} intended "
-                        f"({risk_multiplier:.1f}x > {self.max_auto_adjust_risk_multiplier}x cap). "
-                        f"Rejecting — account too small for this stop distance at "
-                        f"the configured risk_per_trade_pct."
-                    )
+                    logger.info(f"  🚫 {h['asset']:8} {direction:5} — auto-adjust to min_order_usd would risk ${risk_amount_usd_eff:.4f} vs ${risk_amount_usd:.4f} intended ({risk_multiplier:.1f}x > {self.max_auto_adjust_risk_multiplier}x cap). Rejecting — account too small for this stop distance at the configured risk_per_trade_pct.")
                     continue
 
             # --- Min order check (post-adjustment) ---
@@ -850,7 +820,7 @@ class RiskManagerAgent:
                 )
                 if self.audit:
                     self.audit.append("TRADE_REJECTED", {"asset": h.get("asset"), "reason": f"min_order_${notional:.2f}"})
-                print(f"  ❌ {h['asset']:8} {direction:5} — ${notional:.2f} < min ${self.min_order_usd}")
+                logger.error(f"  ❌ {h['asset']:8} {direction:5} — ${notional:.2f} < min ${self.min_order_usd}")
                 continue
 
             # --- Balance check ---
@@ -868,8 +838,7 @@ class RiskManagerAgent:
                         "balance": account_balance,
                         "min_order_usd": self.min_order_usd,
                     })
-                print(f"  ❌ {h['asset']:8} {direction:5} — balance ${account_balance:.2f} < min ${self.min_order_usd} "
-                      f"(deposit more funds or lower min_order_usd in config)")
+                logger.error(f"  ❌ {h['asset']:8} {direction:5} — balance ${account_balance:.2f} < min ${self.min_order_usd} (deposit more funds or lower min_order_usd in config)")
                 continue
 
             trade = {
@@ -922,7 +891,7 @@ class RiskManagerAgent:
                     rejected.append({"trade": trade, "reason": verdict.reason})
                     if self.audit:
                         self.audit.append("MANDATE_BLOCKED", {"asset": trade["asset"], "reason": verdict.reason})
-                    print(f"  🛡️  {trade['asset']:8} {direction:5} — blocked by mandate: {verdict.reason}")
+                    logger.info(f"  🛡️  {trade['asset']:8} {direction:5} — blocked by mandate: {verdict.reason}")
                     continue
                 if self.audit:
                     self.audit.append("MANDATE_OK", {"asset": trade["asset"], "notional": trade["notional_usd"], "risk": trade["risk_usd"]})
@@ -944,10 +913,7 @@ class RiskManagerAgent:
                             "reason": policy_reason,
                             "proposed_notional_usd": trade["notional_usd"],
                         })
-                    print(
-                        f"  📊 {trade['asset']:8} {direction:5} — "
-                        f"blocked by allocation policy: {policy_reason}"
-                    )
+                    logger.info(f"  📊 {trade['asset']:8} {direction:5} — blocked by allocation policy: {policy_reason}")
                     continue
 
             # --- Sprint 44A: asset-class concentration check (Bridgewater risk) ---
@@ -973,10 +939,7 @@ class RiskManagerAgent:
                                 "max_pct": self.max_asset_class_concentration_pct,
                             },
                         )
-                    print(
-                        f"  🪙  {trade['asset']:8} {direction:5} — "
-                        f"blocked by concentration: {conc_reason}"
-                    )
+                    logger.info(f"  🪙  {trade['asset']:8} {direction:5} — blocked by concentration: {conc_reason}")
                     continue
 
             # --- Sprint 45 (N4): portfolio-risk gates ---
@@ -1005,10 +968,7 @@ class RiskManagerAgent:
                                 "max_stress_drawdown_pct": self.max_stress_drawdown_pct,
                             },
                         )
-                    print(
-                        f"  📉 {trade['asset']:8} {direction:5} — "
-                        f"blocked by stress test: {stress_reason}"
-                    )
+                    logger.info(f"  📉 {trade['asset']:8} {direction:5} — blocked by stress test: {stress_reason}")
                     continue
 
             if self.correlation_check_enabled and self.position_repo is not None:
@@ -1028,10 +988,7 @@ class RiskManagerAgent:
                                 "max_avg_correlation_pct": self.max_avg_correlation_pct,
                             },
                         )
-                    print(
-                        f"  🔗 {trade['asset']:8} {direction:5} — "
-                        f"blocked by correlation: {corr_reason}"
-                    )
+                    logger.info(f"  🔗 {trade['asset']:8} {direction:5} — blocked by correlation: {corr_reason}")
                     continue
 
             if self.tail_risk_check_enabled and self.position_repo is not None:
@@ -1051,10 +1008,7 @@ class RiskManagerAgent:
                                 "max_cvar_95_pct": self.max_cvar_95_pct,
                             },
                         )
-                    print(
-                        f"  ⚠️  {trade['asset']:8} {direction:5} — "
-                        f"blocked by tail risk: {cvar_reason}"
-                    )
+                    logger.warning(f"  ⚠️  {trade['asset']:8} {direction:5} — blocked by tail risk: {cvar_reason}")
                     continue
 
             # --- Sprint 2: max_open_trades ---
@@ -1089,7 +1043,7 @@ class RiskManagerAgent:
                     rejected.append({"trade": trade, "reason": f"max_open_trades:{self.max_open_trades}"})
                     if self.audit:
                         self.audit.append("TRADE_REJECTED", {"asset": trade["asset"], "reason": "max_open_trades_reached"})
-                    print(f"  🚫 {trade['asset']:8} {direction:5} — slots llenos ({open_count}/{self.max_open_trades})")
+                    logger.info(f"  🚫 {trade['asset']:8} {direction:5} — slots llenos ({open_count}/{self.max_open_trades})")
                     continue
                 # Replacement happened — slot freed, fall through to approval.
                 did_replace_this_cycle = True
@@ -1133,12 +1087,7 @@ class RiskManagerAgent:
             # path of the broker call. If the broker fails, the position
             # is never added to the repo. No more ghosts.
 
-            print(
-                f"  ✅ {trade['asset']:8} {direction:5} @ ${entry_price:>9.2f} | "
-                f"qty={quantity:>10.6f} | "
-                f"SL=${stop_loss:>9.2f} | TP=${take_profit:>9.2f} | "
-                f"risk=${risk_amount_usd_eff:.2f} | notional=${notional:.2f}"
-            )
+            logger.info(f"  ✅ {trade['asset']:8} {direction:5} @ ${entry_price:>9.2f} | qty={quantity:>10.6f} | SL=${stop_loss:>9.2f} | TP=${take_profit:>9.2f} | risk=${risk_amount_usd_eff:.2f} | notional=${notional:.2f}")
 
         return {
             "approved_trades": approved,
@@ -1550,10 +1499,7 @@ class RiskManagerAgent:
                     "delta": round(new_score - worst_score, 3),
                     "reason": "no_current_price",
                 })
-            print(
-                f"  ⏸️  REPLACEMENT_ABORTED {worst_pos.asset:8} — "
-                f"no current price available; will retry next cycle"
-            )
+            logger.info(f'  ⏸️  REPLACEMENT_ABORTED {worst_pos.asset:8} — no current price available; will retry next cycle')
             return False
 
         # Sprint 43 C4 fix: send the broker order FIRST. If the broker
@@ -1588,7 +1534,7 @@ class RiskManagerAgent:
             except Exception as e:
                 msg = (f"[RiskManagerAgent] ⚠️ Broker FAILED cerrando {worst_pos.asset} "
                        f"para replacement: {e}. Replacement aborted; position stays open.")
-                print(msg)
+                logger.info(msg)
                 if self.audit:
                     self.audit.append("REPLACEMENT_FAILED", {
                         "worst_asset": worst_pos.asset,
@@ -1634,10 +1580,5 @@ class RiskManagerAgent:
                 "threshold": threshold,
             })
 
-        print(
-            f"  🔄 REPLACED {closed.asset:8} {closed.direction:5} "
-            f"(score {worst_score:.2f}, pnl ${realized:+.2f}) → "
-            f"opened {new_trade['asset']:8} {new_trade['direction']:5} "
-            f"(score {new_score:.2f}, Δ {new_score - worst_score:+.2f})"
-        )
+        logger.info(f"  🔄 REPLACED {closed.asset:8} {closed.direction:5} (score {worst_score:.2f}, pnl ${realized:+.2f}) → opened {new_trade['asset']:8} {new_trade['direction']:5} (score {new_score:.2f}, Δ {new_score - worst_score:+.2f})")
         return True

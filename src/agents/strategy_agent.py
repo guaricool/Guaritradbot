@@ -42,6 +42,9 @@ from src.analysis.alpha_factors import latest_alpha_snapshot
 # `evaluate_strategies` below for the full rationale.
 from src.data.asset_class import get_asset_class, AssetClass
 
+from src.core.logging_setup import get_logger
+logger = get_logger(__name__)
+
 
 def _was_in_zone_recently(series: pd.Series, threshold: float, lookback: int = 5, direction: str = "below") -> bool:
     """True if the series crossed below/above `threshold` within last `lookback` bars.
@@ -266,7 +269,7 @@ class StrategyAgent:
 
     def evaluate_strategies(self, inputs: dict, state: dict):
         market_data = state.get("analyze_market", {}).get("market_data", {})
-        print(f"[StrategyAgent] Evaluando {len(market_data)} assets...")
+        logger.info(f'[StrategyAgent] Evaluando {len(market_data)} assets...')
 
         hypotheses = []
 
@@ -769,11 +772,7 @@ class StrategyAgent:
                     kept.append(h)
             if suppressed:
                 for h in suppressed:
-                    print(
-                        f"  🚫 {h['asset']:8} short — crypto_short_not_supported "
-                        f"(binance.us spot, no margin) — suprimida antes del debate "
-                        f"(via {h['strategy']})"
-                    )
+                    logger.info(f"  🚫 {h['asset']:8} short — crypto_short_not_supported (binance.us spot, no margin) — suprimida antes del debate (via {h['strategy']})")
                     if self.audit is not None:
                         self.audit.append("HYPOTHESIS_SUPPRESSED", {
                             "asset": h["asset"],
@@ -794,9 +793,9 @@ class StrategyAgent:
             hypotheses = kept
 
         if hypotheses:
-            print(f"[StrategyAgent] → {len(hypotheses)} hipótesis nuevas:")
+            logger.info(f'[StrategyAgent] → {len(hypotheses)} hipótesis nuevas:')
             for h in hypotheses:
-                print(f"   • {h['direction'].upper():5} {h['asset']:8} @ ${h['price']:.2f} via {h['strategy']}")
+                logger.info(f"   • {h['direction'].upper():5} {h['asset']:8} @ ${h['price']:.2f} via {h['strategy']}")
             # B022 fix: emit HYPOTHESIS_GENERATED events so PositionMonitor
             # can use them for SMART_PROFIT_TAKE reversal detection. Each
             # hypothesis carries direction + asset + price; we add a
@@ -816,7 +815,7 @@ class StrategyAgent:
                         "strength": _hypothesis_strength(h),
                     })
         else:
-            print("[StrategyAgent] → 0 hipótesis (sin condiciones activas)")
+            logger.info('[StrategyAgent] → 0 hipótesis (sin condiciones activas)')
 
         return {"hypotheses": hypotheses}
 

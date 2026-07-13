@@ -4,6 +4,9 @@ from typing import Dict, Any, List, Callable
 from itertools import product
 from src.optimization.backtester import VectorizedBacktester
 
+from src.core.logging_setup import get_logger
+logger = get_logger(__name__)
+
 class HyperoptManager:
     """
     Optimizador Grid Search que utiliza VectorizedBacktester para encontrar
@@ -26,10 +29,10 @@ class HyperoptManager:
         
         signal_generator: Una función que recibe (df, **params) y devuelve una Serie de Pandas con señales (-1, 0, 1)
         """
-        print(f"[{self.__class__.__name__}] Optimizando {strategy_name}...")
+        logger.info(f'[{self.__class__.__name__}] Optimizando {strategy_name}...')
         
         if historical_data.empty:
-            print(f"[{self.__class__.__name__}] ⚠️ No hay datos históricos para {strategy_name}.")
+            logger.warning(f'[{self.__class__.__name__}] ⚠️ No hay datos históricos para {strategy_name}.')
             return {}
 
         best_metric = -np.inf
@@ -40,7 +43,7 @@ class HyperoptManager:
         
         # Generamos todas las combinaciones (Grid Search)
         combinations = list(product(*param_values))
-        print(f"[{self.__class__.__name__}] Probando {len(combinations)} combinaciones...")
+        logger.info(f'[{self.__class__.__name__}] Probando {len(combinations)} combinaciones...')
         
         for values in combinations:
             params = dict(zip(param_names, values))
@@ -60,7 +63,7 @@ class HyperoptManager:
                 best_found = params
                 
         self.best_params[strategy_name] = best_found
-        print(f"[{self.__class__.__name__}] -> Mejores parámetros ({metric}: {best_metric:.2f}): {best_found}")
+        logger.info(f'[{self.__class__.__name__}] -> Mejores parámetros ({metric}: {best_metric:.2f}): {best_found}')
         return best_found
 
     def get_best_params(self, strategy_name: str) -> Dict[str, Any]:

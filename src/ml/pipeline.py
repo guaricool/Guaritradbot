@@ -35,6 +35,9 @@ from sklearn.preprocessing import StandardScaler
 
 from src.features.alpha_zoo import compute_alpha_features, list_alpha_features
 
+from src.core.logging_setup import get_logger
+logger = get_logger(__name__)
+
 
 # ----------------------------------------------------------------------
 # Sprint 46S (audit M14): integrity-verified pickle artifacts.
@@ -285,7 +288,7 @@ class ModelTrainer:
             # — see load()'s "unsigned artifact" path below). Loud
             # print so the operator notices integrity protection isn't
             # active for this artifact.
-            print(f"[ModelTrainer] ⚠️ could not write signature sidecar for {path}: {e!r}")
+            logger.warning(f'[ModelTrainer] ⚠️ could not write signature sidecar for {path}: {e!r}')
 
     @staticmethod
     def load(path: str) -> "ModelTrainer":
@@ -322,7 +325,7 @@ class ModelTrainer:
             with open(path, "rb") as f:
                 payload = f.read()
         except FileNotFoundError as e:
-            print(f"[ModelTrainer] ⚠️ load({path}) failed: {e!r}. Returning None.")
+            logger.warning(f'[ModelTrainer] ⚠️ load({path}) failed: {e!r}. Returning None.')
             return None
 
         if os.path.exists(sig_file):
@@ -331,25 +334,13 @@ class ModelTrainer:
                     expected_sig = f.read().strip()
                 actual_sig = _sign_artifact(payload)
                 if not hmac.compare_digest(actual_sig, expected_sig):
-                    print(
-                        f"[ModelTrainer] ⛔ SIGNATURE MISMATCH for {path} — artifact "
-                        f"may be tampered, substituted, or corrupted. Refusing to "
-                        f"unpickle. Retrain or restore from a known-good backup."
-                    )
+                    logger.info(f'[ModelTrainer] ⛔ SIGNATURE MISMATCH for {path} — artifact may be tampered, substituted, or corrupted. Refusing to unpickle. Retrain or restore from a known-good backup.')
                     return None
             except Exception as e:
-                print(
-                    f"[ModelTrainer] ⚠️ could not verify signature for {path} "
-                    f"({e!r}) — refusing to unpickle an artifact with an "
-                    f"unreadable/corrupt signature sidecar."
-                )
+                logger.warning(f'[ModelTrainer] ⚠️ could not verify signature for {path} ({e!r}) — refusing to unpickle an artifact with an unreadable/corrupt signature sidecar.')
                 return None
         else:
-            print(
-                f"[ModelTrainer] ⚠️ {sig_file} not found — loading {path} as an "
-                f"UNSIGNED (pre-M14) artifact, integrity not verified. Re-save "
-                f"or retrain to get signature protection going forward."
-            )
+            logger.warning(f'[ModelTrainer] ⚠️ {sig_file} not found — loading {path} as an UNSIGNED (pre-M14) artifact, integrity not verified. Re-save or retrain to get signature protection going forward.')
 
         try:
             data = pickle.loads(payload)
@@ -361,10 +352,7 @@ class ModelTrainer:
             trainer.train_metrics = data["train_metrics"]
             return trainer
         except (EOFError, pickle.UnpicklingError, KeyError, AttributeError) as e:
-            print(
-                f"[ModelTrainer] ⚠️ load({path}) failed: {e!r}. "
-                f"Returning None. Caller must handle the missing model."
-            )
+            logger.warning(f'[ModelTrainer] ⚠️ load({path}) failed: {e!r}. Returning None. Caller must handle the missing model.')
             return None
 
 

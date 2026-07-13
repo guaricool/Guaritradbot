@@ -23,6 +23,9 @@ from src.core.data_validator import validate_dataframe, DataIntegrityError
 from src.data.yf_safe import safe_yf_download
 from src.data.asset_class import get_asset_class, AssetClass
 
+from src.core.logging_setup import get_logger
+logger = get_logger(__name__)
+
 
 # Sprint 46N (audit M4): NYSE/Nasdaq regular session, used both to make
 # the staleness check equity-aware (_validate_or_fault) and to fix the
@@ -473,7 +476,7 @@ class MarketAnalystAgent(Component):
             validate_dataframe(df, max_staleness_seconds=max_staleness)
             return True
         except DataIntegrityError as e:
-            print(f"  ⚠️  {asset_tf}: data integrity fail — {e}")
+            logger.warning(f'  ⚠️  {asset_tf}: data integrity fail — {e}')
             self.degrade(f"data integrity: {e}")
             return False
 
@@ -488,7 +491,7 @@ class MarketAnalystAgent(Component):
         }
 
         self.start() if self.state == ComponentState.READY else None
-        print(f"[MarketAnalystAgent] Fetching {len(assets)} assets × {len(timeframes)} timeframes...")
+        logger.info(f'[MarketAnalystAgent] Fetching {len(assets)} assets × {len(timeframes)} timeframes...')
         data = {}
         fail_count = 0
         for asset in assets:
@@ -505,14 +508,14 @@ class MarketAnalystAgent(Component):
                         max_retries=3,
                     )
                     if df is None:
-                        print(f"  ⚠️  {asset}@{tf}: descarga falló tras 3 reintentos")
+                        logger.warning(f'  ⚠️  {asset}@{tf}: descarga falló tras 3 reintentos')
                         fail_count += 1
                         continue
                     if isinstance(df.columns, pd.MultiIndex):
                         df.columns = df.columns.get_level_values(0)
                     df = df.dropna(how="all")
                     if df.empty:
-                        print(f"  ⚠️  {asset}@{tf}: sin datos")
+                        logger.warning(f'  ⚠️  {asset}@{tf}: sin datos')
                         fail_count += 1
                         continue
 
@@ -523,7 +526,7 @@ class MarketAnalystAgent(Component):
                     if yf_interval in _YF_INTERVAL_SECONDS:
                         df = _trim_in_progress_bar(df, _YF_INTERVAL_SECONDS[yf_interval])
                     if df.empty:
-                        print(f"  ⚠️  {asset}@{tf}: sin velas tras trim de vela en formación")
+                        logger.warning(f'  ⚠️  {asset}@{tf}: sin velas tras trim de vela en formación')
                         fail_count += 1
                         continue
 
@@ -567,21 +570,14 @@ class MarketAnalystAgent(Component):
                                             "BB_Upper", "BB_Middle", "BB_Lower",
                                             "Support_50", "Resistance_50"])
                     if df.empty:
-                        print(f"  ⚠️  {asset}@{tf}: sin velas tras warmup")
+                        logger.warning(f'  ⚠️  {asset}@{tf}: sin velas tras warmup')
                         fail_count += 1
                         continue
 
                     data[asset][tf] = df
-                    print(
-                        f"  ✅ {asset}@{tf}: {len(df)} velas | "
-                        f"close=${close.iloc[-1]:.2f} | "
-                        f"RSI={df['RSI'].iloc[-1]:.1f} | "
-                        f"ADX={df['ADX_14'].iloc[-1]:.1f} | "
-                        f"StochK={df['Stoch_K'].iloc[-1]:.1f} | "
-                        f"ATR={df['ATR_14'].iloc[-1]:.4f}"
-                    )
+                    logger.info(f"  ✅ {asset}@{tf}: {len(df)} velas | close=${close.iloc[-1]:.2f} | RSI={df['RSI'].iloc[-1]:.1f} | ADX={df['ADX_14'].iloc[-1]:.1f} | StochK={df['Stoch_K'].iloc[-1]:.1f} | ATR={df['ATR_14'].iloc[-1]:.4f}")
                 except Exception as e:
-                    print(f"  ❌ {asset}@{tf}: {e}")
+                    logger.error(f'  ❌ {asset}@{tf}: {e}')
                     fail_count += 1
 
         # Si fallaron demasiados assets, marcar como DEGRADED pero seguir
@@ -604,7 +600,7 @@ class MarketAnalystAgent(Component):
                                   f"Bot operando a ciegas."),
                     })
                 except Exception as e:
-                    print(f"[MarketAnalyst] ⚠️ No se pudo publicar SYSTEM_ERROR: {e}")
+                    logger.error(f'[MarketAnalyst] ⚠️ No se pudo publicar SYSTEM_ERROR: {e}')
         else:
             self.recover()
 

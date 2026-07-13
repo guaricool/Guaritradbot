@@ -15,6 +15,9 @@ Uso:
 import os
 from pathlib import Path
 
+from src.core.logging_setup import get_logger
+logger = get_logger(__name__)
+
 
 class KillSwitch:
     def __init__(self, path: str):
@@ -22,7 +25,7 @@ class KillSwitch:
 
     def arm(self) -> None:
         self.path.touch()
-        print(f"[KillSwitch] ARMED at {self.path}")
+        logger.info(f'[KillSwitch] ARMED at {self.path}')
 
     def disarm(self) -> None:
         # Sprint 43 L1 fix: use missing_ok=True so a TOCTOU race
@@ -30,11 +33,11 @@ class KillSwitch:
         # raise FileNotFoundError. The audit flagged this as a
         # low-severity race; the fix is one keyword.
         self.path.unlink(missing_ok=True)
-        print(f"[KillSwitch] DISARMED ({self.path} removed)")
+        logger.info(f'[KillSwitch] DISARMED ({self.path} removed)')
 
     def is_triggered(self) -> bool:
         triggered = self.path.exists()
         if triggered:
-            print(f"\n⛔ [KillSwitch] TRIGGERED — file found at {self.path}")
-            print("   rm %s  ← para revivir" % self.path)
+            logger.info(f'\n⛔ [KillSwitch] TRIGGERED — file found at {self.path}')
+            logger.info('   rm %s  ← para revivir' % self.path)
         return triggered
