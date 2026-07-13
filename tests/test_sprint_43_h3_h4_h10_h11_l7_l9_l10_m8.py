@@ -29,12 +29,22 @@ class H3DrawdownKillSwitchWiringTest(unittest.TestCase):
         self.assertIsNotNone(ks)
 
     def test_drawdown_kill_switch_used_in_main(self):
-        with open(os.path.join(ROOT, "main.py"), encoding="utf-8") as f:
-            main_src = f.read()
-        self.assertIn("DrawdownKillSwitch", main_src,
-                      "DrawdownKillSwitch must be instantiated in main.py (H3 fix)")
-        self.assertIn("drawdown_kill_switch.update", main_src,
-                      "main.py must call drawdown_kill_switch.update() in the loop")
+        # Sprint 46T (audit M6): the call site moved from main.py to
+        # src/runtime/bot_runtime.py when the runtime class was
+        # extracted. The point of the test is that the kill switch is
+        # ACTUALLY CALLED in the main loop — checking both files keeps
+        # that intent intact across the refactor.
+        sources = [
+            os.path.join(ROOT, "main.py"),
+            os.path.join(ROOT, "src", "runtime", "bot_runtime.py"),
+        ]
+        combined = "\n".join(
+            open(p, encoding="utf-8").read() for p in sources
+        )
+        self.assertIn("DrawdownKillSwitch", combined,
+                      "DrawdownKillSwitch must be instantiated somewhere on the main → runtime path (H3 fix)")
+        self.assertIn("drawdown_kill_switch.update", combined,
+                      "the main loop must call drawdown_kill_switch.update()")
 
 
 class H4PaperToLiveDryRunTest(unittest.TestCase):

@@ -357,32 +357,61 @@ class MainPySourceWiringTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        main_path = os.path.join(ROOT, "main.py")
-        with open(main_path, "r", encoding="utf-8") as f:
-            cls.src = f.read()
+        # Sprint 46T (audit M6): the fast-monitor thread moved from
+        # main.py into src/runtime/bot_runtime.py when the runtime
+        # class was extracted. Concatenate both so the static-source
+        # tests below keep catching the patterns the audit cared about
+        # (own thread, own lock, NOT on the shared `schedule` instance,
+        # and only spun up in daemon mode — not in --once).
+        paths = [
+            os.path.join(ROOT, "main.py"),
+            os.path.join(ROOT, "src", "runtime", "bot_runtime.py"),
+        ]
+        cls.src = "\n".join(open(p, encoding="utf-8").read() for p in paths)
+        cls.main_only_src = open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
+        cls.runtime_src = open(
+            os.path.join(ROOT, "src", "runtime", "bot_runtime.py"),
+            encoding="utf-8",
+        ).read()
 
     def test_fast_monitor_has_its_own_thread(self):
-        self.assertIn("_fast_monitor_thread = threading.Thread(", self.src)
-        self.assertIn("target=_fast_monitor_loop", self.src)
-        self.assertIn('daemon=True', self.src)
+        # Pattern is in bot_runtime.py after the 46T extraction.
+        self.assertIn("_fast_monitor_thread = threading.Thread(", self.runtime_src)
+        self.assertIn("target=self._fast_monitor_loop", self.runtime_src)
+        self.assertIn("daemon=True", self.runtime_src)
 
     def test_fast_monitor_no_longer_shares_schedule_instance(self):
         # The old Sprint 46I wiring registered fast_monitor_tick
         # directly on the shared `schedule` object; that line must be
-        # gone now that it has its own thread/timer.
-        self.assertNotIn(
-            "schedule.every(_fast_monitor_minutes).minutes.do(fast_monitor_tick)",
-            self.src,
-        )
+        # gone (in EITHER file) now that it has its own thread/timer.
+        for label, src in (("main.py", self.main_only_src),
+                            ("bot_runtime.py", self.runtime_src)):
+            self.assertNotIn(
+                "schedule.every(_fast_monitor_minutes).minutes.do(fast_monitor_tick)",
+                src,
+                f"schedule.every(...).do(fast_monitor_tick) still in {label}",
+            )
 
     def test_fast_monitor_thread_guarded_by_lock(self):
-        self.assertIn("_fast_monitor_lock = threading.Lock()", self.src)
-        self.assertIn("_fast_monitor_lock.acquire(blocking=False)", self.src)
+        self.assertIn("_fast_monitor_lock = threading.Lock()", self.runtime_src)
+        self.assertIn("_fast_monitor_lock.acquire(blocking=False)", self.runtime_src)
 
     def test_thread_only_started_outside_once_mode(self):
-        idx = self.src.index("_fast_monitor_thread = threading.Thread(")
-        preceding = self.src[max(0, idx - 200):idx]
-        self.assertIn("if not args.once:", preceding)
+        # Sprint 46T (audit M6): in bot_runtime.py, the thread is
+        # started inside `_start_fast_monitor_thread()` which is
+        # called from `run()` only when `not self.once`. The
+        # construction site is many lines below the gate (the
+        # `_start_fast_monitor_thread` method has a long docstring),
+        # so we check the CALL site (`self._start_fast_monitor_thread()`)
+        # rather than the construction site.
+        self.assertIn("if not self.once:", self.runtime_src)
+        idx = self.runtime_src.index("self._start_fast_monitor_thread()")
+        # Walk backward to the nearest `if` statement above the call
+        # (the gate). Look at up to 400 chars of context to cross the
+        # method boundary if needed.
+        preceding = self.runtime_src[max(0, idx - 400):idx]
+        self.assertIn("if not self.once:", preceding,
+                      "thread start must be gated on `if not self.once:`")
 
 
 class NonBlockingLockSkipPatternTest(unittest.TestCase):

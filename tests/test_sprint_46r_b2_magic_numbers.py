@@ -91,13 +91,20 @@ class MainPyReadsConfigTest(unittest.TestCase):
     config keys instead of using hard-coded 0.6 / 0.005."""
 
     def test_main_reads_smart_profit_take_min_signal_strength(self):
-        main_src = MAIN_PATH.read_text(encoding="utf-8")
-        self.assertIn("smart_profit_take_min_signal_strength", main_src)
+        # Sprint 46T (audit M6): the .get() call moved from main.py to
+        # src/runtime/bot_runtime.py when the runtime class was
+        # extracted. The audit's intent was "the bot reads the config
+        # key instead of using a hard-coded 0.6" — checking both files
+        # keeps that intent.
+        from pathlib import Path
+        sources = [MAIN_PATH, Path("src/runtime/bot_runtime.py")]
+        combined = "\n".join(p.read_text(encoding="utf-8") for p in sources)
+        self.assertIn("smart_profit_take_min_signal_strength", combined)
         # And it should default to 0.6 (preserves the pre-46R
         # value if config is missing the key).
         m = re.search(
             r'smart_profit_take_min_signal_strength"?\s*,\s*([\d.]+)',
-            main_src,
+            combined,
         )
         self.assertIsNotNone(m)
         self.assertAlmostEqual(float(m.group(1)), 0.6, places=4)

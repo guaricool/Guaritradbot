@@ -44,6 +44,7 @@ from src.data_store.positions import PositionRepository
 from src.data_store.position_monitor import PositionMonitor
 from src.agents.researchers import DebateAgent
 from src.core.logging_setup import setup_logging
+from src.runtime.bot_runtime import BotRuntime  # Sprint 46T (audit M6)
 
 # Sprint 46R (audit B9): configure the root logger once at
 # startup. Every module that does `logger = get_logger(__name__)`
@@ -1127,595 +1128,77 @@ def main():
             history_size=200,
         )
 
-    # Monkey-patch el scheduler.job para correr el monitor antes
+    # Sprint 46T (audit M6): the two critical money-protecting paths
+    # (`fast_monitor_tick` and `job_with_monitor`) used to be nested
+    # closures here capturing ~15 local variables. They are now
+    # methods of `BotRuntime` (src/runtime/bot_runtime.py) — every
+    # dependency is an explicit constructor arg, every comment
+    # preserved, no behavioral change. We just save the original
+    # scheduler job (the actual multi-agent workflow cycle) here and
+    # hand it to the runtime; the runtime wraps it with the drawdown
+    # + capital + manual-pause gates that used to live in
+    # `job_with_monitor`.
     original_job = scheduler.job
 
-    # Sprint 34: per-position P&L update scheduler (hourly Telegram updates).
-    # Initialized lazily on the first fast_monitor_tick so the
-    # config["notifications"] block is available at construction time.
-    _pupdate_scheduler = None
-
-    # Sprint 46N (audit A6): count consecutive fast_monitor_tick runs
-    # where price fetching returned NOTHING while positions were open
-    # ("flying blind" — SL/TP protection can't run without a current
-    # price). The hourly cycle already alerts on a total historical-
-    # data-feed failure (MarketAnalystAgent's MARKET_DATA_TOTAL_FAILURE,
-    # Sprint 43 C6), but that's a different code path (fetch_one for
-    # indicators) and never covered this fast, live-price-only tick —
-    # a data-provider outage here could silently leave every open
-    # position unprotected for as long as the outage lasts, with
-    # nothing telling Carlos to go check manually.
-    _blind_tick_count = 0
-    _FAST_MONITOR_BLIND_ALERT_THRESHOLD = 3
-
-    def fast_monitor_tick():
-        """Sprint 46I — decoupled, fast-cadence position protection.
-
-        Carlos's concern (verbatim): "si es cada hora puede perder la
-        opcion de vender/comprar... y si en ese espacio entre un
-        analisis y otro pierde una gran oportunidad?" He was right —
-        before this, stop-loss/take-profit checks ran on the SAME
-        hourly cadence as the full multi-agent analysis cycle, so a
-        position could blow through its stop and sit unprotected for
-        up to an hour before the bot even looked at it again.
-
-        This function is scheduled independently (see
-        config.yaml's schedule.fast_monitor_interval_minutes, default
-        2). Sprint 46N (audit A5): it now runs on its own dedicated
-        daemon thread with its own timer (see the
-        `_fast_monitor_loop`/`_fast_monitor_thread` block near the end
-        of main()) instead of being registered on the same global
-        `schedule` instance / single-threaded while-loop that also
-        drives job_with_monitor — see that block's comment for the
-        full rationale. It runs ONLY the position-protection half of
-        what job_with_monitor used to do inline: SL/TP polling, smart
-        profit-take, OCO reconciliation (for crypto positions using
-        Sprint 46I's native_oco protection — see position_monitor.py),
-        equity tracking, and per-position P&L update notifications. It
-        never touches new-entry generation (StrategyAgent/DebateAgent/
-        RiskManagerAgent) — that stays on the hourly cycle in
-        job_with_monitor, which is heavier (yfinance fetches across the
-        full asset universe, GP/hyperopt-adjacent work) and doesn't
-        need sub-hour freshness the way protecting an already-open
-        position does.
+    # Sprint 46J: per-asset fee callable (crypto uses binance.us
+    # taker, equities are 0.0). Was a closure before; now a 1-line
+    # lambda — same behavior, just no longer a `nonlocal` capture.
+    def _fee_pct_for_asset(asset: str) -> float:
+        """Sprint 46J: crypto assets (binance.us) get the real taker
+        fee; Alpaca equities are commission-free, so anything NOT
+        classified as "crypto" by `asset_class_for` (equity, or
+        "unknown" — conservative default) gets 0.0. See
+        `crypto_taker_fee_pct`'s comment above for the config source
+        and PositionMonitor's docstring for how this gets used.
         """
-        nonlocal _blind_tick_count
-        opens = position_repo.open()
-        if not opens:
-            # Nothing to protect right now — reset so a real blind
-            # streak later starts counting from zero, not from
-            # whatever it was before the book emptied out.
-            _blind_tick_count = 0
-            return
-        prices = _fetch_prices_for_open_positions(
-            position_repo,
-            broker_client=broker_client,
-            alpaca_broker=alpaca_broker,
-            brokers_config=brokers_config,
-        )
-        if not prices:
-            # Sprint 46N (audit A6): every price fetch failed this tick
-            # while positions are open — SL/TP protection did NOT run.
-            # Track + alert instead of silently returning (previous
-            # behavior). A single blind tick can be a transient blip
-            # (rate limit, brief network hiccup); alert once the streak
-            # crosses the threshold, then repeat the alert every
-            # `threshold` ticks after that so it isn't a one-time
-            # notice Carlos could miss, but also isn't Telegram spam
-            # every 2 minutes for the entire duration of a longer outage.
-            _blind_tick_count += 1
-            assets_at_risk = sorted({p.asset for p in opens})
-            print(
-                f"[FastMonitor] ⚠️ SIN PRECIOS este ciclo ({_blind_tick_count} "
-                f"consecutivos) — {len(opens)} posición(es) abierta(s) sin "
-                f"protección SL/TP este ciclo: {assets_at_risk}"
-            )
-            if audit:
-                audit.append("FAST_MONITOR_BLIND", {
-                    "consecutive_blind_ticks": _blind_tick_count,
-                    "open_positions": len(opens),
-                    "assets": assets_at_risk,
-                })
-            should_alert = _should_alert_fast_monitor_blind(
-                _blind_tick_count, _FAST_MONITOR_BLIND_ALERT_THRESHOLD
-            )
-            if should_alert and event_bus is not None:
-                event_bus.publish("SYSTEM_ERROR", {
-                    "kind": "FAST_MONITOR_BLIND",
-                    "consecutive_blind_ticks": _blind_tick_count,
-                    "open_positions": len(opens),
-                    "assets": assets_at_risk,
-                    "error": (
-                        f"📉 fast_monitor_tick lleva {_blind_tick_count} ciclos "
-                        f"consecutivos SIN PRECIOS para {len(opens)} posición(es) "
-                        f"abierta(s) ({', '.join(assets_at_risk)}). La protección "
-                        f"SL/TP no puede evaluarse sin precio actual — verificar "
-                        f"el proveedor de datos (yfinance/broker)."
-                    ),
-                })
-            return
-        # Got at least one price this tick — the blind streak (if any) is over.
-        _blind_tick_count = 0
-        try:
-            # 1a. SL/TP mechanical check (+ OCO reconciliation for
-            # native_oco positions — see position_monitor.py).
-            closed = position_monitor.check(prices)
-            if closed:
-                print(f"[PositionMonitor] {len(closed)} posiciones cerradas por stops/TPs")
+        return crypto_taker_fee_pct if _asset_class_for(asset, brokers_config) == "crypto" else 0.0
 
-            # 1b. Sprint 18: smart profit-take on reversal signals.
-            # Sprint 46R (audit M16): the audit's complaint was that
-            # we fed `check_with_signals` signals up to 1h old against
-            # fresh prices - "la reversion puede estar ya invalidada".
-            # Now we read the last `smart_profit_take_max_signal_age_s`
-            # seconds (default 5 min), and also pass that window to
-            # `check_with_signals` itself as a defensive filter (in
-            # case some other caller in the future passes a wider
-            # list). The fast monitor runs every 2 min, so 5 min is
-            # "the bot had a recent chance to re-evaluate this signal"
-            # - old enough not to miss a fresh reversal, fresh enough
-            # not to act on a stale one.
-            try:
-                import time as _t
-                _max_age = float(trading_cfg.get(
-                    "smart_profit_take_max_signal_age_s", 300
-                ))
-                recent_hyps = audit.read_since(_t.time() - _max_age)
-                signals = [
-                    h for h in recent_hyps
-                    if h.get("event_type") == "HYPOTHESIS_GENERATED"
-                ]
-                if signals:
-                    early_closed = position_monitor.check_with_signals(
-                        current_prices=prices,
-                        signals=signals,
-                        signal_min_strength=float(trading_cfg.get(
-                            "smart_profit_take_min_signal_strength", 0.6
-                        )),
-                        max_signal_age_s=_max_age,
-                    )
-                    if early_closed:
-                        print(
-                            f"[PositionMonitor] {len(early_closed)} posiciones "
-                            f"cerradas por SMART_PROFIT_TAKE (reversal)"
-                        )
-            except Exception as e2:
-                print(f"[PositionMonitor] smart-profit-take falló: {e2}")
-
-            # 1c. Refresh RiskAgent's current_prices view so position
-            # replacement scoring uses live prices.
-            try:
-                rm = registry.get("RiskManagerAgent")
-                if rm is not None:
-                    rm.current_prices = prices
-            except Exception:
-                pass
-
-            # Sprint 23: update equity tracker with current prices
-            try:
-                snap = equity_tracker.update(prices)
-                from src.safety.equity_tracker import format_equity_line
-                print(f"  [Equity] {format_equity_line(snap, precision=4)}")
-                # Sprint 24: persist to disk (crash-only)
-                try:
-                    persist_tracker(equity_tracker, _equity_state_path)
-                except Exception as _persist_err:
-                    print(f"  [Equity] persist falló: {_persist_err}")
-            except Exception as eqe:
-                print(f"  [Equity] tracker update falló: {eqe}")
-
-            # Sprint 34: hourly P&L update scheduler. Emits
-            # POSITION_UPDATE events at the configured cadence
-            # (default 60 min) per position. Skips silently if no
-            # open positions or no prices available. The
-            # NotificationAgent subscribed to POSITION_UPDATE
-            # sends the actual Telegram message.
-            try:
-                from src.notifications.position_update_scheduler import (
-                    PositionUpdateScheduler,
-                )
-                nonlocal _pupdate_scheduler
-                if _pupdate_scheduler is None:
-                    _pupdate_interval = int(
-                        config.get("notifications", {}).get(
-                            "position_update_minutes", 60
-                        )
-                    )
-                    _pupdate_min_pnl = float(
-                        config.get("notifications", {}).get(
-                            "position_update_min_pnl_usd", 0.0
-                        )
-                    )
-                    _pupdate_scheduler = PositionUpdateScheduler(
-                        position_repo=position_repo,
-                        event_bus=event_bus,
-                        interval_minutes=_pupdate_interval,
-                        min_pnl_usd=_pupdate_min_pnl,
-                    )
-                    print(
-                        f"  [PosUpdate] scheduler armed: "
-                        f"interval={_pupdate_interval}m, "
-                        f"min_pnl=${_pupdate_min_pnl:.2f}"
-                    )
-                n_emitted = _pupdate_scheduler.tick(prices)
-                if n_emitted:
-                    print(f"  [PosUpdate] emitted {n_emitted} update(s)")
-                # Drop any closed positions from the cadence map
-                open_ids = {p.position_id for p in position_repo.open()}
-                for pid in list(_pupdate_scheduler._last_update.keys()):
-                    if pid not in open_ids:
-                        _pupdate_scheduler.clear_position(pid)
-            except Exception as _pue:
-                print(f"  [PosUpdate] scheduler falló: {_pue}")
-        except Exception as e:
-            print(f"[PositionMonitor] check falló: {e}")
-
-        # Sprint 46R audit M11.3: heartbeat update for the enhanced
-        # /api/health endpoint. Pre-46R the healthcheck was just a
-        # liveness ping (the FastAPI server was up = healthy), which
-        # is what the audit called "pgrep — pasa aunque el bot esté
-        # colgado". Now the endpoint reads `APP_STATE["last_fast_monitor_at"]`
-        # and returns 503 if it's older than 2x the configured fast
-        # interval. Set it on EVERY tick (even when there are 0 open
-        # positions and the body of the tick is a no-op) so a stuck
-        # fast_monitor_tick shows up as a stuck healthcheck.
-        try:
-            from src.api.server import APP_STATE as _api_app_state
-            _api_app_state["last_fast_monitor_at"] = time.time()
-        except Exception:
-            # The API server may not be started yet in --once mode
-            # or in tests. Best-effort only — no audit, no log spam.
-            pass
-
-        # Sprint 46R audit M11.4: dead-man's switch. Best-effort GET
-        # against the configured HEALTHCHECKS_PING_URL (healthchecks.io
-        # in production). Runs on the 2-min fast tick so an OOB
-        # service can detect a dead bot within a couple of minutes —
-        # much faster than the 1h analysis cycle. The ping never
-        # raises (see ping_dead_mans_switch's docstring); a failure
-        # is logged + reflected in the next /api/health body.
-        try:
-            from src.observability.dead_mans_switch import ping_dead_mans_switch
-            ping_dead_mans_switch()
-        except Exception as _dms_err:
-            # The import could fail in --once mode / older tests where
-            # the observability package isn't on sys.path yet. Don't
-            # crash the cycle.
-            print(f"[DeadMansSwitch] ping skipped (import failed): {_dms_err}")
-
-    def job_with_monitor():
-        # Sprint 46I: position protection (stop-loss/take-profit,
-        # smart profit-take, OCO reconciliation, equity tracking) no
-        # longer lives here — it runs independently on a faster
-        # cadence via `fast_monitor_tick` (see above and the
-        # dedicated fast-monitor-thread block below main()). This
-        # function now only does the drawdown check + capital routing
-        # + manual pause gates, then the full hourly analysis cycle
-        # (original_job). It still needs its OWN price snapshot for
-        # the drawdown equity calc below — fetched independently from
-        # fast_monitor_tick's (different cadence, simplest to keep
-        # them decoupled rather than share mutable state between two
-        # differently-timed scheduled jobs).
-        # Sprint 43 H3 (fixed for real in 46D; equity source fixed in
-        # 46N audit A1): drawdown kill switch check. If the account
-        # has dropped more than the configured threshold from its peak
-        # equity, the bot is in "revenge trading" territory — it
-        # should stop opening NEW positions until the cooldown
-        # elapses.
-        #
-        # Sprint 46D fix: previously this did `return` immediately on
-        # trigger, which — despite the comment directly above it
-        # claiming otherwise — skipped the position-monitor block
-        # entirely (it's later in the same function). That meant a
-        # drawdown pause would ALSO freeze SL/TP protection on already-
-        # open positions, the opposite of what you want during a
-        # drawdown. Now we only set a flag that skips step 2 (the
-        # normal workflow / new entries) at the very end; step 1
-        # (monitor) always runs below regardless.
-        #
-        # Sprint 46N (audit A1) fix: this used to build its own
-        # "current_equity" as `position_repo.total_realized_pnl_usd()
-        # + sum(pos.unrealized_pnl(prices.get(pos.asset, 0.0)) for pos
-        # in opens)` — two compounding bugs in that one expression:
-        #   1. `prices.get(pos.asset, 0.0)` defaulted a MISSING price
-        #      (e.g. one failed yfinance fetch for a single asset) to
-        #      $0.0, which `unrealized_pnl` then treats as "this asset
-        #      is now worth nothing" — a long position's unrealized
-        #      P&L becomes `-entry_price * qty`, i.e. a fabricated
-        #      ~100% loss on that ONE position from a data hiccup, not
-        #      a real market move. This produced the impossible
-        #      -264%/-212% drawdown alerts Carlos saw.
-        #   2. The "equity" base was pure cumulative P&L (starting
-        #      near 0), not real account equity (starting balance +
-        #      P&L) — so drawdown_pct was computed relative to a
-        #      tiny/zero peak, wildly exaggerating the percentage for
-        #      the same dollar move.
-        # `equity_tracker` (constructed above, updated every
-        # fast_monitor_tick with live prices) already computes this
-        # correctly: its equity base is `starting_balance + realized +
-        # unrealized`, and its per-position loop skips any asset with
-        # no current price entirely (contributes $0, not "-100%") —
-        # see EquityTracker.update()'s `if price is not None` guard.
-        # Reusing its latest snapshot fixes both problems by
-        # construction and avoids a second, redundant yfinance fetch
-        # this function no longer needs.
-        dd_triggered = False
-        try:
-            current_equity = equity_tracker.latest().total_equity
-            dd_state = drawdown_kill_switch.update(current_equity)
-            # Sprint 46N (audit A1): persist peak_equity/triggered/
-            # triggered_at after every update so a bot restart can't
-            # silently forget an active kill switch or reset the peak
-            # back to 0 — see DrawdownKillSwitch.persist()'s docstring.
-            try:
-                drawdown_kill_switch.persist(_drawdown_state_path)
-            except Exception as _dd_persist_err:
-                print(f"[DrawdownKill] persist falló (continuando): {_dd_persist_err}")
-            if dd_state.triggered:
-                dd_triggered = True
-                if audit:
-                    audit.append("BOT_DRAWDOWN_KILL_ACTIVE", {
-                        "drawdown_pct": round(dd_state.drawdown_pct, 3),
-                        "peak_equity": dd_state.peak_equity,
-                        "current_equity": current_equity,
-                        "cooldown_remaining_hours": round(dd_state.cooldown_remaining_hours, 2),
-                    })
-                if event_bus:
-                    event_bus.publish("SYSTEM_ERROR", {
-                        "kind": "DRAWDOWN_KILL_ACTIVE",
-                        "drawdown_pct": round(dd_state.drawdown_pct, 3),
-                        "error": (f"🛑 Drawdown kill switch ACTIVO: "
-                                  f"{dd_state.drawdown_pct:.2f}% desde peak. "
-                                  f"Bot NO abre nuevas posiciones por "
-                                  f"{dd_state.cooldown_remaining_hours:.1f}h."),
-                    })
-                # Skip step 2 (new entries) this cycle — step 1 (monitor,
-                # right below) still runs so SL/TP can still close.
-        except Exception as e:
-            print(f"[DrawdownKill] check failed (continuing): {e}")
-            # Sprint 46D fix: a crashing safety check must be as loud as
-            # a triggered one — previously this was print-only, so a
-            # broken check and a passing check looked identical in the
-            # logs/dashboard. Now it's visible in the audit trail too.
-            if audit:
-                audit.append("DRAWDOWN_CHECK_ERROR", {"error": str(e)[:300]})
-            if event_bus:
-                try:
-                    event_bus.publish("SYSTEM_ERROR", {
-                        "kind": "DRAWDOWN_CHECK_ERROR",
-                        "error": f"⚠️ Drawdown kill-switch check falló (bot sigue operando): {e}",
-                    })
-                except Exception:
-                    pass
-
-        # Sprint 46S (audit B4): reconcile the equity tracker's expected
-        # balance against the broker's real live balance once per hourly
-        # cycle, so a manual deposit/withdrawal to binance.us doesn't
-        # masquerade as trading P&L. `EquityTracker.reconcile_external_
-        # balance` (added in Sprint 46R, commit ef3b83b) already has the
-        # math; it was never actually called from anywhere until this —
-        # this wiring is that missing piece. Scoped to crypto only, since
-        # equity_tracker.starting_balance was itself seeded from
-        # broker_client.get_usdt_balance() above (crypto-only balance;
-        # Alpaca isn't configured on this account today — see
-        # _asset_class_for). Best-effort: skip silently (not a SYSTEM_ERROR)
-        # if the broker is unreachable this cycle — the next hourly cycle
-        # will just try again, and reconciliation drifting by one cycle
-        # is harmless compared to a false SYSTEM_ERROR every time yfinance
-        # or the broker has a transient hiccup.
-        try:
-            if broker_client is not None:
-                _crypto_balance = broker_client.get_usdt_balance()
-                if _crypto_balance is not None and _crypto_balance >= 0:
-                    _crypto_open_notional = sum(
-                        p.notional_usd for p in position_repo.open()
-                        if _asset_class_for(p.asset, brokers_config) == "crypto"
-                    )
-                    _recon = equity_tracker.reconcile_external_balance(
-                        broker_balance=_crypto_balance,
-                        current_open_position_notional=_crypto_open_notional,
-                    )
-                    if _recon["deposit_usd"] or _recon["withdrawal_usd"]:
-                        print(
-                            f"[EquityTracker] reconcile: "
-                            f"deposit=${_recon['deposit_usd']:.4f} "
-                            f"withdrawal=${_recon['withdrawal_usd']:.4f} "
-                            f"new_starting_balance=${_recon['new_starting_balance']:.4f}"
-                        )
-                        try:
-                            persist_tracker(equity_tracker, _equity_state_path)
-                        except Exception as _persist_err:
-                            print(f"[EquityTracker] reconcile persist falló: {_persist_err}")
-        except Exception as _recon_err:
-            print(f"[EquityTracker] reconcile_external_balance falló (continuando): {_recon_err}")
-
-        # Sprint 46G: capital-aware asset routing. Re-check broker
-        # balances every cycle and narrow the analyze_market step's
-        # asset list to only the classes that currently have money —
-        # crypto-only if just binance is funded, equity-only if just
-        # Alpaca is funded, both if both are (even at the $10 minimum).
-        # See _get_active_asset_classes' docstring for the fail-open
-        # rationale.
-        capital_blocked = False
-        try:
-            if _analyze_market_step is not None and _full_trading_assets:
-                _active_classes = _get_active_asset_classes(
-                    broker_client, alpaca_broker, min_usd=min_order_usd
-                )
-                _filtered_assets = [
-                    a for a in _full_trading_assets
-                    if _asset_class_for(a, brokers_config) in _active_classes
-                    or _asset_class_for(a, brokers_config) == "unknown"
-                ]
-                if not _filtered_assets:
-                    capital_blocked = True
-                    if audit:
-                        audit.append("CAPITAL_ROUTING_BLOCKED", {
-                            "active_classes": sorted(_active_classes),
-                            "full_assets": _full_trading_assets,
-                        })
-                    print(
-                        "[CapitalRouting] ⛔ Ningún broker tiene balance suficiente "
-                        f"(${min_order_usd:.2f} mínimo) — ciclo de nuevas entradas SALTADO."
-                    )
-                else:
-                    if set(_filtered_assets) != set(_full_trading_assets):
-                        if audit:
-                            audit.append("CAPITAL_ROUTING_APPLIED", {
-                                "active_classes": sorted(_active_classes),
-                                "assets_used": _filtered_assets,
-                                "assets_full": _full_trading_assets,
-                            })
-                        print(
-                            f"[CapitalRouting] Universo de assets ajustado a "
-                            f"{_filtered_assets} (clases activas: {sorted(_active_classes)})"
-                        )
-                    _analyze_market_step["inputs"]["assets"] = _filtered_assets
-        except Exception as e:
-            print(f"[CapitalRouting] check falló (continuando sin filtrar): {e}")
-
-        # Sprint 46H: manual Stop/Start toggle from the dashboard.
-        # Checked every cycle (see _is_trading_paused's docstring) so a
-        # dashboard click takes effect on the NEXT cycle — no restart
-        # needed. Only gates step 2 (new entries) below, same as the
-        # drawdown/capital gates above; step 1 (monitor) already ran.
-        manual_paused = False
-        try:
-            manual_paused = _is_trading_paused(
-                config.get("mandate", {}).get("audit_log_dir", "audit")
-            )
-        except Exception as e:
-            print(f"[TradingPause] check falló (continuando sin pausar): {e}")
-
-        # 2. Workflow normal — skipped while the drawdown kill switch is
-        # active (dd_triggered), while no broker has enough capital to
-        # trade (capital_blocked), OR while manually paused from the
-        # dashboard (manual_paused). Step 1 (monitor) already ran
-        # unconditionally, so SL/TP protection on existing positions is
-        # never paused by any of these three gates.
-        if not dd_triggered and not capital_blocked and not manual_paused:
-            original_job()
-        elif dd_triggered:
-            print("[DrawdownKill] Ciclo de nuevas entradas SALTADO (cooldown activo). Monitor de SL/TP sigue corriendo normalmente.")
-        elif capital_blocked:
-            print("[CapitalRouting] Ciclo de nuevas entradas SALTADO (sin capital disponible). Monitor de SL/TP sigue corriendo normalmente.")
-        else:
-            print("[TradingPause] Ciclo de nuevas entradas SALTADO (pausado manualmente desde el dashboard). Monitor de SL/TP sigue corriendo normalmente.")
-
-        # Sprint 46R audit M11.3: heartbeat for the enhanced /api/health
-        # endpoint. Update on every cycle (gates-skipped or not) so the
-        # healthcheck can distinguish "scheduler thread is alive" from
-        # "scheduler thread is alive AND the bot is making forward
-        # progress". The endpoint returns 503 if this is older than 2x
-        # the configured run_interval_hours — Docker will then restart
-        # the container instead of leaving a zombie alive forever.
-        try:
-            from src.api.server import APP_STATE as _api_app_state
-            _api_app_state["last_analysis_cycle_at"] = time.time()
-        except Exception:
-            # API may not be started yet in --once mode / tests. Best-
-            # effort only — no log spam, no audit.
-            pass
-
-    scheduler.job = job_with_monitor
-
-    _fast_monitor_minutes = float(
-        config.get("schedule", {}).get("fast_monitor_interval_minutes", 2)
+    # Hand off to BotRuntime. Every dep explicitly named — this is
+    # what makes `fast_monitor_tick` and `job_with_monitor`
+    # testable in isolation: tests can build a BotRuntime with
+    # mocks for any of these and call the methods directly.
+    runtime = BotRuntime(
+        config=config,
+        once=args.once,
+        broker_client=broker_client,
+        alpaca_broker=alpaca_broker,
+        brokers_config=brokers_config,
+        audit=audit,
+        event_bus=event_bus,
+        position_repo=position_repo,
+        position_monitor=position_monitor,
+        equity_tracker=equity_tracker,
+        drawdown_kill_switch=drawdown_kill_switch,
+        drawdown_state_path=_drawdown_state_path,
+        mandate_gate=mandate_gate,
+        kill_switch=kill_switch,
+        engine=engine,
+        registry=registry,
+        scheduler=scheduler,
+        workflow_data=workflow_data,
+        analyze_market_step=_analyze_market_step,
+        full_trading_assets=_full_trading_assets,
+        trading_cfg=trading_cfg,
+        crypto_taker_fee_pct=crypto_taker_fee_pct,
+        min_order_usd=min_order_usd,
+        fee_pct_for_asset=_fee_pct_for_asset,
+        get_active_asset_classes=_get_active_asset_classes,
+        asset_class_for=_asset_class_for,
+        is_trading_paused=_is_trading_paused,
+        fetch_prices_for_open_positions=_fetch_prices_for_open_positions,
+        should_alert_fast_monitor_blind=_should_alert_fast_monitor_blind,
+        original_job=original_job,
+        equity_state_path=_equity_state_path,
+        max_auto_adjust_risk_multiplier=max_auto_adjust_risk_multiplier,
     )
 
-    # Run once immediately at startup (both --once and daemon modes), so
-    # open positions are protected right away instead of waiting up to
-    # fast_monitor_interval_minutes for the first tick.
-    try:
-        fast_monitor_tick()
-    except Exception as e:
-        print(f"[Init] fast_monitor_tick inicial falló (continuando): {e}")
-
-    # Sprint 46N (audit A5): fast_monitor_tick now runs on its OWN daemon
-    # thread with its own timer, instead of being registered on the SAME
-    # global `schedule` instance / single-threaded `while True:
-    # schedule.run_pending()` loop that also drives the hourly
-    # job_with_monitor cycle (EpochScheduler.start(),
-    # src/execution/scheduler.py:216-221). Both jobs used to run
-    # sequentially on that one thread — a slow hourly cycle (15 yfinance
-    # downloads with retries, plus per-hypothesis portfolio-risk-gate
-    # yfinance calls, which could together take 10-20 minutes under Yahoo
-    # rate limiting) could starve fast_monitor_tick for that entire
-    # duration, suspending SL/TP protection on open positions exactly when
-    # the bot is busiest. This thread is fully independent: its own
-    # sleep/tick timer, never blocked on (or blocking) job_with_monitor.
-    #
-    # Thread-safety (verified, not just assumed): PositionRepository
-    # guards every read/write with a threading.RLock (Sprint 46 C8) and
-    # close_position() is idempotent — it checks is_open inside the lock
-    # and returns None if already closed — so a race between this
-    # thread's SL/TP close and job_with_monitor's replacement-close on
-    # the same position resolves safely by construction.
-    # AuditLedger.append() serializes via fcntl.flock per write.
-    # EventBus.publish() only iterates `subscribers`, which is mutated
-    # only at startup (subscribe()), so concurrent publish() calls are
-    # safe. EquityTracker.history is a deque with a single writer (this
-    # thread) and a single reader (job_with_monitor) — safe under
-    # CPython's GIL without an extra lock.
-    #
-    # Only started in daemon mode: `--once` never enters the long-lived
-    # while loop at all (scheduler.start(run_once_for_test=True) runs one
-    # cycle and returns before the process exits), so a background timer
-    # thread would never get a chance to fire — the synchronous call
-    # above already covers --once.
-    _fast_monitor_lock = threading.Lock()
-    _fast_monitor_stop_event = threading.Event()
-
-    def _fast_monitor_loop():
-        interval_seconds = max(_fast_monitor_minutes * 60.0, 1.0)
-        while not _fast_monitor_stop_event.wait(interval_seconds):
-            # Non-blocking acquire: if a previous tick is still running
-            # (slower than the configured interval — e.g. a broker/
-            # exchange hiccup), skip this tick rather than queuing up
-            # overlapping runs against the same broker clients/repo.
-            if not _fast_monitor_lock.acquire(blocking=False):
-                print("[FastMonitor] tick anterior aún en curso; salteando este tick.")
-                continue
-            try:
-                fast_monitor_tick()
-            except Exception as e:
-                print(f"[FastMonitor] tick falló (continuando): {e}")
-            finally:
-                _fast_monitor_lock.release()
-
-    if not args.once:
-        _fast_monitor_thread = threading.Thread(
-            target=_fast_monitor_loop,
-            name="fast-monitor-thread",
-            daemon=True,
-        )
-        _fast_monitor_thread.start()
-        print(
-            f"[Init] Fast position monitor armado en su propio hilo: cada "
-            f"{_fast_monitor_minutes} min (independiente del ciclo de análisis "
-            f"de {config.get('schedule', {}).get('run_interval_hours', 1)}h y "
-            f"del scheduler de un solo hilo que lo corre — Sprint 46N audit A5)"
-        )
-    else:
-        print("[Init] Fast position monitor: modo --once, no se arma hilo en "
-              "background (ya corrió una vez arriba).")
+    # Replace the scheduler's default job with the runtime's gated
+    # version (drawdown / capital / manual-pause checks all live
+    # inside BotRuntime.job_with_monitor — see bot_runtime.py).
+    scheduler.job = runtime.job_with_monitor
 
     try:
-        if args.once:
-            print("[System] Corriendo en modo UNA SOLA VEZ (--once)")
-            audit.append("WORKFLOW_START", {"mode": "once"})
-            scheduler.start(run_once_for_test=True)
-            audit.append("WORKFLOW_END", {"mode": "once"})
-            print("\n=== Ciclo Único Completado ===")
-            summary = audit.summary()
-            print(f"📒 Audit: {summary['total_events']} events, {len(summary['by_type'])} types")
-            print(f"   Audit file: {audit.path}")
-            print(f"📊 Posiciones: {position_repo.count_open()} abiertas, "
-                  f"${position_repo.total_realized_pnl_usd():.4f} realized PnL total")
-        else:
-            print("[System] Iniciando Demonio (Modo Épocas)...")
-            audit.append("WORKFLOW_START", {"mode": "daemon"})
-            scheduler.start(run_once_for_test=False)
+        runtime.run()
     except KeyboardInterrupt:
         audit.append("BOT_STOP_KEYBOARDINT", {})
         print("\nBot detenido por el usuario (Ctrl+C).")

@@ -354,19 +354,40 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 | B2 (parcial) | 46R | `4e76da1` | `smart_profit_take_min_signal_strength` + `min_sl_floor_pct` + `min_tp_floor_pct` en config; `entry_price * 0.005` ya no está hardcoded |
 | **B9** (parcial) | 46R | `8fb3f16` | **framework `logging_setup` + get_logger en `main.py` + 3 archivos críticos migrados** (4 tests); ~218 `print()` restantes como follow-up |
 
-### PENDIENTES (no tocados en Sprints 46N-46R)
+### Sprint 46S — remediaciones adicionales (2026-07-12)
+
+| ID | Sprint | Commit | Verificación |
+|----|--------|--------|--------------|
+| **A8** | 46S | `2835375` | `audit.jsonl` rota mensualmente (`audit-YYYY-MM.jsonl`); `EQUITY_UPDATE` ya no se loggea al ledger en cada tick (vive solo en `equity_state.json`) |
+| **M8** | 46S | `78b7fa3` | bloque `optimize_on_start` (con `from test_hyperopt import create_dummy_data` siempre fallido) eliminado — la re-optimización del `EpochScheduler` cubre el caso |
+| **M12** | 46S | `a75039f` | `TZ=America/Chicago` en compose; gate de equities con `_is_us_equity_market_open()` pytz/America/New_York (Mon-Fri 09:30-16:00); audit timestamps con offset ISO-8601; `alpaca_broker` rechaza órdenes fuera de horario |
+| **M14** | 46S | `150dedc` | HMAC-SHA256 de artefactos pickle del `ModelTrainer`; `_sig_path()` y `_get_ml_artifact_secret()`; rechazo on-mismatch antes de `pickle.load`; secret por env var (no en código) |
+| **B4** (wire) | 46S | `d62a428` | `EquityTracker.reconcile_external_balance()` llamado periódicamente desde `main.py`; emite `EQUITY_DEPOSIT` / `EQUITY_WITHDRAWAL` audit events |
+| **B8** (refuerzo) | 46S | `65a73aa` | `write_text` directo en `audit/positions.json` mirror → `atomic_write_text` (cierra el último write no-atómico del repositorio) |
+| **M1** (parcial) | 46S | `187a6fa` | crypto short hypotheses suprimidas en prefilter antes del debate (vía signal generator) — corrige el sesgo BullScorer/BearScorer que pasaba cortos cripto por construcción |
+| Taleb #2 | 46S | `dc87ab0` | fractional Kelly wired en `RiskManagerAgent._kelly_fraction()` (de `KellyCriterion` ya implementado en 46O) — sizing ya no es todo-o-nada |
+
+#### Cambios operativos de Sprint 46S (no son hallazgos, son deliverables de la misma)
+
+| Cambio | Commit | Detalle |
+|--------|--------|---------|
+| Dashboard: chart per open position | `9d01050` | `PositionTable` muestra automáticamente entry chart para cada posición abierta (usa `PositionChart` + `GET /api/positions/{id}/candles` que ya existían) |
+| Cycle: hourly → 30 min | `4b7a5fe` | `run_interval_hours` en config baja a `0.5` — análisis con el doble de frecuencia sin duplicar el fast tick de 2 min |
+| Mandate buffers activados | `c445fbc` | `max_daily_trades: 10` + `max_stress_drawdown_pct: 30%` (read-at-startup, requiere restart) |
+
+### PENDIENTES (al 2026-07-12, post Sprint 46S)
 
 | ID | Razón / siguiente sprint |
 |----|--------------------------|
-| M4 (resample) | ✅ Cerrado por `bb5d763` Sprint 46N follow-up. Equities ya tienen staleness + 4h-bucket aware de NYSE/Nasdaq. Holiday calendar queda bajo M12. |
-| M6 (BotRuntime refactor) | Fase 3 #24 — main.py sigue siendo god-file (75K LOC) |
-| M9 (resto) | ✅ Cerrado por `948d169`: `engine.py` rechaza `result is None`; `_check_depends_on` trata None como "step no produjo data". 16 tests totales en 2 archivos. |
-| M16 | ✅ Cerrado por `b318cf1`: `smart_profit_take_max_signal_age_s=300` en config + `check_with_signals` defensivamente filtra signals viejos. 8 tests. |
-| B2 (parcial) | ✅ Cerrado por `4e76da1` (sub-items principales): `signal_min_strength` y `entry_price*0.005` a config. Pendientes: TTLs de cache, caps del strategy_agent. |
-| M11.5 (backup volumen) | ✅ Cerrado por ops en el VPS — cron diario a las 03:17, 14 días retención, script en `/root/scripts/backup_bot_state.sh`, log en `/var/log/guaritradbot-backup.log`. |
-| M1 (debate recalibración) | Fase 4 #28 |
-| M15 (allocation scaling) | Fase 4 #29 |
-| B1, B2, B4, B5, B7, B10 | Pendientes menores |
+| **M6** (BotRuntime refactor) | ✅ **CERRADO Sprint 46T** (commit pendiente). `main.py` 1728 → 1211 líneas (-30%) con `BotRuntime` extraído a `src/runtime/bot_runtime.py`. Los paths críticos (`fast_monitor_tick`, `job_with_monitor`, thread del fast-monitor) ahora son métodos de clase con deps explícitas en el constructor. `main()` se reduce a un orquestador que arma deps + `BotRuntime(...).run()`. Tests estáticos (que grepean por patrones en `main.py`) actualizados para chequear `main.py + bot_runtime.py` — el intent del test ("el código realmente se usa en el loop") se preserva, solo cambia el lugar donde vive. **Falta M6.2 (Sprint 46U)**: agregar tests que INSTANCIEN `BotRuntime` con mocks y llamen los métodos directamente (era imposible antes del refactor). |
+| **M1** (recalibración debate) | Resto del cierre de M1: lo neutro aún pasa los umbrales del debate. Recalibrar baseline o simplificar a logging post-dead-letter (prefilter 46S solo corrige crypto shorts). |
+| **M15** (allocation scaling) | Política de allocation con mínimo $10 bloquea diversificación real en cuenta <$100 (GLD/USO imposible hasta tener 5 posiciones). Adaptar caps al tamaño de cuenta o desactivar. |
+| **M13** (dashboard build gates) | `next.config.js:12-21` aún tiene `ignoreDuringBuilds: true` + `ignoreBuildErrors: true` — errores de tipo/lint se despliegan silenciosos. |
+| **B2** (resto) | TTLs de cache en `src/api/state.py` y caps del `strategy_agent` siguen hardcoded (decisión: no son "magic numbers" en sentido de B2 — deliberados, no urge). |
+| **B3** (dead code) | ~45 warnings de pyflakes; `src/strategy/` (5 módulos) solo los importan tests; basura trackeada: `capability_matrix*.html`, `.analysis/*.png`, `graphify-out/`, `.docx` de auditorías previas. |
+| **B5** (ETH/SOL) | En `config.yaml` como cripto operable pero sin workflow ni señales. Decidir: añadir estrategia o quitarlos. |
+| **B9** (resto) | ~218 `print()` restantes por migrar a `get_logger` (framework listo desde 46R, adopción incremental). |
+| **B10** (replacement economy) | Comparación de heurísticas de rangos distintos contra umbral único 0.20; cierres registrados a precios Yahoo sin fees. |
 
 ### Métricas Sprint 46R
 
@@ -375,3 +396,20 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 - **Líneas añadidas**: ~400 (atomic_write + logging_setup + 9 tests)
 - **Tests totales**: 716 (700 míos pasan + 16 errores preexistentes de módulos no instalados: alpaca-trade-api, sklearn + 1 skipped)
 - **Live verification**: contenedor `guaritradbot-wyn2ah6rflg6ufwzpvzk436f-015545209963` healthy, fee tier diff +0.0%, Telegram message_id=65 enviado OK, HTTPS endpoints responden 200
+
+### Métricas Sprint 46S
+
+- **Commits**: 11 (M1 + M8 + M12 + M14 + A8 + B4 wire + B8 refuerzo + Taleb #2 + 2 config + 1 dashboard)
+- **Líneas añadidas**: ~1416 (incluye 4 nuevos archivos de test + rotación + market hours gate + HMAC signing + chart per position)
+- **Tests nuevos**: 4 archivos (`test_sprint_46s_a8_audit_rotation.py`, `test_sprint_46s_m12_market_hours.py`, `test_sprint_46s_m14_model_signing.py`, `test_sprint_46s_m1_crypto_short_prefilter.py`) — ~108 tests añadidos al total
+- **Tests totales**: 824 (804 míos pasan + 20 errores preexistentes de módulos no instalados localmente: alpaca-trade-api, sklearn + 1 skipped). En CI con `requirements.lock` instalado, 0 errores.
+- **Findings cerrados en 46S**: 8 (A8, M8, M12, M14, B4 wire, B8 refuerzo, M1 parcial, Taleb #2)
+
+### Estado consolidado al 2026-07-12 (post-Sprint 46S)
+
+- **Críticos (8)**: 8/8 ✅ cerrados (todos en 46N)
+- **Altos (11)**: 11/11 ✅ cerrados (46N, 46P, 46Q, 46S)
+- **Medios (16)**: 13/16 cerrados · 3 pendientes (M6, M1 resto, M13, M15) — *4 aún abiertos nominalmente pero M4/M8/M9/M11/M12/M14/M16 ya cerrados*
+- **Bajos (10)**: 7/10 cerrados · 3 con resto menor (B2 resto, B3, B9 resto, B10) — *B1/B4/B5/B6/B7/B8 cerrados*
+
+**Total remediado**: ~38/45 hallazgos. Bot **estructuralmente listo para LIVE** (todos los críticos + altos cerrados). M6 es el último item con retorno real sobre mantenibilidad antes de habilitar mandato.

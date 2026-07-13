@@ -215,25 +215,33 @@ class MainReadsConfigTest(unittest.TestCase):
     """
 
     def test_main_reads_smart_profit_take_max_signal_age_s(self):
+        # Sprint 46T (audit M6): the .get() call moved from main.py to
+        # src/runtime/bot_runtime.py. Check both.
         from pathlib import Path
-        main_src = Path("main.py").read_text(encoding="utf-8")
-        self.assertIn("smart_profit_take_max_signal_age_s", main_src,
-                      "main.py must read the config option")
-        self.assertIn("max_signal_age_s", main_src,
-                      "main.py must pass it to check_with_signals")
+        combined = "\n".join(
+            Path(p).read_text(encoding="utf-8")
+            for p in ("main.py", "src/runtime/bot_runtime.py")
+        )
+        self.assertIn("smart_profit_take_max_signal_age_s", combined,
+                      "the runtime must read the config option")
+        self.assertIn("max_signal_age_s", combined,
+                      "the runtime must pass it to check_with_signals")
 
     def test_default_is_300_seconds(self):
         """Default = 5 min. The audit's complaint was about
         1h being too long; 5 min is "fresh enough" given the
         2-min fast_monitor_tick cadence."""
         from pathlib import Path
-        main_src = Path("main.py").read_text(encoding="utf-8")
+        combined = "\n".join(
+            Path(p).read_text(encoding="utf-8")
+            for p in ("main.py", "src/runtime/bot_runtime.py")
+        )
         # Find the get(...) call for this config and check the
         # default. Pattern: trading_cfg.get("smart_profit_take_max_signal_age_s", 300)
         import re
         m = re.search(
             r'smart_profit_take_max_signal_age_s"?\s*,\s*(\d+)',
-            main_src,
+            combined,
         )
         self.assertIsNotNone(m, "Config default value not found")
         self.assertEqual(int(m.group(1)), 300,
