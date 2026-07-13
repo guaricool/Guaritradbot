@@ -46,6 +46,7 @@ from src.data_store.position_monitor import PositionMonitor
 from src.agents.researchers import HypothesisScorer
 from src.agents.news_analyst import NewsAnalyst  # Sprint 49
 from src.agents.sentiment_analyst import SentimentAnalyst  # Sprint 50
+from src.agents.llm_analyst import LLMAnalyst  # Sprint 55 (LLM shadow vote)
 from src.core.logging_setup import setup_logging
 from src.runtime.bot_runtime import BotRuntime  # Sprint 46T (audit M6)
 
@@ -997,6 +998,15 @@ def main():
         # blocks us, the workflow continues with no social
         # context.
         "SentimentAnalyst": SentimentAnalyst(),
+        # Sprint 55: LLMAnalyst emits a SHADOW LLM vote for
+        # empirical validation. The vote is logged to the
+        # audit ledger but is NOT consumed by the trading
+        # decision -- see llm_analyst.py docstring for the
+        # full design and the empirical-validation rules. If
+        # ANTHROPIC_API_KEY is not set in Coolify, the agent
+        # returns a neutral placeholder for each asset and
+        # the bot continues normally (fail-open).
+        "LLMAnalyst": LLMAnalyst(),
         "StrategyAgent": StrategyAgent(
             strategy_params=strategy_params, audit=audit,
             # Sprint 46S (audit M1 follow-up): same flag RiskManagerAgent

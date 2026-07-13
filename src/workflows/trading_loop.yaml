@@ -37,6 +37,27 @@ steps:
     inputs:
       assets: ["SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO"]
       timeframes: ["15m", "1h", "4h"]
+  # Sprint 55: LLM shadow vote. NOT consumed by the trading
+  # decision — only logged to the audit ledger so we can
+  # compare LLM votes against actual closed-trade P&L over
+  # 30+ days. If the LLM demonstrates a meaningful edge,
+  # the vote gets promoted to a real weight in the
+  # HypothesisScorer. If not, the analyst gets shelved and
+  # the LLM budget reverts to $0.
+  #
+  # Fail-open: if ANTHROPIC_API_KEY is not set or the API
+  # call fails, this step returns neutral placeholders and
+  # the workflow continues normally. The bot's trading
+  # decision must NEVER depend on a third-party LLM being
+  # available. Cost: ~$0.001/vote with Haiku 4.5, hard cap
+  # $0.50/day.
+  - id: llm_vote
+    agent: LLMAnalyst
+    action: llm_vote
+    optional: true
+    depends_on: ["analyze_market", "scan_news", "scan_social_sentiment"]
+    inputs:
+      assets: ["SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO"]
   - id: generate_hypotheses
     agent: StrategyAgent
     action: evaluate_strategies
