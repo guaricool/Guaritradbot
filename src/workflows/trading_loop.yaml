@@ -14,6 +14,18 @@ steps:
     inputs:
       assets: ["SPY", "QQQ", "BTC-USD", "GLD", "USO"]
       lookback_hours: 24
+  # Sprint 50: SentimentAnalyst runs after news (also a fast
+  # RSS/JSON scan). The result is stored in
+  # state["scan_social_sentiment"]; the HypothesisScorer
+  # combines it with the news_context to apply a SINGLE
+  # tie-breaker adjustment (so the total magnitude stays
+  # capped at +/- 5 even when both signals fire).
+  - id: scan_social_sentiment
+    agent: SentimentAnalyst
+    action: scan_social_sentiment
+    depends_on: ["scan_news"]
+    inputs:
+      assets: ["SPY", "QQQ", "BTC-USD", "GLD", "USO"]
   - id: analyze_market
     agent: MarketAnalystAgent
     action: fetch_and_analyze

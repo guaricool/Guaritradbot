@@ -180,12 +180,16 @@ class _CacheEntry:
         return asdict(self)
 
 
-def _load_cache(path: Path, ttl_s: float) -> Dict[str, _CacheEntry]:
-    """Load the cache from disk. Drops entries older than ttl_s.
+def _load_cache_file(path: Path, ttl_s: float) -> Dict[str, Dict[str, Any]]:
+    """Load the cache from disk as a dict of raw dicts. Drops
+    entries older than ttl_s. The caller is responsible for
+    converting the raw dicts to its own typed dataclass (each
+    agent has a different schema, so we don't unify at the
+    cache layer).
 
     Fault-tolerant: any line that fails to parse is skipped.
     """
-    out: Dict[str, _CacheEntry] = {}
+    out: Dict[str, Dict[str, Any]] = {}
     if not path.exists():
         return out
     try:
@@ -199,10 +203,17 @@ def _load_cache(path: Path, ttl_s: float) -> Dict[str, _CacheEntry]:
                 ts = rec.get("scanned_at", 0.0)
                 if (time.time() - ts) > ttl_s:
                     continue  # stale
-                out[rec["asset"]] = _CacheEntry(**rec)
+                out[rec["asset"]] = rec
     except (OSError, ValueError, KeyError) as e:
-        logger.warning(f"[NewsAnalyst] could not load cache: {e}")
+        logger.warning(f"[NewsAnalyst/SentimentAnalyst] could not load cache: {e}")
     return out
+
+
+def _load_cache(path: Path, ttl_s: float) -> Dict[str, _CacheEntry]:
+    """Backward-compat wrapper for the NewsAnalyst cache.
+    Returns _CacheEntry instances (the NewsAnalyst schema)."""
+    raw = _load_cache_file(path, ttl_s)
+    return {k: _CacheEntry(**v) for k, v in raw.items()}
 
 
 def _save_cache(path: Path, entries: Dict[str, _CacheEntry]) -> None:

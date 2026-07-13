@@ -216,55 +216,74 @@ class ScoreSynthesizer:
         self.audit = audit
 
     def decide(self, hypothesis: dict, open_positions: list,
-               news_context: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
+               news_context: Optional[Dict[str, Dict[str, Any]]] = None,
+               social_context: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
         """Score a hypothesis into a final approve/reject decision.
 
         Sprint 49: added `news_context` parameter (optional dict
         keyed by asset, with `news_sentiment` in [-1, +1] per
-        asset). When present, the sentiment is used as a small
-        TIE-BREAKER adjustment to the bull/bear scores:
-          - Positive news: +5 * sentiment to bull_score
-          - Negative news: -5 * sentiment to bear_score (so
-            negative sentiment raises the bear score)
-        The magnitude is intentionally small (+/- 5 max) so the
-        news context is a tie-breaker, not a primary signal --
-        technical indicators (BullScorer/BearScorer/RiskScorer)
-        still drive the decision.
+        asset).
+
+        Sprint 50: added `social_context` parameter (same shape,
+        from SentimentAnalyst / Reddit). When BOTH are present,
+        the two signals are combined into a single sentiment
+        in [-1, +1] (agreement amplifies, disagreement cancels)
+        and applied as a small TIE-BREAKER:
+          - Combined positive: +5 * combined to bull_score
+          - Combined negative: -5 * combined to bear_score
+        The COMBINED magnitude is clamped to [-1, +1] before
+        scaling, so even if both signals fire at +1, the
+        bull_score adjustment is capped at +5.
+
+        Why combine (not stack): the audit's intent is that
+        sentiment is a tie-breaker, not a primary signal. If
+        we stacked them (news +5 + social +5 = +10), the
+        sentiment would dominate the technicals, which is
+        the opposite of the design. Combining keeps the
+        signal bounded and well-defined.
         """
         bull_score, bull_reasons = BullScorer.score(hypothesis)
         bear_score, bear_reasons = BearScorer.score(hypothesis)
         risk_penalty, risk_reasons = RiskScorer.score(hypothesis, open_positions)
 
-        # Sprint 49: news sentiment tie-breaker. Look up the
-        # hypothesis's asset in the news context (if any) and
-        # apply a small adjustment. Negative sentiment is
-        # expressed as a negative float, so to "raise the bear
-        # score on negative news" we SUBTRACT a positive
-        # fraction of the (negative) sentiment -- which adds to
-        # bear_score. Symmetric for positive news.
-        news_sentiment = 0.0
-        news_top_headline = ""
+        # Sprint 49+50: combined news + social sentiment
+        # tie-breaker. Look up the hypothesis's asset in both
+        # contexts (if any) and combine the per-asset sentiment.
+        # Clamp the combined value to [-1, +1] so even if
+        # both sources fire at +1 we cap at +5 adjustment.
+        asset = hypothesis.get("asset", "")
+        news_sent = 0.0
+        social_sent = 0.0
         news_count = 0
-        if news_context:
-            asset = hypothesis.get("asset", "")
+        social_count = 0
+        if news_context and asset:
             ctx = news_context.get(asset) or {}
-            news_sentiment = float(ctx.get("news_sentiment", 0.0) or 0.0)
-            news_top_headline = ctx.get("top_headline", "")
+            news_sent = float(ctx.get("news_sentiment", 0.0) or 0.0)
             news_count = int(ctx.get("news_count", 0) or 0)
-            if news_sentiment != 0.0:
-                # Scale: +/- 5 max adjustment.
-                bull_adj = 5.0 * max(0.0, news_sentiment)
-                bear_adj = 5.0 * max(0.0, -news_sentiment)
-                if bull_adj > 0:
-                    bull_score += bull_adj
-                    bull_reasons = list(bull_reasons) + [
-                        f"news_sentiment +{news_sentiment:.2f} ({news_count} headlines) → bull +{bull_adj:.1f}"
-                    ]
-                if bear_adj > 0:
-                    bear_score += bear_adj
-                    bear_reasons = list(bear_reasons) + [
-                        f"news_sentiment {news_sentiment:.2f} ({news_count} headlines) → bear +{bear_adj:.1f}"
-                    ]
+        if social_context and asset:
+            ctx = social_context.get(asset) or {}
+            social_sent = float(ctx.get("social_sentiment", 0.0) or 0.0)
+            social_count = int(ctx.get("post_count", 0) or 0)
+        # Combined: simple average of the two, then clamp.
+        combined_sent = (news_sent + social_sent) / 2.0
+        combined_sent = max(-1.0, min(1.0, combined_sent))
+        if combined_sent != 0.0:
+            bull_adj = 5.0 * max(0.0, combined_sent)
+            bear_adj = 5.0 * max(0.0, -combined_sent)
+            if bull_adj > 0:
+                bull_score += bull_adj
+                bull_reasons = list(bull_reasons) + [
+                    f"combined_sentiment +{combined_sent:.2f} "
+                    f"(news {news_sent:+.2f}/{news_count}h + "
+                    f"social {social_sent:+.2f}/{social_count}p) → bull +{bull_adj:.1f}"
+                ]
+            if bear_adj > 0:
+                bear_score += bear_adj
+                bear_reasons = list(bear_reasons) + [
+                    f"combined_sentiment {combined_sent:.2f} "
+                    f"(news {news_sent:+.2f}/{news_count}h + "
+                    f"social {social_sent:+.2f}/{social_count}p) → bear +{bear_adj:.1f}"
+                ]
 
         final = 0.4 * bull_score + 0.4 * (100 - bear_score) - 0.2 * risk_penalty
 
@@ -340,10 +359,15 @@ class ScoreSynthesizer:
         return result
 
     def decide_all(self, hypotheses: list, open_positions: list,
-                   news_context: Optional[Dict[str, Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+                   news_context: Optional[Dict[str, Dict[str, Any]]] = None,
+                   social_context: Optional[Dict[str, Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
         verdicts = []
         for h in hypotheses:
-            verdicts.append(self.decide(h, open_positions, news_context=news_context))
+            verdicts.append(self.decide(
+                h, open_positions,
+                news_context=news_context,
+                social_context=social_context,
+            ))
         return verdicts
 
     def filter_approved(self, hypotheses: list, verdicts: list) -> list:
@@ -370,31 +394,41 @@ class HypothesisScorer:
         # compatibility (the YAML step action: `run_debate`).
         # Internally this is just running the scorers, not a
         # real debate -- see the module docstring.
-        # Sprint 49: pull the news context (per-asset sentiment)
-        # from the upstream `scan_news` step. The HypothesisScorer
-        # uses it as a tie-breaker (magnitude capped at +/- 5).
-        # If `scan_news` is absent or failed, news_context is {}
-        # and the scorer runs as before with no news adjustment.
+        # Sprint 49+50: pull the news + social context from
+        # the upstream steps. The HypothesisScorer combines
+        # them into a single sentiment tie-breaker (magnitude
+        # capped at +/- 5). If either step is absent or failed,
+        # its context is {} and the combined_sent just uses
+        # the other source's signal.
         hypotheses = state.get("generate_hypotheses", {}).get("hypotheses", [])
         open_positions = self.position_repo.open() if self.position_repo else []
         news_context = state.get("scan_news", {}) or {}
+        social_context = state.get("scan_social_sentiment", {}) or {}
 
         if not hypotheses:
             logger.info('[HypothesisScorer] sin hipótesis, debate vacío')
             return {"hypotheses": [], "verdicts": [], "approved_hypotheses": []}
 
         logger.info(f'[HypothesisScorer] {len(hypotheses)} hipótesis × {len(open_positions)} posiciones abiertas')
-        if news_context:
-            n_assets = len(news_context)
+        if news_context or social_context:
+            n_news = len(news_context)
+            n_social = len(social_context)
             avg_sent = sum(
                 ctx.get("news_sentiment", 0.0) for ctx in news_context.values()
-            ) / max(n_assets, 1)
+            ) / max(n_news, 1)
+            avg_social = sum(
+                ctx.get("social_sentiment", 0.0) for ctx in social_context.values()
+            ) / max(n_social, 1)
             logger.info(
-                f'[HypothesisScorer] news_context: {n_assets} assets, '
-                f'avg sentiment {avg_sent:+.2f} (will apply as +/- 5 tie-breaker)'
+                f'[HypothesisScorer] context: news={n_news}assets/{avg_sent:+.2f} '
+                f'social={n_social}assets/{avg_social:+.2f} '
+                f'(combined +/- 5 tie-breaker)'
             )
 
-        verdicts = self.manager.decide_all(hypotheses, open_positions, news_context=news_context)
+        verdicts = self.manager.decide_all(
+            hypotheses, open_positions,
+            news_context=news_context, social_context=social_context,
+        )
         approved = self.manager.filter_approved(hypotheses, verdicts)
 
         for v in verdicts:

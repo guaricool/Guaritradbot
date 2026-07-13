@@ -283,7 +283,14 @@ class NewsAnalystHypothesisScorerIntegrationTest(unittest.TestCase):
             },
             open_positions=[],
         )
-        # With strong positive news (+1.0 sentiment, 10 headlines)
+        # With strong positive news (+1.0 sentiment, 10 headlines).
+        # Sprint 50 changes: news is now combined with social
+        # (defaulted to 0 here), so combined_sent = (1.0 + 0) / 2
+        # = 0.5, and the bull adjustment is 5 * 0.5 = 2.5 (half
+        # of the pre-Sprint 50 magnitude). The point of the
+        # test is still "positive news raises the bull score" --
+        # the magnitude has been halved because of the
+        # combine-with-social change.
         with_news = scorer.manager.decide(
             {
                 "asset": "BTC-USD",
@@ -306,8 +313,10 @@ class NewsAnalystHypothesisScorerIntegrationTest(unittest.TestCase):
         )
         # Bull score should be higher with positive news
         self.assertGreater(with_news["bull_score"], base["bull_score"])
-        # Difference should be ~5 (the cap)
-        self.assertAlmostEqual(with_news["bull_score"] - base["bull_score"], 5.0, delta=0.5)
+        # Difference should be ~2.5 (Sprint 50: combined/2 = 0.5, * 5 = 2.5)
+        self.assertAlmostEqual(
+            with_news["bull_score"] - base["bull_score"], 2.5, delta=0.5
+        )
 
     def test_negative_news_raises_bear_score(self):
         from src.agents.researchers import HypothesisScorer
@@ -345,9 +354,9 @@ class NewsAnalystHypothesisScorerIntegrationTest(unittest.TestCase):
         )
         # Bear score should be higher with negative news
         self.assertGreater(with_negative_news["bear_score"], base["bear_score"])
-        # Difference should be ~5
+        # Difference should be ~2.5 (Sprint 50: combined/2 = -0.5, * 5 = 2.5)
         self.assertAlmostEqual(
-            with_negative_news["bear_score"] - base["bear_score"], 5.0, delta=0.5
+            with_negative_news["bear_score"] - base["bear_score"], 2.5, delta=0.5
         )
 
     def test_no_news_context_unchanged(self):

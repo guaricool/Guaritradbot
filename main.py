@@ -44,6 +44,7 @@ from src.data_store.positions import PositionRepository
 from src.data_store.position_monitor import PositionMonitor
 from src.agents.researchers import HypothesisScorer
 from src.agents.news_analyst import NewsAnalyst  # Sprint 49
+from src.agents.sentiment_analyst import SentimentAnalyst  # Sprint 50
 from src.core.logging_setup import setup_logging
 from src.runtime.bot_runtime import BotRuntime  # Sprint 46T (audit M6)
 
@@ -987,6 +988,14 @@ def main():
         # feed is unreachable, the workflow continues with
         # empty news context (no harm, just no signal).
         "NewsAnalyst": NewsAnalyst(),
+        # Sprint 50: SentimentAnalyst scans Reddit (r/wallstreetbets,
+        # r/bitcoin, etc.) for retail-crowd sentiment. Combined
+        # with NewsAnalyst's per-asset news sentiment, the
+        # HypothesisScorer applies a +/- 5 tie-breaker. Same
+        # fault-tolerant pattern as NewsAnalyst -- if Reddit
+        # blocks us, the workflow continues with no social
+        # context.
+        "SentimentAnalyst": SentimentAnalyst(),
         "StrategyAgent": StrategyAgent(
             strategy_params=strategy_params, audit=audit,
             # Sprint 46S (audit M1 follow-up): same flag RiskManagerAgent
