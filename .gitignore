@@ -84,3 +84,18 @@ Thumbs.db
 *.swp
 *.tmp
 *.bak
+
+# ─────────────────────────────────────────────────────────────────
+# Audit / analysis artifacts (local only, .md versions are tracked)
+# ─────────────────────────────────────────────────────────────────
+# Word/PDF versions of the audit are kept locally for sharing but
+# never committed (the .md is the source of truth). The
+# `capability_matrix*.html` files in the repo root are local
+# scratch output from ad-hoc review tools — not documentation.
+# `graphify-out/` is the output of the graphify code-analysis
+# tool (Obsidian-style vault, not part of the bot).
+AUDITORIA_*.docx
+*AUDITORIA*.docx
+capability_matrix*.html
+capability_matrix_*.html
+graphify-out/

@@ -300,7 +300,7 @@ class MultiTFStrategyTest(unittest.TestCase):
         return pd.DataFrame({"Close": prices, "Open": prices, "High": prices, "Low": prices}, index=idx)
 
     def test_validate_missing_tf_raises(self):
-        from src.strategy.multi_tf import MTFTrendPullback, MTFData
+        from src.strategy_legacy.multi_tf import MTFTrendPullback, MTFData
         strat = MTFTrendPullback()
         # Only provide 4h, not 1h
         data = MTFData(timeframes={"4h": self._make_ohlcv("4h")}, asset="SPY")
@@ -308,7 +308,7 @@ class MultiTFStrategyTest(unittest.TestCase):
             strat.validate(data)
 
     def test_mtf_trend_pullback_produces_signal(self):
-        from src.strategy.multi_tf import MTFTrendPullback, MTFData
+        from src.strategy_legacy.multi_tf import MTFTrendPullback, MTFData
         strat = MTFTrendPullback()
         data = MTFData(
             timeframes={"1h": self._make_ohlcv("h", n=400, seed=1),
@@ -322,7 +322,7 @@ class MultiTFStrategyTest(unittest.TestCase):
         self.assertEqual(len(sig), len(data.get("1h")))
 
     def test_mtf_daily_bias_hourly_trigger(self):
-        from src.strategy.multi_tf import MTFDailyBiasHourlyTrigger, MTFData
+        from src.strategy_legacy.multi_tf import MTFDailyBiasHourlyTrigger, MTFData
         strat = MTFDailyBiasHourlyTrigger()
         data = MTFData(
             timeframes={"1h": self._make_ohlcv("h", n=400, seed=3),

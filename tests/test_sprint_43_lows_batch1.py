@@ -19,7 +19,7 @@ if ROOT not in sys.path:
 
 from src.safety.kill_switch import KillSwitch
 from src.analysis.genetic_programming import fitness, multi_symbol_fitness
-from src.strategy.momentum import sma_crossover_strategy
+from src.strategy_legacy.momentum import sma_crossover_strategy
 
 
 class L1KillSwitchDisarmTest(unittest.TestCase):

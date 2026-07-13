@@ -93,7 +93,7 @@ class H10MultiTFNoLookAheadTest(unittest.TestCase):
         """The H10 fix: shift the 4h trend by 1 bar before ffill.
         Verify the source has the shift + ffill pattern.
         """
-        with open(os.path.join(ROOT, "src/strategy/multi_tf.py"), encoding="utf-8") as f:
+        with open(os.path.join(ROOT, "src/strategy_legacy/multi_tf.py"), encoding="utf-8") as f:
             src = f.read()
         # After the H10 fix, the trend is shifted by 1 bar
         self.assertIn(
@@ -107,7 +107,7 @@ class H10MultiTFNoLookAheadTest(unittest.TestCase):
         """Behavioral test: feed a known sequence and verify the
         trend signal at time t uses ONLY 4h bars with end_time <= t.
         """
-        from src.strategy.multi_tf import MTFTrendPullback, MTFData
+        from src.strategy_legacy.multi_tf import MTFTrendPullback, MTFData
         # Build 1h data: 24 hours
         idx_1h = pd.date_range("2026-07-10 00:00", periods=24, freq="1h")
         # Build 4h data: 6 buckets [00-04), [04-08), ..., [20-24)
