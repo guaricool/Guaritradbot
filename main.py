@@ -1014,6 +1014,12 @@ def main():
             position_repo=position_repo,
             enable_position_replacement=enable_position_replacement,
             replacement_score_threshold=replacement_score_threshold,
+            # Sprint 47C (audit B10): minimum expected edge floor for
+            # replacement. Default 0.5% (config); set to 0.0 to
+            # disable. See trading.replacement_min_expected_edge_pct.
+            replacement_min_expected_edge_pct=float(
+                trading_cfg.get("replacement_min_expected_edge_pct", 0.005)
+            ),
             # Sprint 46F: previously always used this constructor's
             # hard-coded defaults regardless of config.yaml — now
             # config-driven (and dashboard-editable via

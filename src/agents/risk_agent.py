@@ -67,6 +67,13 @@ class RiskManagerAgent:
         position_repo=None,
         enable_position_replacement: bool = True,
         replacement_score_threshold: float = 0.20,
+        # Sprint 47C (audit B10): absolute minimum expected edge
+        # (as a fraction of entry) the proposed trade must have
+        # for a replacement to be considered. Defense-in-depth
+        # against the apples-vs-oranges scoring comparison
+        # (new_hyp score vs open_position score, different
+        # ranges). Set to 0.0 to disable the floor.
+        replacement_min_expected_edge_pct: float = 0.005,
         current_prices: Optional[Dict[str, float]] = None,
         # Sprint 44A: asset-class concentration gate (Bridgewater risk)
         asset_concentration_check: bool = True,
@@ -198,6 +205,7 @@ class RiskManagerAgent:
         self.enable_position_replacement = enable_position_replacement
         # New hypothesis must score at least +20% above the worst open position
         self.replacement_score_threshold = replacement_score_threshold
+        self.replacement_min_expected_edge_pct = replacement_min_expected_edge_pct
         # Used by position-replacement scoring (passed per-cycle from main loop)
         self.current_prices = current_prices or {}
         # Sprint 44A: sector concentration gate. Configurable so you can
@@ -1447,6 +1455,23 @@ class RiskManagerAgent:
         Returns True if a position was closed (slot freed) and `new_trade` should
         be approved. Returns False if no open position scored worse than
         `new_trade` minus the threshold (no replacement happens).
+
+        Sprint 47C (audit B10): the audit found the original replacement
+        economy compared two scoring functions of different ranges
+        against a single 0.20 threshold -- `score_new_hypothesis` (3
+        components, range ~[-0.5, +1.0]) vs `score_position` (5
+        components, range ~[-1.0, +1.0]). That's apples-vs-oranges
+        against one global threshold. The chosen fix (defense in
+        depth, NOT a full refactor): add a per-trade minimum expected
+        edge floor in absolute terms. The replacement still uses the
+        aggregate score comparison, but it ALSO requires the proposed
+        trade to have at least `replacement_min_expected_edge_pct`
+        of theoretical edge (independent of how the open position
+        scores). This catches the case where a low-edge new trade
+        wins the score comparison only because the worst open is
+        deeply underwater -- closing the worst to free a slot for
+        a tiny-edge new trade is churn, not improvement. Configurable
+        in config.yaml under `trading.replacement_min_expected_edge_pct`.
         """
         if self.position_repo is None:
             return False
@@ -1454,6 +1479,31 @@ class RiskManagerAgent:
         opens = self.position_repo.open()
         if not opens:
             return False
+
+        # Sprint 47C (audit B10): absolute minimum expected edge floor.
+        # Defense-in-depth: even if the new hypothesis is X points
+        # above the worst open in the score comparison, reject if
+        # its expected_move_pct is below this floor. Default 0.5%
+        # (config); set to 0 to disable the floor.
+        min_edge_floor_pct = self.replacement_min_expected_edge_pct
+        if min_edge_floor_pct > 0:
+            expected_edge = float(
+                new_score_inputs.get("expected_move_pct", 0.0)
+            )
+            if expected_edge < min_edge_floor_pct:
+                if self.audit:
+                    self.audit.append("REPLACEMENT_SKIPPED", {
+                        "new_asset": new_trade.get("asset"),
+                        "expected_move_pct": round(expected_edge, 5),
+                        "min_edge_floor_pct": min_edge_floor_pct,
+                        "reason": "below_min_edge_floor",
+                    })
+                logger.info(
+                    f"  ⏸️  REPLACEMENT_SKIPPED {new_trade.get('asset')}: "
+                    f"expected_move_pct={expected_edge:.4f} below floor "
+                    f"{min_edge_floor_pct:.4f}"
+                )
+                return False
 
         new_score = self.score_new_hypothesis(new_score_inputs)
         # Find worst open position

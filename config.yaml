@@ -88,6 +88,16 @@ trading:
   # Sprint 18: Portfolio Management
   enable_position_replacement: true        # if max_open reached, try to replace worst with better signal
   replacement_score_threshold: 0.20        # new signal must score at least +0.20 above worst open position
+  # Sprint 47C (audit B10): minimum expected edge (% of entry) the
+  # proposed trade must have for a replacement to be considered at
+  # all. The audit found the replacement economy compared two
+  # scoring functions of different ranges against a single 0.20
+  # threshold (apples vs oranges). This knob is a defense-in-depth
+  # floor: even if the aggregate-score comparison says "the new
+  # signal is better than the worst", we ALSO require at least
+  # this much expected_move_pct in absolute terms. Set to 0 to
+  # disable the floor (rely on the score comparison alone).
+  replacement_min_expected_edge_pct: 0.005
   min_profit_to_protect: 0.0               # USD; if open position has unrealized >= this AND reversal signal, smart-close
   # Sprint 46O (audit M2): multiplier on top of the round-trip fee
   # when computing the "effective minimum profit" floor for
