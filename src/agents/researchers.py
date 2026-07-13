@@ -256,6 +256,41 @@ class ScoreSynthesizer:
         if self.audit:
             self.audit.append(f"DEBATE_{decision}", result)
 
+        # Sprint 48 (decision log): persist the verdict for
+        # future-lesson injection AND for post-hoc analysis.
+        # We look up the last N lessons for this asset BEFORE
+        # recording -- that way the `considered_lessons` field
+        # captures exactly what context the scorer had access
+        # to at decision time. Recording the hypothesis with
+        # the lessons it considered lets a future backtest
+        # correlate "the bot knew about lesson X and still
+        # took the trade" -- a signal that the lesson wasn't
+        # weighted heavily enough.
+        try:
+            from src.safety.decision_log import get_decision_log
+            log = get_decision_log()
+            considered = log.recent_lessons_for(
+                hypothesis.get("asset", ""), n=3
+            )
+            log.record_hypothesis(
+                asset=hypothesis.get("asset", ""),
+                direction=hypothesis.get("direction", "long"),
+                strategy=strategy,
+                score=round(final, 2),
+                bull_score=bull_score,
+                bear_score=bear_score,
+                risk_penalty=risk_penalty,
+                decision=decision,
+                reason=reason,
+                considered_lessons=considered,
+            )
+        except Exception as _e:
+            # Decision log failure must NEVER block the trade.
+            # Best-effort: log the error and move on. (Same
+            # fail-open pattern as the file write in
+            # DecisionLog._append itself.)
+            logger.info(f"[DecisionLog] could not record hypothesis: {_e}")
+
         return result
 
     def decide_all(self, hypotheses: list, open_positions: list) -> List[Dict[str, Any]]:

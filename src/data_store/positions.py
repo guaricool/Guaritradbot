@@ -296,6 +296,46 @@ class PositionRepository:
                     p.fees_paid_usd = fees
                     p.realized_pnl = gross_pnl - fees
                     self._save()
+
+                    # Sprint 48 (decision log): record the outcome
+                    # so future cycles can learn from this trade.
+                    # Best-effort: a logging failure must never
+                    # block the close (the position is already
+                    # saved; failing here would lose money). We
+                    # compute pnl_pct here too so the lesson has
+                    # a percentage view alongside the absolute
+                    # dollar P&L.
+                    try:
+                        from src.safety.decision_log import get_decision_log
+                        log = get_decision_log()
+                        pnl_pct = (
+                            (p.realized_pnl / max(abs(p.entry_price * p.qty), 1e-9))
+                            * 100.0
+                        )
+                        hold_hours = (
+                            (p.closed_ts - p.entry_ts) / 3600.0
+                            if p.entry_ts else 0.0
+                        )
+                        log.record_outcome(
+                            position_id=p.position_id,
+                            asset=p.asset,
+                            direction=p.direction,
+                            strategy=str(getattr(p, "strategy", "") or ""),
+                            entry_price=p.entry_price,
+                            exit_price=close_price,
+                            qty=p.qty,
+                            pnl_usd=p.realized_pnl,
+                            pnl_pct=pnl_pct,
+                            hold_hours=hold_hours,
+                            exit_reason=reason,
+                        )
+                    except Exception as _e:
+                        # Never let a decision-log failure break
+                        # the close. Log and continue.
+                        import logging as _logging
+                        _logging.getLogger(__name__).info(
+                            f"[DecisionLog] could not record outcome: {_e}"
+                        )
                     return p
             return None
 
