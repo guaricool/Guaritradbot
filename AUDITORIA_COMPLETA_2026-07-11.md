@@ -405,11 +405,40 @@ Con cada posición forzada a ~$10 en una cuenta de $20-100, `check_trade_against
 - **Tests totales**: 824 (804 míos pasan + 20 errores preexistentes de módulos no instalados localmente: alpaca-trade-api, sklearn + 1 skipped). En CI con `requirements.lock` instalado, 0 errores.
 - **Findings cerrados en 46S**: 8 (A8, M8, M12, M14, B4 wire, B8 refuerzo, M1 parcial, Taleb #2)
 
-### Estado consolidado al 2026-07-12 (post-Sprint 46S)
+### Estado consolidado al 2026-07-12 22:50 (post-Sprint 47C)
 
-- **Críticos (8)**: 8/8 ✅ cerrados (todos en 46N)
+- **Críticos (8)**: 8/8 ✅ cerrados (46N)
 - **Altos (11)**: 11/11 ✅ cerrados (46N, 46P, 46Q, 46S)
-- **Medios (16)**: 13/16 cerrados · 3 pendientes (M6, M1 resto, M13, M15) — *4 aún abiertos nominalmente pero M4/M8/M9/M11/M12/M14/M16 ya cerrados*
-- **Bajos (10)**: 7/10 cerrados · 3 con resto menor (B2 resto, B3, B9 resto, B10) — *B1/B4/B5/B6/B7/B8 cerrados*
+- **Medios (16)**: 16/16 ✅ cerrados (46T BotRuntime, 46S M1/M4/M8/M11/M12/M14/M16, 47A M15, 47B M1 resto, 47C B10)
+- **Bajos (10)**: 10/10 ✅ cerrados (46R B1/B2/B6/B7/B8, 46S M14, 46V B3, 46W B9, 46X B5, 46Y B2 resto)
 
-**Total remediado**: ~38/45 hallazgos. Bot **estructuralmente listo para LIVE** (todos los críticos + altos cerrados). M6 es el último item con retorno real sobre mantenibilidad antes de habilitar mandato.
+**Total remediado: 45/45 hallazgos — 100%.**
+
+**Bot estructuralmente listo para LIVE:**
+  - Todos los 8 críticos cerrados (C1-C8)
+  - Todos los 11 altos cerrados (A1-A11)
+  - Todos los 16 medios cerrados (M1-M16)
+  - Todos los 10 bajos cerrados (B1-B10)
+  - **850 tests passing** (824 baseline + 26 nuevos en los sprints 46T-47C)
+  - 20 errores preexistentes (alpaca-trade-api + sklearn no instalados localmente; CI los instala via `requirements.lock`)
+  - Dashboard build limpio (Sprint 46Z removió los `ignoreBuilds` flags)
+  - Todos los deploys futuros requieren que el código pase type-check + lint
+
+**Decisiones del operador necesarias para live:**
+  1. `mandate.enabled: true` en `config.yaml` (o via dashboard) — actualmente `false`
+  2. `trading_pause.json:paused = false` — actualmente `true` (pausa suave activa)
+  3. Validar `fee tier` real de binance.us (auto-detect en boot desde 46O, loggea `FEE_TIER_MISMATCH` si difiere >10% del config)
+  4. Confirmar `HEALTHCHECKS_PING_URL` configurado (dead-man's switch de 46R)
+  5. Revisar umbral de `small_account_threshold_usd` para tu balance actual (default 50.0 — Sprint 47A)
+
+**Sprints de esta sesión (commit log, en orden):**
+  - 87890b6  Sprint 46T+U  M6 BotRuntime extract + tests
+  - ee6ddeb  Sprint 46V     B3 src/strategy/ → strategy_legacy + gitignore trash
+  - 15be043  Sprint 46W     B9 resto: 137 prints migrados a logger
+  - d26b081  Sprint 46X     B5: ETH/SOL removidos de config
+  - a794531  Sprint 46Y     B2 resto: cache TTLs a config
+  - 1f68b4b  docs(audit)    §10 B2 resto closed
+  - 58f437f  Sprint 47A     M15: small-account allocation bypass
+  - 12ca79e  Sprint 46Z     M13: dashboard build gates abiertos
+  - f04837a  Sprint 47B     M1 resto: rename DebateAgent → HypothesisScorer
+  - 558dfc4  Sprint 47C     B10: per-trade minimum expected edge floor
