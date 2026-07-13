@@ -245,7 +245,7 @@ class StrategyAgent:
         # `allow_crypto_short` (default False — binance.us spot has no
         # margin/borrow, so a crypto "short" hypothesis can never
         # actually execute). Before this, StrategyAgent generated crypto
-        # short hypotheses same as any other, the DebateAgent spent a
+        # short hypotheses same as any other, the HypothesisScorer spent a
         # full cycle scoring/approving one, and ONLY THEN did
         # RiskManagerAgent's `validate_and_size` reject it as
         # `crypto_short_not_supported` — by which point the cycle's

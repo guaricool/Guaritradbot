@@ -42,7 +42,7 @@ from src.safety.kelly_drawdown import DrawdownKillSwitch  # Sprint 43 H3
 from src.safety.mandate_gate import MandateGate, MandateConfig
 from src.data_store.positions import PositionRepository
 from src.data_store.position_monitor import PositionMonitor
-from src.agents.researchers import DebateAgent
+from src.agents.researchers import HypothesisScorer
 from src.core.logging_setup import setup_logging
 from src.runtime.bot_runtime import BotRuntime  # Sprint 46T (audit M6)
 
@@ -1036,7 +1036,7 @@ def main():
             # real binance.us taker fee instead of only one of them.
             fee_pct_for_asset=_fee_pct_for_asset,
         ),
-        "DebateAgent": DebateAgent(position_repo=position_repo, audit=audit),
+        "HypothesisScorer": HypothesisScorer(position_repo=position_repo, audit=audit),
         "ExecutionAgent": ExecutionAgent(event_bus=event_bus),
         "NotificationAgent": NotificationAgent(event_bus=event_bus, config=config),
     }

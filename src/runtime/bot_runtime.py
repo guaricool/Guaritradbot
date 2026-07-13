@@ -252,7 +252,7 @@ class BotRuntime:
         reconciliation (for crypto positions using Sprint 46I's
         native_oco protection — see position_monitor.py), equity
         tracking, and per-position P&L update notifications. It never
-        touches new-entry generation (StrategyAgent/DebateAgent/
+        touches new-entry generation (StrategyAgent/HypothesisScorer/
         RiskManagerAgent) — that stays on the hourly cycle in
         job_with_monitor, which is heavier (yfinance fetches across
         the full asset universe, GP/hyperopt-adjacent work) and

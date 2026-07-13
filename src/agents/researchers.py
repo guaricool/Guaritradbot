@@ -1,23 +1,51 @@
 """
-Sprint 3 — Debate Multi-Agente.
+Sprint 3 / Sprint 47B — Hypothesis Scoring (formerly "Debate Multi-Agente").
 
-Inspirado en TradingAgents (Tauric Research). Antes de aprobar una
-hipótesis, cuatro "agentes" debaten:
+Originally named after Tauric Research's TradingAgents paper, the
+implementation is sequential deterministic scoring — not a real
+multi-agent debate. The audit's M1 finding: the docstring framing
+("debate", "researcher", "team") is theater; the code is if-elif
+scoring with hard-coded weights (0.4 / 0.4 / 0.2) and a magic
+threshold (50; 40 for technical setups). The audit recommended
+either recalibrating with backtest data or renaming to honest
+names. Sprint 47B took the second route:
 
-1. Bull Researcher — busca evidencia técnica a favor del trade.
-2. Bear Researcher — busca evidencia técnica en contra.
-3. Risk Team — chequeos duros: correlación entre posiciones abiertas,
-   concentración sectorial, volatilidad agregada.
-4. Portfolio Manager — sintetiza los scores y aprueba/rechaza.
+  BullResearcher  ->  BullScorer
+  BearResearcher  ->  BearScorer
+  RiskTeam        ->  RiskScorer
+  PortfolioManager ->  ScoreSynthesizer
+  DebateAgent     ->  HypothesisScorer
 
-El score combinado es:
-    final = 0.4 * bull_score + 0.4 * (100 - bear_score)
-            - 0.2 * risk_penalty
+Each scorer still does what it always did (assign a 0-100 score
+or penalty from a hypothesis + a list of human-readable
+reasons). The orchestrator is still called as a step in the
+workflow YAML. What changed: the names now match the
+implementation, so a future contributor reading the code
+doesn't expect a real LLM-backed debate to happen.
 
-Si final >= 50, se aprueba (filtrado del filtro de RiskManager después).
-Si final < 50, se rechaza con la razón del agente que más penalizó.
+The scoring formula is unchanged:
+    final = 0.4 * bull + 0.4 * (100 - bear) - 0.2 * risk_penalty
 
-Cada paso debate se registra en el audit ledger para forensics.
+The 40/50 threshold split is unchanged (technical setups are
+more permissive). The audit's complaint that these numbers
+"chosen by feel, not data" remains valid — recalibration is
+a separate piece of work (would need a backtest of historical
+hypotheses against realized P&L, which doesn't exist yet).
+The renamed classes document the limitation in their own
+docstrings.
+
+Sprint 46S (audit M1 follow-up) added the crypto-short prefilter
+in StrategyAgent that already removes the worst offender
+(crypto short hypotheses) before this scorer runs, so the
+"crypto shorts pass by construction" finding from the audit
+is no longer reproducible. The recalibration task, if pursued,
+should focus on the 0.4/0.4/0.2 weights rather than threshold
+hunting.
+
+Every step still gets recorded in the audit ledger for
+forensics — the event type is still `DEBATE_APPROVED` /
+`DEBATE_REJECTED` (preserved for backward compat with the
+dashboard's audit feed).
 """
 from __future__ import annotations
 from typing import List, Dict, Any
@@ -26,7 +54,7 @@ from src.core.logging_setup import get_logger
 logger = get_logger(__name__)
 
 
-class BullResearcher:
+class BullScorer:
     """Busca evidencia técnica a favor de cada hipótesis."""
 
     @staticmethod
@@ -68,7 +96,7 @@ class BullResearcher:
         return min(max(score, 0), 100), reasons
 
 
-class BearResearcher:
+class BearScorer:
     """Busca evidencia técnica en contra de cada hipótesis."""
 
     @staticmethod
@@ -136,7 +164,7 @@ class BearResearcher:
         return min(max(score, 0), 100), reasons
 
 
-class RiskTeam:
+class RiskScorer:
     """Chequeos duros: correlación, concentración, volatilidad."""
 
     @staticmethod
@@ -175,7 +203,7 @@ class RiskTeam:
         return min(penalty, 100), reasons
 
 
-class PortfolioManager:
+class ScoreSynthesizer:
     """
     Sintetiza los tres debates y toma decisión final.
 
@@ -188,9 +216,9 @@ class PortfolioManager:
         self.audit = audit
 
     def decide(self, hypothesis: dict, open_positions: list) -> Dict[str, Any]:
-        bull_score, bull_reasons = BullResearcher.score(hypothesis)
-        bear_score, bear_reasons = BearResearcher.score(hypothesis)
-        risk_penalty, risk_reasons = RiskTeam.score(hypothesis, open_positions)
+        bull_score, bull_reasons = BullScorer.score(hypothesis)
+        bear_score, bear_reasons = BearScorer.score(hypothesis)
+        risk_penalty, risk_reasons = RiskScorer.score(hypothesis, open_positions)
 
         final = 0.4 * bull_score + 0.4 * (100 - bear_score) - 0.2 * risk_penalty
 
@@ -245,7 +273,7 @@ class PortfolioManager:
         return approved
 
 
-class DebateAgent:
+class HypothesisScorer:
     """
     Agente orquestador del debate. Diseñado para ser invocado como paso
     del workflow YAML entre StrategyAgent y RiskManagerAgent.
@@ -253,17 +281,21 @@ class DebateAgent:
 
     def __init__(self, position_repo=None, audit=None):
         self.position_repo = position_repo
-        self.manager = PortfolioManager(audit=audit)
+        self.manager = ScoreSynthesizer(audit=audit)
 
     def run_debate(self, inputs: dict, state: dict) -> Dict[str, Any]:
+        # Method name kept as `run_debate` for workflow YAML
+        # compatibility (the YAML step action: `run_debate`).
+        # Internally this is just running the scorers, not a
+        # real debate -- see the module docstring.
         hypotheses = state.get("generate_hypotheses", {}).get("hypotheses", [])
         open_positions = self.position_repo.open() if self.position_repo else []
 
         if not hypotheses:
-            logger.info('[DebateAgent] sin hipótesis, debate vacío')
+            logger.info('[HypothesisScorer] sin hipótesis, debate vacío')
             return {"hypotheses": [], "verdicts": [], "approved_hypotheses": []}
 
-        logger.info(f'[DebateAgent] {len(hypotheses)} hipótesis × {len(open_positions)} posiciones abiertas')
+        logger.info(f'[HypothesisScorer] {len(hypotheses)} hipótesis × {len(open_positions)} posiciones abiertas')
 
         verdicts = self.manager.decide_all(hypotheses, open_positions)
         approved = self.manager.filter_approved(hypotheses, verdicts)
@@ -272,7 +304,7 @@ class DebateAgent:
             icon = "✅" if v["decision"] == "APPROVED" else "❌"
             logger.info(f"  {icon} {v['asset']:8} {v['direction']:5} | final={v['final_score']:5.1f} (bull={v['bull_score']} bear={v['bear_score']} risk={v['risk_penalty']}) | {v['reason']}")
 
-        logger.info(f'[DebateAgent] → {len(approved)}/{len(hypotheses)} hipótesis aprobadas por el debate')
+        logger.info(f'[HypothesisScorer] → {len(approved)}/{len(hypotheses)} hipótesis aprobadas por el debate')
 
         return {
             "hypotheses": hypotheses,          # todas (audit)

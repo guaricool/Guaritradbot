@@ -325,7 +325,7 @@ class RiskManagerAgent:
             raise RuntimeError("Balance no disponible y simulación deshabilitada") from e
 
     def validate_and_size(self, inputs: dict, state: dict) -> Dict[str, Any]:
-        # Sprint 3: si DebateAgent corrió, usa SOLO las hipótesis que
+        # Sprint 3: si HypothesisScorer corrió, usa SOLO las hipótesis que
         # pasaron el debate. Si no hay debate, fallback al total
         # (retrocompatible con versiones sin Sprint 3).
         if "debate_hypotheses" in state:
