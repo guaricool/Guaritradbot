@@ -14,6 +14,22 @@ exchange:
   name: "binanceus"
   use_testnet: false
 
+# === Sprint 46Y (audit B2 resto) — API layer cache TTLs ===
+# In-process caches in src/api/state.py: how long a fetched price
+# (PRICE_CACHE) or a broker balance (BALANCE_CACHE) is reused
+# before the next API request triggers a fresh fetch.
+#   - price_ttl_s:    the dashboard polls prices every 1s via /ws/live
+#                     and 2-3s via REST polling; 30s keeps the
+#                     binance.us load low without making the UI
+#                     look stale. Lower = fresher + more API calls.
+#   - balance_ttl_s:  used by /api/state; broker balance only changes
+#                     on order fills, so 15s is plenty.
+# Both safe to tune without restart if you watch the broker rate
+# limits; the rest of the code reads them at module import.
+cache:
+  price_ttl_s: 30.0
+  balance_ttl_s: 15.0
+
 # === Sprint 36 — Multi-broker routing ===
 # ExecutionNode dispatches each order to the broker matching the asset's
 # asset_class. The asset → class map is built from `symbols` lists here.

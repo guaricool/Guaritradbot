@@ -46,6 +46,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import yaml
+
 import pandas as pd
 
 from src.data_store.positions import PositionRepository, Position
@@ -148,7 +150,30 @@ class AuditEvent(BaseModel):
 _PRICE_CACHE: Dict[str, Tuple[float, float, str]] = {}
 """asset -> (price, fetched_at, source). Source: 'live' | 'cache'."""
 
-PRICE_CACHE_TTL_S = 30.0
+
+def _load_cache_ttls() -> Dict[str, float]:
+    """Sprint 46Y (audit B2 resto): read cache TTLs from config.yaml.
+
+    Used to replace the hard-coded `PRICE_CACHE_TTL_S = 30.0` and
+    `BALANCE_CACHE_TTL_S = 15.0` constants. Fail-open: any I/O error
+    (missing file, malformed YAML, missing keys) returns the
+    pre-46Y defaults — the bot should still boot if config is broken.
+    """
+    defaults = {"price_ttl_s": 30.0, "balance_ttl_s": 15.0}
+    try:
+        cfg_path = Path("config.yaml")
+        if not cfg_path.exists():
+            return defaults
+        with cfg_path.open("r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        cache_cfg = cfg.get("cache", {}) or {}
+        return {**defaults, **{k: float(v) for k, v in cache_cfg.items() if k in defaults}}
+    except Exception:
+        return defaults
+
+
+_CACHE_TTLS: Dict[str, float] = _load_cache_ttls()
+PRICE_CACHE_TTL_S: float = _CACHE_TTLS["price_ttl_s"]
 
 
 def _fetch_one_price(asset: str) -> Tuple[Optional[float], str]:
@@ -237,7 +262,7 @@ def invalidate_price_cache(asset: Optional[str] = None) -> None:
 _BROKER_CLIENT = None      # BrokerClient (binance.us / ccxt) or None
 _ALPACA_BROKER = None      # AlpacaBroker or None (not configured if None)
 
-BALANCE_CACHE_TTL_S = 15.0
+BALANCE_CACHE_TTL_S: float = _CACHE_TTLS["balance_ttl_s"]
 _BALANCE_CACHE: Dict[str, Tuple[Optional[float], str, float]] = {}
 """broker_name -> (balance_or_None, source, fetched_at)."""
 
