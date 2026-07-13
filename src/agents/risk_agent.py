@@ -1218,6 +1218,37 @@ class RiskManagerAgent:
         """
         if not self.portfolio_stress_check or proposed_notional_usd <= 0:
             return True, "stress_check_disabled_or_zero_notional"
+        # Sprint 52.1 (audit follow-up): bypass the stress test on
+        # small accounts, mirroring Sprint 47A's
+        # `check_trade_against_policy` pattern. With account < $50
+        # and the $10 minimum, the worst-case scenario
+        # (BTC-USD alone = -64% in 2022 rate hikes) is structurally
+        # guaranteed to exceed the 30% cap. The bypass means the
+        # asset-class concentration cap (60%, also configured) is
+        # the only multi-position gate on a small account — which
+        # is the appropriate backstop when a single position is
+        # already 50-100% of the book. Reuse the same threshold
+        # the AllocationPolicy exposes so a single config knob
+        # (`allocation_policy.small_account_threshold_usd`)
+        # controls both gates.
+        if (
+            self.allocation_policy is not None
+            and self.allocation_policy.small_account_threshold_usd > 0
+            and self.position_repo is not None
+        ):
+            try:
+                _opens = list(self.position_repo.open())
+                _total_notional = (
+                    sum(getattr(p, "notional_usd", 0.0) for p in _opens)
+                    + proposed_notional_usd
+                )
+                if _total_notional < self.allocation_policy.small_account_threshold_usd:
+                    return True, "small_account_stress_skipped"
+            except Exception:
+                # Defensive: if anything in the threshold check
+                # blows up, fall through to the real stress test
+                # rather than silently allowing the trade.
+                pass
         try:
             positions = self._projected_positions(asset, proposed_notional_usd)
             results = stress_portfolio_all_scenarios(positions)
