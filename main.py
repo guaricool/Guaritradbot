@@ -1024,7 +1024,17 @@ def main():
             # score debate). The HypothesisScorer still consults
             # `recent_lessons_for` on its own — this is a
             # defense-in-depth, source-side filter.
+            #
+            # Sprint 63: Carlos wants more activity, so we set
+            # loss_streak_suppress=0 to DISABLE the source-side
+            # filter. The HypothesisScorer's `recent_lessons_for`
+            # (a softer weight in the debate) is still active —
+            # this just stops the StrategyAgent from vetoing
+            # hypotheses that DID recently lose, so they get a
+            # chance to re-enter the debate. Set to 3 (or any
+            # positive int) to re-enable the source-side veto.
             decision_log=get_decision_log(),
+            loss_streak_suppress=0,
         ),
         "RiskManagerAgent": RiskManagerAgent(
             broker_client=broker_client,
