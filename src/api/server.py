@@ -115,7 +115,6 @@ from src.api.state import (
     write_trading_pause,
 )
 
-
 # ----------------------------------------------------------------------
 # Paths and config
 # ----------------------------------------------------------------------
@@ -127,18 +126,14 @@ DEFAULT_AUDIT_PATH = "audit/audit.jsonl"
 DEFAULT_POSITIONS_PATH = "data_store/positions.json"
 DEFAULT_CONFIG_PATH = "config.yaml"
 
-
 def _audit_path() -> str:
     return os.getenv("DASHBOARD_AUDIT_PATH", DEFAULT_AUDIT_PATH)
-
 
 def _positions_path() -> str:
     return os.getenv("DASHBOARD_POSITIONS_PATH", DEFAULT_POSITIONS_PATH)
 
-
 def _config_path() -> str:
     return os.getenv("DASHBOARD_CONFIG_PATH", DEFAULT_CONFIG_PATH)
-
 
 def _load_config() -> dict:
     """Load config.yaml if present; return {} on any error.
@@ -156,7 +151,6 @@ def _load_config() -> dict:
             return yaml.safe_load(f) or {}
     except Exception:
         return {}
-
 
 def _fee_pct_for_asset(asset: str) -> float:
     """Sprint 46N (audit M2): the same real binance.us round-trip fee
@@ -180,13 +174,11 @@ def _fee_pct_for_asset(asset: str) -> float:
     except Exception:
         return 0.0
 
-
 # ----------------------------------------------------------------------
 # Lifespan: load config once, share with requests
 # ----------------------------------------------------------------------
 
 APP_STATE: Dict[str, Any] = {}
-
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
@@ -202,7 +194,6 @@ async def _lifespan(app: FastAPI):
     APP_STATE["audit_poll_interval_s"] = float(os.getenv("DASHBOARD_WS_POLL_INTERVAL_S", "1.0"))
     yield
     APP_STATE.clear()
-
 
 # ----------------------------------------------------------------------
 # FastAPI app
@@ -251,7 +242,6 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
-
 # ----------------------------------------------------------------------
 # Auth schemas
 # ----------------------------------------------------------------------
@@ -259,17 +249,14 @@ app.add_middleware(
 class LoginRequest(BaseModel):
     password: str
 
-
 class LoginResponse(BaseModel):
     token: str
     expires_in_s: int
     token_type: str = "Bearer"
 
-
 class SetModeRequest(BaseModel):
     mode: str  # "live" | "paper"
     switched_by: Optional[str] = "api"
-
 
 class SetModeResponse(BaseModel):
     mode: ModeInfo
@@ -283,7 +270,6 @@ class SetModeResponse(BaseModel):
             "If you need an immediate restart, use POST /api/restart."
         ),
     )
-
 
 # Sprint 46D: dashboard-editable trading settings. Every field is
 # Optional so the dashboard can PATCH just the one field the user
@@ -306,7 +292,6 @@ class UpdateTradingConfigRequest(BaseModel):
     min_profit_to_protect: Optional[float] = Field(default=None, ge=0)
     updated_by: Optional[str] = "dashboard"
 
-
 # Sprint 46F: dashboard-editable risk/mandate safety gates — the
 # drawdown kill-switch threshold/cooldown, the mandate's symbol
 # allow-list, and the Sprint 44/45 portfolio-risk gate caps
@@ -324,7 +309,6 @@ class UpdateRiskConfigRequest(BaseModel):
     # Sprint 46J: rolling-24h new-entry rate limit. 0 = unlimited.
     max_daily_trades: Optional[int] = Field(default=None, ge=0, le=1000)
     updated_by: Optional[str] = "dashboard"
-
 
 # ----------------------------------------------------------------------
 # WebSocket hub
@@ -379,7 +363,6 @@ async def _broadcast(event: Dict[str, Any]) -> None:
         except Exception:
             pass
 
-
 async def _audit_tail_loop() -> None:
     """Background task: poll the audit.jsonl and broadcast new events to WS.
 
@@ -401,7 +384,6 @@ async def _audit_tail_loop() -> None:
         except Exception:
             pass  # best-effort; dashboard reconnect handles gaps
         await asyncio.sleep(interval)
-
 
 async def _position_snapshot_loop() -> None:
     """Background task: every 2s, broadcast a fresh positions snapshot.
@@ -430,13 +412,11 @@ async def _position_snapshot_loop() -> None:
             pass
         await asyncio.sleep(interval)
 
-
 @app.on_event("startup")
 async def _start_background_tasks() -> None:
     APP_STATE.setdefault("ws_clients", set())
     asyncio.create_task(_audit_tail_loop())
     asyncio.create_task(_position_snapshot_loop())
-
 
 # ----------------------------------------------------------------------
 # Health
@@ -576,7 +556,6 @@ def health() -> Dict[str, Any]:
         content=body,
     )
 
-
 # ----------------------------------------------------------------------
 # Mode
 # ----------------------------------------------------------------------
@@ -587,7 +566,6 @@ def get_mode(_: None = Depends(auth.require_auth)) -> ModeInfo:
         config=APP_STATE.get("config") or {},
         audit_path=_audit_path(),
     )
-
 
 @app.post("/api/mode", response_model=SetModeResponse)
 def set_mode(req: SetModeRequest, _: None = Depends(auth.require_auth)) -> SetModeResponse:
@@ -600,7 +578,6 @@ def set_mode(req: SetModeRequest, _: None = Depends(auth.require_auth)) -> SetMo
         audit_path=_audit_path(),
     )
     return SetModeResponse(mode=new_mode)
-
 
 # ----------------------------------------------------------------------
 # Auth
@@ -640,7 +617,6 @@ def login(req: LoginRequest, request: Request) -> LoginResponse:
         expires_in_s=auth.TOKEN_TTL_SECONDS,
     )
 
-
 # ----------------------------------------------------------------------
 # State
 # ----------------------------------------------------------------------
@@ -652,7 +628,6 @@ def get_state(_: None = Depends(auth.require_auth)) -> StateSnapshot:
         audit_path=_audit_path(),
         positions_path=_positions_path(),
     )
-
 
 def _trading_config_response(effective: Dict[str, Any], note: Optional[str] = None) -> Dict[str, Any]:
     """Shape `state.read_trading_config()`'s output for the API: strip
@@ -673,7 +648,6 @@ def _trading_config_response(effective: Dict[str, Any], note: Optional[str] = No
         out["note"] = note
     return out
 
-
 @app.get("/api/config")
 def get_trading_config(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     """Sprint 46C/D: the *effective* trading config — config.yaml's
@@ -687,7 +661,6 @@ def get_trading_config(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     """
     effective = read_trading_config(config=APP_STATE.get("config") or {}, audit_path=_audit_path())
     return _trading_config_response(effective)
-
 
 @app.post("/api/config")
 def post_trading_config(
@@ -727,7 +700,6 @@ def post_trading_config(
         ),
     )
 
-
 def _risk_config_response(effective: Dict[str, Any], note: Optional[str] = None) -> Dict[str, Any]:
     """Same shaping as `_trading_config_response`, for risk config."""
     updated_at = effective.get("_override_updated_at")
@@ -741,7 +713,6 @@ def _risk_config_response(effective: Dict[str, Any], note: Optional[str] = None)
         out["note"] = note
     return out
 
-
 @app.get("/api/risk-config")
 def get_risk_config(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     """Sprint 46F: effective risk/mandate safety config — drawdown
@@ -751,7 +722,6 @@ def get_risk_config(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     """
     effective = read_risk_config(config=APP_STATE.get("config") or {}, audit_path=_audit_path())
     return _risk_config_response(effective)
-
 
 @app.post("/api/risk-config")
 def post_risk_config(
@@ -781,7 +751,6 @@ def post_risk_config(
         ),
     )
 
-
 @app.get("/api/positions", response_model=List[PositionSummary])
 def get_positions(_: None = Depends(auth.require_auth)) -> List[PositionSummary]:
     snap = build_state_snapshot(
@@ -791,6 +760,229 @@ def get_positions(_: None = Depends(auth.require_auth)) -> List[PositionSummary]
     )
     return snap.positions
 
+# ----------------------------------------------------------------------
+# Sprint 58: Dashboard richer data views
+# ----------------------------------------------------------------------
+#
+# Two new endpoints that complete the dashboard:
+#  - /api/candles         historical OHLCV for any asset (no position
+#                          required). Used by the /charts page.
+#  - /api/positions/history closed-position ledger with date/asset/
+#                          direction filters. Used by the /history page.
+#
+# Both reuse the existing position-repository + yfinance wrappers so
+# there is exactly one place that talks to yfinance (safe_yf_download).
+#
+# NOTE on route order: `/api/positions/history` MUST be declared
+# before `/api/positions/{position_id}` -- FastAPI matches routes
+# in declaration order, and the path-param route would otherwise
+# capture "history" as a position_id and return 404. See the
+# comment at the {position_id} route below for the full rationale.
+
+def _candles_impl(asset: str, interval: str, limit: int) -> Dict[str, Any]:
+    """Pure logic for /api/candles — no FastAPI Query defaults, so
+    it can be called directly from tests AND from the FastAPI
+    endpoint. The endpoint is a thin wrapper that does the
+    parameter parsing via Query().
+    """
+    from src.data.yf_safe import safe_yf_download
+    period_map = {"1m": "5d", "5m": "30d", "15m": "60d", "1h": "60d", "1d": "2y"}
+    period = period_map.get(interval, "60d")
+    try:
+        df = safe_yf_download(asset, period=period, interval=interval)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"price fetch failed: {e}")
+    if df is None or df.empty:
+        return {"asset": asset, "interval": interval, "candles": []}
+    df = df.tail(limit)
+    return {
+        "asset": asset,
+        "interval": interval,
+        "candles": _df_to_candles(df),
+    }
+
+
+def _history_impl(
+    from_ts: Optional[float],
+    to_ts: Optional[float],
+    asset_class: Optional[str],
+    direction: Optional[str],
+    asset: Optional[str],
+    limit: int,
+) -> Dict[str, Any]:
+    """Pure logic for /api/positions/history — same split as
+    `_candles_impl` above. Pydantic validation is the endpoint's
+    job; the test layer just needs to drive the logic with raw
+    values."""
+    from src.data_store.positions import PositionRepository
+    repo = PositionRepository(_positions_path())
+    closed = [p for p in repo.all() if p.closed_ts is not None]
+    if from_ts is not None:
+        closed = [p for p in closed if (p.closed_ts or 0) >= from_ts]
+    if to_ts is not None:
+        closed = [p for p in closed if (p.closed_ts or 0) <= to_ts]
+    if asset_class is not None:
+        closed = [p for p in closed if _ASSET_CLASS_MAP.get(p.asset) == asset_class]
+    if direction is not None:
+        closed = [p for p in closed if p.direction == direction]
+    if asset is not None:
+        closed = [p for p in closed if p.asset == asset]
+    closed.sort(key=lambda p: p.closed_ts or 0.0, reverse=True)
+    closed = closed[:limit]
+    rows = []
+    win = loss = be = 0
+    total_pnl = 0.0
+    total_fees = 0.0
+    for p in closed:
+        pnl = p.realized_pnl or 0.0
+        total_pnl += pnl
+        total_fees += p.fees_paid_usd or 0.0
+        if pnl > 0.0001:
+            win += 1
+        elif pnl < -0.0001:
+            loss += 1
+        else:
+            be += 1
+        dur_h = None
+        if p.entry_ts and p.closed_ts:
+            dur_h = round((p.closed_ts - p.entry_ts) / 3600.0, 1)
+        rows.append({
+            "id": p.position_id,
+            "asset": p.asset,
+            "asset_class": _ASSET_CLASS_MAP.get(p.asset, "other"),
+            "direction": p.direction,
+            "entry_price": p.entry_price,
+            "entry_ts": p.entry_ts,
+            "closed_price": p.closed_price,
+            "closed_ts": p.closed_ts,
+            "close_reason": p.close_reason or "UNKNOWN",
+            "qty": p.qty,
+            "notional_usd": p.notional_usd,
+            "realized_pnl_usd": pnl,
+            "fees_paid_usd": p.fees_paid_usd or 0.0,
+            "duration_hours": dur_h,
+            "strategy": p.strategy,
+        })
+    total = win + loss + be
+    return {
+        "positions": rows,
+        "summary": {
+            "total_trades": total,
+            "win_count": win,
+            "loss_count": loss,
+            "breakeven_count": be,
+            "win_rate_pct": round(100.0 * win / total, 1) if total else 0.0,
+            "total_pnl_usd": round(total_pnl, 6),
+            "total_fees_usd": round(total_fees, 6),
+        },
+    }
+
+
+def _df_to_candles(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """Convert a yfinance DataFrame (columns: Open/High/Low/Close/Volume)
+    into the JSON shape the dashboard's candlestick component wants.
+
+    Shared between the position-scoped /api/positions/{id}/candles
+    and the new asset-scoped /api/candles (Sprint 58) so the wire
+    format is identical. Datetimes are serialized to unix seconds.
+    Volume is optional -- some yfinance intervals don't return it.
+    """
+    candles: List[Dict[str, Any]] = []
+    for idx, row in df.iterrows():
+        try:
+            ts = int(idx.timestamp())
+        except Exception:
+            ts = 0
+        candles.append({
+            "ts": ts,
+            "open": float(row.get("Open", 0.0)),
+            "high": float(row.get("High", 0.0)),
+            "low": float(row.get("Low", 0.0)),
+            "close": float(row.get("Close", 0.0)),
+            "volume": float(row.get("Volume", 0.0)) if "Volume" in row else 0.0,
+        })
+    return candles
+
+@app.get("/api/candles")
+def get_candles(
+    asset: str = Query(..., min_length=1, max_length=20),
+    interval: str = Query("1h", pattern="^(1m|5m|15m|1h|1d)$"),
+    limit: int = Query(200, ge=10, le=1000),
+    _: None = Depends(auth.require_auth),
+) -> Dict[str, Any]:
+    """Historical OHLCV for `asset` at `interval`.
+
+    Sprint 58: companion to the position-scoped `/api/positions/{id}/candles`
+    -- this one doesn't need a position_id, so the dashboard's /charts
+    page can show BTC/ETH/SOL/SPY/QQQ/GLD/USO even when no position
+    is open. Same wire format (`{ts, open, high, low, close, volume}`)
+    so the chart component is identical.
+
+    `limit` is capped at 1000 to keep responses reasonable. yfinance's
+    1m interval is rate-limited to 7 days of history; longer
+    timeframes return up to `period=` days. We pass period based on
+    interval+limit so yfinance has enough history.
+
+    Pure logic lives in `_candles_impl` so the test layer can drive
+    it without going through FastAPI's Query defaults (which
+    explode when the function is called directly with positional
+    args -- the default `Query(...)` value isn't a string, it's a
+    Query marker object).
+    """
+    return _candles_impl(asset, interval, limit)
+
+# Mapping used by the history endpoint to bucket each asset into
+# crypto / equity. Mirrors src/data/asset_class.py's get_asset_class
+# but is duplicated here so the API surface doesn't depend on the
+# data-layer module (which the dashboard doesn't need to know about).
+_ASSET_CLASS_MAP = {
+    "BTC-USD": "crypto", "ETH-USD": "crypto", "SOL-USD": "crypto",
+    "SPY": "equity", "QQQ": "equity", "GLD": "equity", "USO": "equity",
+}
+
+# MUST be declared before /api/positions/{position_id} -- see
+# the Sprint 58 comment above.
+@app.get("/api/positions/history")
+def get_positions_history(
+    # All filters are optional; missing = "no filter on this field".
+    # `from_ts` / `to_ts` are unix seconds. If both are absent we
+    # return the full history (capped at `limit`).
+    from_ts: Optional[float] = Query(None, alias="from"),
+    to_ts: Optional[float] = Query(None, alias="to"),
+    asset_class: Optional[str] = Query(None, pattern="^(crypto|equity)$"),
+    direction: Optional[str] = Query(None, pattern="^(long|short)$"),
+    asset: Optional[str] = Query(None, max_length=20),
+    limit: int = Query(500, ge=1, le=5000),
+    _: None = Depends(auth.require_auth),
+) -> Dict[str, Any]:
+    """Closed-position history with date/asset/direction filters.
+
+    Sprint 58: the bot already persists every position (open and
+    closed) to `data_store/positions.json` via PositionRepository
+    (Sprint 46I introduced the close-tracker; the close_reason
+    field was added in Sprint 46J). This endpoint reads the
+    repository, filters closed positions, and returns them sorted
+    by closed_ts desc so the dashboard's /history page can show
+    them newest-first with date/direction/asset filters.
+
+    Filter semantics:
+      * from_ts / to_ts: filter on `closed_ts`. Missing = unbounded.
+      * asset_class: crypto (BTC/ETH/SOL) or equity (SPY/QQQ/GLD/USO).
+      * direction: long or short.
+      * asset: exact match (e.g. "BTC-USD").
+
+    Response:
+      {
+        "positions": [ClosedPositionRow, ...],
+        "summary": {total_trades, win_count, loss_count, breakeven_count,
+                    total_pnl_usd, total_fees_usd, win_rate_pct}
+      }
+
+    Pure logic lives in `_history_impl` so the test layer can drive
+    it with raw values (FastAPI's `Query` defaults explode when the
+    function is called directly with positional args).
+    """
+    return _history_impl(from_ts, to_ts, asset_class, direction, asset, limit)
 
 @app.get("/api/positions/{position_id}")
 def get_position(position_id: str, _: None = Depends(auth.require_auth)) -> Dict[str, Any]:
@@ -804,6 +996,12 @@ def get_position(position_id: str, _: None = Depends(auth.require_auth)) -> Dict
             return p.model_dump()
     raise HTTPException(status_code=404, detail=f"position {position_id!r} not found or closed")
 
+# NOTE: `/api/positions/history` (Sprint 58) is intentionally
+# declared EARLIER (search for "Sprint 58: Dashboard richer data
+# views" above) -- FastAPI matches routes in declaration order,
+# and the path-param route `{position_id}` would otherwise capture
+# `history` as a position_id (404 "position 'history' not found").
+# The new endpoint has to win the match.
 
 @app.get("/api/positions/{position_id}/candles")
 def get_position_candles(
@@ -840,20 +1038,7 @@ def get_position_candles(
     if df is None or df.empty:
         return {"asset": asset, "candles": [], "entry": entry, "stop_loss": sl, "take_profit": tp}
     df = df.tail(window)
-    candles = []
-    for idx, row in df.iterrows():
-        try:
-            ts = int(idx.timestamp())
-        except Exception:
-            ts = 0
-        candles.append({
-            "ts": ts,
-            "open": float(row.get("Open", 0.0)),
-            "high": float(row.get("High", 0.0)),
-            "low": float(row.get("Low", 0.0)),
-            "close": float(row.get("Close", 0.0)),
-            "volume": float(row.get("Volume", 0.0)) if "Volume" in row else 0.0,
-        })
+    candles = _df_to_candles(df)
     return {
         "asset": asset,
         "interval": interval,
@@ -862,7 +1047,6 @@ def get_position_candles(
         "stop_loss": sl,
         "take_profit": tp,
     }
-
 
 @app.post("/api/positions/{position_id}/close")
 def post_close_position(
@@ -881,7 +1065,6 @@ def post_close_position(
         raise HTTPException(status_code=404, detail=f"position {position_id!r} not found or already closed")
     return closed
 
-
 @app.post("/api/positions/close-all")
 def post_close_all_positions(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     """Sprint 46H: flatten every open position in one click. Carlos's
@@ -897,7 +1080,6 @@ def post_close_all_positions(_: None = Depends(auth.require_auth)) -> Dict[str, 
     )
     return {"closed_count": len(closed), "closed": closed}
 
-
 # ----------------------------------------------------------------------
 # Manual trading pause (Sprint 46H) — dashboard Stop/Start toggle
 # ----------------------------------------------------------------------
@@ -905,7 +1087,6 @@ def post_close_all_positions(_: None = Depends(auth.require_auth)) -> Dict[str, 
 class TradingPauseRequest(BaseModel):
     paused: bool
     updated_by: Optional[str] = "dashboard"
-
 
 @app.get("/api/trading-pause")
 def get_trading_pause(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
@@ -915,7 +1096,6 @@ def get_trading_pause(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     state.read_trading_pause's docstring for why this is a separate,
     softer mechanism than the filesystem KillSwitch)."""
     return read_trading_pause(audit_path=_audit_path())
-
 
 @app.post("/api/trading-pause")
 def post_trading_pause(
@@ -927,7 +1107,6 @@ def post_trading_pause(
         updated_by=req.updated_by or "dashboard",
         audit_path=_audit_path(),
     )
-
 
 # ----------------------------------------------------------------------
 # Audit
@@ -943,7 +1122,6 @@ def get_audit(
     return build_audit(
         limit=limit, after=after, event_type=event_type, audit_path=_audit_path(),
     )
-
 
 @app.get("/api/signals")
 def get_signals(
@@ -961,7 +1139,6 @@ def get_signals(
         "HYPOTHESIS_GENERATED", "TRADE_APPROVED", "TRADE_REJECTED",
     )]
     return sig[:limit]
-
 
 @app.get("/api/stats")
 def get_stats(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
@@ -1032,7 +1209,6 @@ def get_allocation(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
         "classes_under_floor": drift.classes_under_floor,
     }
 
-
 @app.get("/api/risk/stress")
 def get_risk_stress(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     """Apply the 3 historical crisis scenarios to the current portfolio."""
@@ -1051,7 +1227,6 @@ def get_risk_stress(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
         "worst_case": worst.to_dict(),
     }
 
-
 @app.get("/api/risk/correlation")
 def get_risk_correlation(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
     """Asset correlation matrix of the open positions."""
@@ -1063,7 +1238,6 @@ def get_risk_correlation(_: None = Depends(auth.require_auth)) -> Dict[str, Any]
         return {"assets": assets, "matrix": [], "avg_correlation": 0.0, "well_diversified": True, "note": "need >=2 assets"}
     res = analyze_assets(assets)
     return res.to_dict()
-
 
 @app.get("/api/risk/cvar")
 def get_risk_cvar(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
@@ -1078,7 +1252,6 @@ def get_risk_cvar(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
         return {"note": "no open positions"}
     res = compute_portfolio_tail_risk(weights)
     return res.to_dict()
-
 
 # ----------------------------------------------------------------------
 # Equity curve
@@ -1139,7 +1312,6 @@ def get_equity(
             })
     return {"window_days": window_days, "series": cumulative}
 
-
 # ----------------------------------------------------------------------
 # Restart (graceful)
 # ----------------------------------------------------------------------
@@ -1158,7 +1330,6 @@ def get_equity(
 # the actual loop-DoS: within one running process, restarts are capped.
 _last_restart_ts: Optional[float] = None
 _RESTART_COOLDOWN_SECONDS = float(os.getenv("DASHBOARD_RESTART_COOLDOWN_SECONDS", "60"))
-
 
 @app.post("/api/restart")
 def post_restart(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
@@ -1216,7 +1387,6 @@ def post_restart(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
         "signal": "SIGTERM",
         "note": "Bot will restart via the container's `restart: unless-stopped` policy. Expect 10-30s of downtime.",
     }
-
 
 # ----------------------------------------------------------------------
 # WebSocket: live updates
@@ -1287,7 +1457,6 @@ async def ws_live(
     finally:
         APP_STATE["ws_clients"].discard(websocket)
 
-
 # ----------------------------------------------------------------------
 # Sprint 57: Server-Sent Events live stream
 # ----------------------------------------------------------------------
@@ -1308,7 +1477,6 @@ async def ws_live(
 # EventSource re-connects automatically on disconnect; the
 # `Last-Event-ID` header on reconnect lets us resume (not yet
 # implemented -- the audit-tail loop is the source of truth).
-
 
 @app.get("/api/events")
 async def sse_events(

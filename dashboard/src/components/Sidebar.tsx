@@ -10,6 +10,8 @@ import type { WsStatus } from "@/lib/use-live";
 const NAV = [
   { href: "/", label: "Overview", icon: "◈" },
   { href: "/positions", label: "Positions", icon: "◉" },
+  { href: "/charts", label: "Charts", icon: "📈" },
+  { href: "/history", label: "History", icon: "▦" },
   { href: "/audit", label: "Audit", icon: "▤" },
   { href: "/allocation", label: "Allocation & Risk", icon: "◊" },
   { href: "/settings", label: "Settings", icon: "⚙" },
