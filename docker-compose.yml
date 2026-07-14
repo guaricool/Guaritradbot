@@ -112,7 +112,6 @@ services:
       - traefik.http.routers.https-0-guaritradbot-ws.tls.certresolver=letsencrypt
       - traefik.http.routers.https-0-guaritradbot-ws.tls=true
       - traefik.http.routers.https-0-guaritradbot.entryPoints=https
-      - traefik.http.routers.https-0-guaritradbot.middlewares=gzip
       - "traefik.http.routers.https-0-guaritradbot.rule=Host(`guaritradbot.13.140.181.29.sslip.io`) && PathPrefix(`/`)"
       - traefik.http.routers.https-0-guaritradbot.service=https-0-guaritradbot
       - traefik.http.routers.https-0-guaritradbot.tls.certresolver=letsencrypt
