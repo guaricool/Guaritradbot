@@ -212,7 +212,7 @@ export interface CandlesResponse {
 export interface HistoryRow {
   id: string;
   asset: string;
-  asset_class: "crypto" | "equity" | "other";
+  asset_class: "crypto" | "equity" | "forex" | "other";
   direction: "long" | "short";
   entry_price: number;
   entry_ts: number;
@@ -241,6 +241,21 @@ export interface HistoryResponse {
   positions: HistoryRow[];
   summary: HistorySummary;
 }
+
+// Sprint 59: chart assets + time-range selector.
+// The dashboard shows assets the bot does NOT trade (forex + extra
+// stocks) for visualization only -- the API accepts any ticker
+// yfinance knows about, see src/api/server.py::_ASSET_CLASS_MAP.
+export type AssetCategory = "crypto" | "forex" | "equity";
+
+// Yfinance intervals the backend supports. Mirrors the regex
+// in `/api/candles` Query (1m|5m|15m|1h|1d|1wk|1mo).
+export type YfInterval = "1m" | "5m" | "15m" | "1h" | "1d" | "1wk" | "1mo";
+
+// User-facing time-range buttons. Each maps to a (interval, limit)
+// pair in lib/api.ts::rangeToParams so the dashboard re-fetches
+// the right granularity for the chosen zoom level.
+export type TimeRange = "1D" | "5D" | "1M" | "3M" | "1Y" | "ALL";
 
 export interface Health {
   ok: boolean;

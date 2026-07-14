@@ -784,9 +784,23 @@ def _candles_impl(asset: str, interval: str, limit: int) -> Dict[str, Any]:
     it can be called directly from tests AND from the FastAPI
     endpoint. The endpoint is a thin wrapper that does the
     parameter parsing via Query().
+
+    Sprint 59: extended `period_map` and accepted-interval regex to
+    include `1wk` and `1mo` so the dashboard's time-range selector
+    can offer 1Y and ALL buttons. yfinance natively supports both
+    (1wk = weekly OHLC, 1mo = monthly OHLC) and they have no
+    retention cap (unlike 1m/5m which are rate-limited to 7d/60d).
     """
     from src.data.yf_safe import safe_yf_download
-    period_map = {"1m": "5d", "5m": "30d", "15m": "60d", "1h": "60d", "1d": "2y"}
+    period_map = {
+        "1m":  "5d",   # yfinance 1m cap = 7d, we ask for 5d
+        "5m":  "30d",  # yfinance 5m cap = 60d
+        "15m": "60d",  # yfinance 15m cap = 60d
+        "1h":  "60d",  # yfinance 1h cap = 730d but VPS rate-limit safe
+        "1d":  "2y",
+        "1wk": "10y",  # weekly bars, used for "ALL" view
+        "1mo": "max",  # yfinance has no cap on 1mo, we ask for max
+    }
     period = period_map.get(interval, "60d")
     try:
         df = safe_yf_download(asset, period=period, interval=interval)
@@ -906,7 +920,7 @@ def _df_to_candles(df: pd.DataFrame) -> List[Dict[str, Any]]:
 @app.get("/api/candles")
 def get_candles(
     asset: str = Query(..., min_length=1, max_length=20),
-    interval: str = Query("1h", pattern="^(1m|5m|15m|1h|1d)$"),
+    interval: str = Query("1h", pattern="^(1m|5m|15m|1h|1d|1wk|1mo)$"),
     limit: int = Query(200, ge=10, le=1000),
     _: None = Depends(auth.require_auth),
 ) -> Dict[str, Any]:
@@ -917,6 +931,11 @@ def get_candles(
     page can show BTC/ETH/SOL/SPY/QQQ/GLD/USO even when no position
     is open. Same wire format (`{ts, open, high, low, close, volume}`)
     so the chart component is identical.
+
+    Sprint 59: extended the interval whitelist to include `1wk` and
+    `1mo` so the dashboard's time-range selector can offer 1Y and
+    ALL buttons without server errors. See `_candles_impl` for the
+    per-interval `period=` mapping.
 
     `limit` is capped at 1000 to keep responses reasonable. yfinance's
     1m interval is rate-limited to 7 days of history; longer
@@ -932,12 +951,21 @@ def get_candles(
     return _candles_impl(asset, interval, limit)
 
 # Mapping used by the history endpoint to bucket each asset into
-# crypto / equity. Mirrors src/data/asset_class.py's get_asset_class
-# but is duplicated here so the API surface doesn't depend on the
-# data-layer module (which the dashboard doesn't need to know about).
+# crypto / equity / forex. Mirrors src/data/asset_class.py's
+# get_asset_class for the tradeable assets, but is duplicated here
+# (and extended with the dashboard-only forex tickers) so the API
+# surface doesn't depend on the data-layer module.
+#
+# Sprint 59: added forex tickers (yfinance uses `=X` suffix for FX
+# pairs) so /api/candles works for EURUSD=X, GBPUSD=X, etc. These
+# are read-only on the dashboard -- the bot does NOT trade forex,
+# this is purely a visualization feature.
 _ASSET_CLASS_MAP = {
     "BTC-USD": "crypto", "ETH-USD": "crypto", "SOL-USD": "crypto",
     "SPY": "equity", "QQQ": "equity", "GLD": "equity", "USO": "equity",
+    "AAPL": "equity", "NVDA": "equity", "TSLA": "equity",
+    "EURUSD=X": "forex", "GBPUSD=X": "forex", "USDJPY=X": "forex",
+    "USDCAD=X": "forex", "AUDUSD=X": "forex",
 }
 
 # MUST be declared before /api/positions/{position_id} -- see

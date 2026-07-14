@@ -1,109 +1,157 @@
 "use client";
 
 /**
- * /charts — Sprint 58: live candlestick line charts for every
- * trading asset in the bot's universe. One card per asset, all
- * rendered side-by-side. Auto-refreshes every 15s via swr.
+ * /charts -- Sprint 58 + Sprint 59
  *
- * Backed by the new /api/candles endpoint (Sprint 58) — no
- * position_id is required, so this works for assets that don't
- * have an open position. We use the `api` helper from lib/api.ts
- * (not a raw `fetch()`) so the URL is prefixed with
- * NEXT_PUBLIC_API_URL and points at the bot host, not the
- * dashboard host. A relative fetch would 404 against the
- * dashboard's own port-3000 origin.
+ * Live candlestick line charts for every asset in the dashboard's
+ * universe. Sprint 58: 7 tradeable assets in a single grid.
+ * Sprint 59: expanded to 15 assets across 3 categories
+ * (crypto / forex / equity), with:
+ *   - Per-asset time-range selector (1D/5D/1M/3M/1Y/ALL)
+ *   - Click any card to open a fullscreen ChartModal with the
+ *     chart at 520px height (vs 180px in the card)
+ *   - "Read-only" badge on forex + non-traded stocks so Carlos
+ *     knows those don't drive bot decisions
+ *
+ * Each card owns its own PriceChart instance, which in turn owns
+ * its own swr cache entry. This means a range change in one
+ * card doesn't re-fetch the others, and the modal opening
+ * doesn't disturb the card view.
  */
-import useSWR from "swr";
-import { api } from "@/lib/api";
-import type { CandlesResponse } from "@/lib/types";
+
+import { useState } from "react";
 import { PriceChart } from "@/components/PriceChart";
+import { ChartModal } from "@/components/ChartModal";
+import {
+  ASSET_UNIVERSE,
+  CATEGORY_LABELS,
+  CATEGORY_ORDER,
+  groupAssetsByCategory,
+  type AssetEntry,
+} from "@/lib/assetUniverse";
+import type { TimeRange } from "@/lib/types";
 
-const REFRESH_MS = 15_000; // 15s feels live without hammering yfinance
-
-const ASSETS = [
-  // Crypto (24/7) — first three in the bot's operational universe
-  { ticker: "BTC-USD", label: "Bitcoin",  kind: "crypto" as const },
-  { ticker: "ETH-USD", label: "Ethereum", kind: "crypto" as const },
-  { ticker: "SOL-USD", label: "Solana",   kind: "crypto" as const },
-  // Equities (US market hours) — only show if data is fresh;
-  // otherwise the PriceChart still renders the last close
-  { ticker: "SPY",     label: "S&P 500 ETF",      kind: "equity" as const },
-  { ticker: "QQQ",     label: "Nasdaq-100 ETF",   kind: "equity" as const },
-  { ticker: "GLD",     label: "Gold ETF",         kind: "equity" as const },
-  { ticker: "USO",     label: "Oil ETF",          kind: "equity" as const },
-];
+const BOT_TRADED_TICKERS = new Set<string>([
+  "BTC-USD", "ETH-USD", "SOL-USD",
+  "SPY", "QQQ", "GLD", "USO",
+]);
 
 export default function ChartsPage() {
+  const grouped = groupAssetsByCategory(ASSET_UNIVERSE);
+  const [openAsset, setOpenAsset] = useState<AssetEntry | null>(null);
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <div className="flex items-baseline justify-between">
         <div>
           <h1 className="text-xl font-semibold text-cream-50">Live Charts</h1>
           <p className="text-xs text-muted">
-            1h candles · auto-refresh every 15s · last 100 bars per asset
+            15 assets across crypto / forex / stocks+ETFs. Click any card to
+            expand. Use the time-range selector to zoom in (intraday) or out
+            (multi-year).
           </p>
         </div>
         <div className="text-[10px] uppercase tracking-wider text-muted">
-          Sprint 58
+          Sprint 59
         </div>
       </div>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        {ASSETS.map((a) => (
-          <AssetChart key={a.ticker} ticker={a.ticker} label={a.label} kind={a.kind} />
-        ))}
-      </div>
-    </div>
-  );
-}
 
-function AssetChart({ ticker, label, kind }: { ticker: string; label: string; kind: "crypto" | "equity" }) {
-  const { data, error, isLoading } = useSWR<CandlesResponse>(
-    // Tuple key: swr dedupes per (ticker, interval, limit). The
-    // fetcher ignores the first element (the literal "candles"
-    // tag) and calls api.candles with the rest. This routes
-    // through lib/api.ts → NEXT_PUBLIC_API_URL → bot host.
-    ["candles", ticker, "1h", 100],
-    ([, ticker, interval, limit]) => api.candles(ticker as string, interval as string, limit as number),
-    { refreshInterval: REFRESH_MS, revalidateOnFocus: false },
-  );
-  return (
-    <div className="flex flex-col">
-      {/* Small kind tag at the top of each card — visually
-          distinguishes crypto (24/7) from equity (US market hours)
-          and ensures `kind` is used (ESLint no-unused-vars). */}
-      <div className="mb-1 px-1 text-[10px] uppercase tracking-wider text-muted">
-        {kind}
-      </div>
-      {isLoading && !data ? (
-        <ChartSkeleton label={label} />
-      ) : error ? (
-        <ChartError label={label} message={(error as Error).message} />
-      ) : (
-        <PriceChart asset={label} candles={data?.candles ?? []} />
+      {CATEGORY_ORDER.map((cat) => {
+        const assets = grouped[cat];
+        if (assets.length === 0) return null;
+        return (
+          <section key={cat} className="space-y-3">
+            <div className="flex items-baseline gap-3">
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-cream-50">
+                {CATEGORY_LABELS[cat]}
+              </h2>
+              <span className="text-[10px] text-muted">
+                {assets.length} {assets.length === 1 ? "asset" : "assets"}
+                {cat === "forex" && (
+                  <span className="ml-2 rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-blue-300">
+                    Read-only · bot does not trade forex
+                  </span>
+                )}
+              </span>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {assets.map((a) => (
+                <AssetCard
+                  key={a.ticker}
+                  asset={a}
+                  onClick={() => setOpenAsset(a)}
+                />
+              ))}
+            </div>
+          </section>
+        );
+      })}
+
+      {openAsset && (
+        <ChartModal
+          ticker={openAsset.ticker}
+          label={openAsset.label}
+          category={openAsset.category}
+          onClose={() => setOpenAsset(null)}
+        />
       )}
     </div>
   );
 }
 
-function ChartSkeleton({ label }: { label: string }) {
+/**
+ * AssetCard -- a single clickable chart card.
+ *
+ * Owns its own `range` state so each card can be zoomed
+ * independently. The whole card is the click target for opening
+ * the modal; the chart's time-range buttons stay clickable
+ * because PriceChart's stopPropagation on its own buttons is
+ * handled by the swr click handler (no propagation issue with
+ * React button events here).
+ */
+function AssetCard({
+  asset,
+  onClick,
+}: {
+  asset: AssetEntry;
+  onClick: () => void;
+}) {
+  // Each card keeps its own range state so a 1D click on one card
+  // doesn't reset everyone else. The default "1M" is the most
+  // common zoom level; users can re-pick per card.
+  const [range, setRange] = useState<TimeRange>("1M");
+  const traded = BOT_TRADED_TICKERS.has(asset.ticker);
   return (
-    <div className="flex h-full flex-col rounded-lg border border-ink-700 bg-ink-900/50 p-3">
-      <div className="mb-2 flex items-baseline justify-between">
-        <div>
-          <div className="text-sm font-semibold text-cream-50">{label}</div>
-          <div className="text-[10px] uppercase tracking-wider text-muted">loading…</div>
-        </div>
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick();
+        }
+      }}
+      className="cursor-pointer rounded-lg ring-1 ring-transparent transition hover:ring-gold/40 focus:outline-none focus:ring-gold/60"
+      aria-label={`Expand ${asset.label} chart`}
+    >
+      <div className="relative">
+        <PriceChart
+          asset={asset.label}
+          ticker={asset.ticker}
+          range={range}
+          onRangeChange={setRange}
+          height={200}
+        />
+        {/* "Read-only" badge overlays the chart's top-right so
+            it's visible without consuming header space. Hidden
+            for tradeable assets to keep the UI quiet. */}
+        {!traded && (
+          <span className="pointer-events-none absolute right-3 top-3 rounded bg-blue-500/20 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-blue-200">
+            view-only
+          </span>
+        )}
       </div>
-      <div className="h-[180px] animate-pulse rounded bg-ink-800/60" />
-    </div>
-  );
-}
-
-function ChartError({ label, message }: { label: string; message: string }) {
-  return (
-    <div className="flex h-full flex-col rounded-lg border border-loss/40 bg-loss/5 p-3">
-      <div className="text-sm font-semibold text-cream-50">{label}</div>
-      <div className="mt-1 text-[10px] text-loss">{message}</div>
     </div>
   );
 }

@@ -17,9 +17,11 @@ import type {
   RiskConfigUpdate,
   StateSnapshot,
   StressResult,
+  TimeRange,
   TradingConfigResponse,
   TradingConfigUpdate,
   TradingPauseState,
+  YfInterval,
 } from "./types";
 
 const API_BASE =
@@ -141,10 +143,27 @@ export const api = {
   // in the bot's universe (no position_id required), so the
   // /charts page can render live charts for assets that don't
   // have an open position yet.
-  candles: (asset: string, interval = "1h", limit = 100) =>
+  //
+  // Sprint 59: extended to accept all yfinance intervals
+  // (1m|5m|15m|1h|1d|1wk|1mo). The dashboard's time-range selector
+  // uses `candlesRange()` (below) which picks the right interval
+  // + limit for the chosen zoom level; this low-level `candles()`
+  // is kept for callers that want fine-grained control.
+  candles: (asset: string, interval: YfInterval = "1h", limit = 100) =>
     request<CandlesResponse>(
       `/api/candles?asset=${encodeURIComponent(asset)}&interval=${interval}&limit=${limit}`,
     ),
+
+  // Sprint 59: convenience for the dashboard's time-range selector.
+  // Internally maps a user-facing range (1D/5D/1M/3M/1Y/ALL) to
+  // the appropriate (interval, limit) pair. The mapping lives in
+  // `rangeToParams` below so it's testable in isolation.
+  candlesRange: (asset: string, range: TimeRange) => {
+    const { interval, limit } = rangeToParams(range);
+    return request<CandlesResponse>(
+      `/api/candles?asset=${encodeURIComponent(asset)}&interval=${interval}&limit=${limit}`,
+    );
+  },
 
   // Sprint 58: closed-position history with filters. All filter
   // fields are optional -- omit them to get "no filter on this
@@ -269,3 +288,42 @@ export const api = {
 };
 
 export { ApiError };
+
+// ----------------------------------------------------------------------
+// Sprint 59: time-range → (interval, limit) mapping for the dashboard
+// chart zoom buttons. Each range picks a yfinance interval that's
+// granular enough to be useful at that zoom level without blowing up
+// the response size or hitting yfinance's per-interval retention caps:
+//
+//   1D   -> 5m  interval, 100 bars (~8h of trading time)
+//   5D   -> 15m interval, 200 bars (~2 trading days -- yfinance 15m
+//                    caps at 60d so 5D is well within range)
+//   1M   -> 1d  interval, 35 bars  (1 month, daily close)
+//   3M   -> 1d  interval, 95 bars  (3 months, daily close)
+//   1Y   -> 1d  interval, 370 bars (1 year, daily close)
+//   ALL  -> 1wk interval, 520 bars (10 years of weekly closes)
+//
+// Reasoning per range:
+//   - 1D/5D want intra-day detail (5m/15m) so you can see today's
+//     volatility, but a 5D view shouldn't drown in noise so we bump
+//     to 15m.
+//   - 1M/3M/1Y use daily bars because that's the natural "zoom out"
+//     level for "show me a month/quarter/year of price action".
+//   - ALL uses weekly bars so 10+ years of history fits in a single
+//     view (520 weekly bars = 10 years). Daily would mean 2000+
+//     bars which is overkill for a chart card.
+//
+// The exact limit is generous (rounded up) so the chart line is
+// always at the right edge of the selected range even with gaps
+// (weekends, holidays, weekends for crypto = no gaps, etc.).
+// ----------------------------------------------------------------------
+export function rangeToParams(range: TimeRange): { interval: YfInterval; limit: number } {
+  switch (range) {
+    case "1D":  return { interval: "5m",  limit: 100 };
+    case "5D":  return { interval: "15m", limit: 200 };
+    case "1M":  return { interval: "1d",  limit: 35  };
+    case "3M":  return { interval: "1d",  limit: 95  };
+    case "1Y":  return { interval: "1d",  limit: 370 };
+    case "ALL": return { interval: "1wk", limit: 520 };
+  }
+}
