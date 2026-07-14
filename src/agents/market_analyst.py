@@ -69,6 +69,16 @@ def _min_period_days(interval: str) -> str:
     }.get(interval, "60d")
 
 
+# Sprint 56: see the comment block in `_validate_or_fault` for the
+# full rationale. Short version: yfinance's crypto tickers are
+# ~24h behind from a VPS IP, and the multiplier-based staleness
+# threshold (1.5h for 15m, 6h for 1h) over-triggers on that lag.
+# 48h covers the worst yfinance lag we've seen in production
+# (confirmed 22.4h on 2026-07-13) with headroom for the next
+# weekend / holiday. Above 48h the feed is genuinely stuck.
+_CRYPTO_STALENESS_FLOOR_S = 48 * 3600
+
+
 def _wilder_rsi(close: pd.Series, period: int = 14) -> pd.Series:
     """RSI estándar con suavizado de Wilder (EMA con alpha=1/period).
 
@@ -495,6 +505,25 @@ class MarketAnalystAgent(Component):
             try:
                 if get_asset_class(asset) != AssetClass.CRYPTO and not _is_us_equity_market_open():
                     max_staleness = None
+            except Exception:
+                pass
+        # Sprint 56: yfinance has a known ~24h lag for crypto tickers
+        # (BTC-USD, ETH-USD, SOL-USD) when accessed from a VPS IP. The
+        # 6x multiplier-based threshold (1.5h for 15m, 6h for 1h, 24h
+        # for 4h) trips on every cycle. The 4h bucket just barely passes
+        # (22h < 24h); the 15m and 1h buckets fail. The result is 9 of
+        # 9 feeds `data integrity fail` per cycle, the agent goes
+        # DEGRADED then FAULTED, the workflow continues with empty
+        # market_data, and 0 hypotheses are generated.
+        # Fix: a 48h FLOOR for crypto, so data up to 2 days old still
+        # passes. Above 48h we still treat it as stale (a truly
+        # delisted/paused symbol sits at the same timestamp for
+        # days). The equity path is unchanged (still uses the
+        # market-hours gate above for SPY/QQQ/GLD/USO).
+        if asset is not None and max_staleness is not None:
+            try:
+                if get_asset_class(asset) == AssetClass.CRYPTO:
+                    max_staleness = max(max_staleness, _CRYPTO_STALENESS_FLOOR_S)
             except Exception:
                 pass
         try:
