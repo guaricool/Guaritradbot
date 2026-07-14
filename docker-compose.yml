@@ -99,11 +99,14 @@ services:
       # (Traefik returns 403 Forbidden on the Upgrade request). The
       # fix: a SECOND router that matches ONLY /ws/ paths and does
       # NOT apply gzip, so the WebSocket upgrade passes through
-      # untouched. Traefik matches the most specific PathPrefix first,
-      # so /ws/live goes to this router; everything else stays on
-      # the gzip-enabled one. Reported 2026-07-13 from the dashboard
-      # console after Sprint 55 redeploy.
+      # untouched. `priority=200` forces Traefik to pick this router
+      # over the gzip-enabled one for /ws/ requests (the main
+      # router's `PathPrefix(/)` ALSO matches /ws/ paths, so without
+      # the explicit priority the order depends on Coolify's label
+      # processing order, which is not deterministic). Reported
+      # 2026-07-13 from the dashboard console after Sprint 55 redeploy.
       - traefik.http.routers.https-0-guaritradbot-ws.entryPoints=https
+      - traefik.http.routers.https-0-guaritradbot-ws.priority=200
       - 'traefik.http.routers.https-0-guaritradbot-ws.rule=Host(`guaritradbot.13.140.181.29.sslip.io`) && PathPrefix(`/ws/`)'
       - traefik.http.routers.https-0-guaritradbot-ws.service=https-0-guaritradbot
       - traefik.http.routers.https-0-guaritradbot-ws.tls.certresolver=letsencrypt
