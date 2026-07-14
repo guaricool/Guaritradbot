@@ -16,12 +16,26 @@ export interface UseLiveOptions {
 }
 
 /**
- * useLive — connects to /ws/live with the current bearer token and surfaces
- * the connection status + the most recent positions snapshot.
+ * useLive — connects to the bot's live update stream.
  *
- * Reconnects automatically with exponential-ish backoff (capped at 15s).
- * Stops trying after 8 consecutive failures so a permanently down bot
- * doesn't hammer the API.
+ * Sprint 57: switched from WebSocket (`/ws/live`) to Server-Sent
+ * Events (`/api/events`). The Traefik reverse proxy fronting
+ * the bot on this VPS rejects every HTTP/1.1 upgrade request
+ * with 403 Forbidden, which killed the WebSocket path
+ * regardless of router config or middleware (Sprint 55.4
+ * documented the issue; Sprint 55.4 was a polling
+ * workaround). SSE is plain HTTP/1.1 chunked transfer — no
+ * upgrade, no special headers — and works with any proxy.
+ *
+ * The wire format on `/api/events` is identical to the
+ * WebSocket's: each event is a JSON object with `type: "hello"`,
+ * `"audit"`, `"positions"`, or `"heartbeat"`. The shape of
+ * `WsMessage` is unchanged so downstream code doesn't need
+ * to know whether the messages came over WS or SSE.
+ *
+ * EventSource auto-reconnects on disconnect with a default
+ * backoff (3s). We don't need a manual reconnect loop like
+ * the old WebSocket path.
  */
 export function useLive(opts: UseLiveOptions = {}) {
   const {
@@ -31,20 +45,16 @@ export function useLive(opts: UseLiveOptions = {}) {
   } = opts;
   const [status, setStatus] = useState<WsStatus>("connecting");
   const [lastMessage, setLastMessage] = useState<WsMessage | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
-  const retriesRef = useRef(0);
+  const esRef = useRef<EventSource | null>(null);
   const onMessageRef = useRef(onMessage);
   const stopRef = useRef(false);
 
-  // Keep the latest onMessage in a ref so the connection effect doesn't
-  // tear down + reconnect on every parent re-render.
   useEffect(() => {
     onMessageRef.current = onMessage;
   }, [onMessage]);
 
   useEffect(() => {
     stopRef.current = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
 
     function connect() {
       if (stopRef.current) return;
@@ -53,27 +63,33 @@ export function useLive(opts: UseLiveOptions = {}) {
         setStatus("closed");
         return;
       }
-      // Build ws URL from api.baseUrl
-      const base = api.baseUrl.replace(/^http/, "ws").replace(/\/+$/, "");
-      const url = `${base}/ws/live?token=${encodeURIComponent(token)}`;
+      // SSE URL — same origin as the REST API. We use the
+      // dedicated `/api/events` endpoint (added in Sprint 57)
+      // instead of the broken `/ws/live` WebSocket. The token
+      // is passed as a query param because EventSource does
+      // not support custom request headers.
+      const base = api.baseUrl.replace(/\/+$/, "");
+      const url = `${base}/api/events?token=${encodeURIComponent(token)}`;
 
       setStatus("connecting");
-      let ws: WebSocket;
+      let es: EventSource;
       try {
-        ws = new WebSocket(url);
+        es = new EventSource(url);
       } catch {
         setStatus("error");
-        scheduleReconnect();
         return;
       }
-      wsRef.current = ws;
+      esRef.current = es;
 
-      ws.onopen = () => {
-        retriesRef.current = 0;
+      es.onopen = () => {
         setStatus("open");
       };
 
-      ws.onmessage = (ev) => {
+      // SSE: each `data: <json>` line fires `onmessage`. There's
+      // no separate event-type channel in our implementation
+      // (the bot emits a single stream with `type` inside the
+      // JSON), so the default `onmessage` handler is enough.
+      es.onmessage = (ev) => {
         try {
           const msg = JSON.parse(ev.data) as WsMessage;
           setLastMessage(msg);
@@ -83,50 +99,35 @@ export function useLive(opts: UseLiveOptions = {}) {
         }
       };
 
-      ws.onerror = () => {
-        setStatus("error");
-      };
-
-      ws.onclose = (ev) => {
-        setStatus("closed");
-        wsRef.current = null;
-        // 4401 = our auth-failure close code from server.py
-        if (ev.code === 4401) {
-          stopRef.current = true;
-          return;
+      es.onerror = () => {
+        // EventSource auto-reconnects on its own; we just
+        // surface the state change. If the server returned
+        // a 401 (bad token) the EventSource enters a
+        // CLOSED state and won't auto-reconnect — which is
+        // the behavior we want for auth failures.
+        if (es.readyState === EventSource.CLOSED) {
+          setStatus("closed");
+          if (!autoReconnect) {
+            stopRef.current = true;
+          }
+        } else {
+          setStatus("error");
         }
-        if (autoReconnect) scheduleReconnect();
       };
-    }
-
-    function scheduleReconnect() {
-      if (stopRef.current) return;
-      if (retriesRef.current >= 8) {
-        setStatus("error");
-        return;
-      }
-      retriesRef.current += 1;
-      const delay = Math.min(reconnectDelayMs * retriesRef.current, 15_000);
-      timer = setTimeout(connect, delay);
     }
 
     connect();
 
     return () => {
       stopRef.current = true;
-      if (timer) clearTimeout(timer);
-      wsRef.current?.close();
+      esRef.current?.close();
     };
   }, [autoReconnect, reconnectDelayMs]);
 
-  function send(data: string) {
-    wsRef.current?.send(data);
-  }
-
   function disconnect() {
     stopRef.current = true;
-    wsRef.current?.close();
+    esRef.current?.close();
   }
 
-  return { status, lastMessage, send, disconnect };
+  return { status, lastMessage, send: undefined, disconnect };
 }

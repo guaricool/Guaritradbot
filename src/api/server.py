@@ -89,7 +89,7 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.api import auth
@@ -193,6 +193,10 @@ async def _lifespan(app: FastAPI):
     APP_STATE["config"] = _load_config()
     APP_STATE["started_at"] = time.time()
     APP_STATE["ws_clients"]: Set[WebSocket] = set()
+    # Sprint 57: parallel set of SSE client queues, fed by the
+    # same `_broadcast` function. asyncio.Queue per client so a
+    # slow consumer doesn't wedge the broadcaster.
+    APP_STATE["sse_clients"]: Set[asyncio.Queue] = set()
     APP_STATE["last_audit_ts"] = 0.0
     APP_STATE["last_audit_poll"] = 0.0
     APP_STATE["audit_poll_interval_s"] = float(os.getenv("DASHBOARD_WS_POLL_INTERVAL_S", "1.0"))
@@ -327,21 +331,53 @@ class UpdateRiskConfigRequest(BaseModel):
 # ----------------------------------------------------------------------
 
 async def _broadcast(event: Dict[str, Any]) -> None:
-    """Send `event` to all connected WebSocket clients.
+    """Send `event` to all connected WebSocket clients AND all
+    connected SSE clients. The two transports are kept in parallel
+    (not migrated) so existing WebSocket clients keep working while
+    new clients can opt into SSE via /api/events.
 
-    Drops slow clients silently (their buffer fills, send() raises,
-    we remove them). This is intentional — better to lose a stale
-    client than to block the broadcaster on one slow reader.
+    Sprint 57: added the SSE fan-out because Traefik (Coolify's
+    reverse proxy on this VPS) refuses HTTP/1.1 upgrade requests
+    with 403 Forbidden -- the WebSocket path is broken at the proxy
+    layer and is not fixable from the bot side. SSE is plain
+    HTTP/1.1 chunked transfer, no upgrade, works with any proxy.
+    The dashboard's use-live.ts now uses EventSource against
+    /api/events; the WebSocket handler at /ws/live stays in
+    place for back-compat (and to keep the option open for a
+    non-Traefik deployment in the future).
+
+    Slow clients (both transports) are dropped silently. Better
+    to lose a stale client than to block the broadcaster on one
+    slow reader.
     """
-    dead: List[WebSocket] = []
+    dead_ws: List[WebSocket] = []
     payload = json.dumps(event, default=str)
     for ws in list(APP_STATE.get("ws_clients", set())):
         try:
             await ws.send_text(payload)
         except Exception:
-            dead.append(ws)
-    for ws in dead:
+            dead_ws.append(ws)
+    for ws in dead_ws:
         APP_STATE["ws_clients"].discard(ws)
+
+    # SSE fan-out. Each SSE client has its own asyncio.Queue; the
+    # broadcaster puts the same payload string on every queue. The
+    # SSE handler loop reads from its queue and writes
+    # `data: <payload>\n\n` to the response. A full queue would
+    # block the broadcaster; the per-client queue size is small
+    # (16) so a slow consumer gets disconnected and reconnected
+    # rather than wedging the broadcast loop.
+    dead_sse: List[asyncio.Queue] = []
+    for q in list(APP_STATE.get("sse_clients", set())):
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            dead_sse.append(q)
+    for q in dead_sse:
+        try:
+            APP_STATE["sse_clients"].discard(q)
+        except Exception:
+            pass
 
 
 async def _audit_tail_loop() -> None:
@@ -1250,3 +1286,99 @@ async def ws_live(
         pass
     finally:
         APP_STATE["ws_clients"].discard(websocket)
+
+
+# ----------------------------------------------------------------------
+# Sprint 57: Server-Sent Events live stream
+# ----------------------------------------------------------------------
+#
+# Traefik (the reverse proxy fronting this bot in Coolify on this
+# VPS) rejects every HTTP/1.1 upgrade request with 403 Forbidden,
+# which kills the WebSocket above. SSE is plain HTTP/1.1 chunked
+# transfer -- no upgrade, no special headers, works with any
+# proxy. The dashboard's use-live.ts now uses the browser's
+# EventSource against /api/events; the WebSocket at /ws/live stays
+# for back-compat (and for non-Traefik deployments).
+#
+# Wire format: standard SSE -- each event is a block of
+#   `data: <json>\n\n`
+# emitted whenever `_broadcast` publishes (audit events,
+# position snapshots, hello on connect, heartbeats every 30s
+# for proxies that close idle connections). The browser's
+# EventSource re-connects automatically on disconnect; the
+# `Last-Event-ID` header on reconnect lets us resume (not yet
+# implemented -- the audit-tail loop is the source of truth).
+
+
+@app.get("/api/events")
+async def sse_events(
+    token: Optional[str] = Query(default=None),
+):
+    """SSE live update stream. Auth via `?token=<bearer>` query param,
+    same as the WebSocket handler.
+
+    The response is a `text/event-stream` (the SSE MIME type) that
+    stays open as long as the client is connected. Events come from
+    the same `_broadcast` fan-out that feeds the WebSocket clients
+    -- SSE and WebSocket clients see the same messages, in order.
+    """
+    import json as _json  # noqa: F401 -- already imported at module top
+    from starlette.responses import StreamingResponse as _SR  # noqa: F401
+
+    ok, reason = auth.verify_token(token or "")
+    if not ok:
+        raise HTTPException(status_code=401, detail=reason)
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=16)
+    APP_STATE.setdefault("sse_clients", set()).add(queue)
+    # Send a `hello` event immediately on connect so the dashboard
+    # knows it's live. (Same shape as the WebSocket `hello` event.)
+    try:
+        queue.put_nowait(_json.dumps({
+            "type": "hello",
+            "started_at": APP_STATE.get("started_at"),
+            "ts": time.time(),
+        }, default=str))
+    except asyncio.QueueFull:
+        pass  # extremely unlikely with maxsize=16; if it happens
+              # the very first event will be a heartbeat instead
+
+    async def event_stream():
+        # 30s keep-alive: SSE doesn't have a standard keep-alive
+        # but the spec allows `:` comment lines which most proxies
+        # (including Traefik) treat as heartbeats. Without this,
+        # an idle proxy would close the connection after ~60s.
+        last_heartbeat = time.time()
+        try:
+            while True:
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield f"data: {payload}\n\n"
+                except asyncio.TimeoutError:
+                    # Send a heartbeat so the proxy keeps the
+                    # connection alive. EventSource ignores comment
+                    # lines, so this is invisible to the client.
+                    yield ": keepalive\n\n"
+                    last_heartbeat = time.time()
+        except asyncio.CancelledError:
+            # Client disconnected (browser closed the EventSource).
+            pass
+        finally:
+            try:
+                APP_STATE["sse_clients"].discard(queue)
+            except Exception:
+                pass
+
+    return _SR(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            # SSE-friendly headers. `X-Accel-Buffering: no` tells
+            # nginx-style proxies to flush immediately rather than
+            # buffer the response. Traefik doesn't strictly need
+            # this, but it's a no-cost belt-and-suspenders.
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
