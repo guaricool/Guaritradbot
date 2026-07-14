@@ -206,6 +206,42 @@ export interface CandlesResponse {
   take_profit: number | null;
 }
 
+// Sprint 58: closed-position history (asset-scoped candles don't
+// need entry/SL/TP — the bot's positions store those separately).
+// Mirrors the row shape in `src.api.server._history_impl`.
+export interface HistoryRow {
+  id: string;
+  asset: string;
+  asset_class: "crypto" | "equity" | "other";
+  direction: "long" | "short";
+  entry_price: number;
+  entry_ts: number;
+  closed_price: number;
+  closed_ts: number;
+  close_reason: string;
+  qty: number;
+  notional_usd: number;
+  realized_pnl_usd: number;
+  fees_paid_usd: number;
+  duration_hours: number | null;
+  strategy: string;
+}
+
+export interface HistorySummary {
+  total_trades: number;
+  win_count: number;
+  loss_count: number;
+  breakeven_count: number;
+  win_rate_pct: number;
+  total_pnl_usd: number;
+  total_fees_usd: number;
+}
+
+export interface HistoryResponse {
+  positions: HistoryRow[];
+  summary: HistorySummary;
+}
+
 export interface Health {
   ok: boolean;
   ts: number;

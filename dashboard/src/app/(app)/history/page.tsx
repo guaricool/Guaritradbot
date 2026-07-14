@@ -12,41 +12,16 @@
  * The summary block at the top shows total trades, win/loss
  * breakdown, win rate, total P&L (USD), and total fees paid.
  * The table below is sorted newest-first by closed_ts.
+ *
+ * Uses the `api.history()` helper from lib/api.ts so the URL is
+ * prefixed with NEXT_PUBLIC_API_URL and points at the bot host.
+ * A raw `fetch()` with a relative URL would 404 against the
+ * dashboard's own port-3000 origin.
  */
 import { useMemo, useState } from "react";
 import useSWR from "swr";
-import { getToken } from "@/lib/api";
-
-interface HistoryRow {
-  id: string;
-  asset: string;
-  asset_class: "crypto" | "equity" | "other";
-  direction: "long" | "short";
-  entry_price: number;
-  entry_ts: number;
-  closed_price: number;
-  closed_ts: number;
-  close_reason: string;
-  qty: number;
-  notional_usd: number;
-  realized_pnl_usd: number;
-  fees_paid_usd: number;
-  duration_hours: number | null;
-  strategy: string;
-}
-
-interface HistoryResponse {
-  positions: HistoryRow[];
-  summary: {
-    total_trades: number;
-    win_count: number;
-    loss_count: number;
-    breakeven_count: number;
-    win_rate_pct: number;
-    total_pnl_usd: number;
-    total_fees_usd: number;
-  };
-}
+import { api } from "@/lib/api";
+import type { HistoryResponse } from "@/lib/types";
 
 type AssetClassFilter = "" | "crypto" | "equity";
 type DirectionFilter = "" | "long" | "short";
@@ -59,14 +34,6 @@ function epochDaysAgoUtc(d: number): string {
   return new Date(t * 1000).toISOString().slice(0, 10);
 }
 
-async function historyFetcher(url: string): Promise<HistoryResponse> {
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${getToken()}` },
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
 export default function HistoryPage() {
   // Filters
   const [fromDate, setFromDate] = useState<string>(epochDaysAgoUtc(30));
@@ -74,23 +41,35 @@ export default function HistoryPage() {
   const [assetClass, setAssetClass] = useState<AssetClassFilter>("");
   const [direction, setDirection] = useState<DirectionFilter>("");
 
-  const url = useMemo(() => {
-    const q = new URLSearchParams();
-    if (fromDate) q.set("from", String(Math.floor(new Date(fromDate).getTime() / 1000)));
+  // Build the api.history() params. Memoized so we don't churn
+  // a new object on every render (which would invalidate swr's
+  // cache key even when the values are equal).
+  const historyParams = useMemo(() => {
+    const p: {
+      from?: number;
+      to?: number;
+      assetClass?: "crypto" | "equity";
+      direction?: "long" | "short";
+    } = {};
+    if (fromDate) p.from = Math.floor(new Date(fromDate).getTime() / 1000);
     if (toDate) {
-      // End of the chosen day (23:59:59 local time, expressed in UTC).
-      const end = Math.floor(new Date(`${toDate}T23:59:59`).getTime() / 1000);
-      q.set("to", String(end));
+      // End of the chosen day (23:59:59 local time → UTC epoch).
+      p.to = Math.floor(new Date(`${toDate}T23:59:59`).getTime() / 1000);
     }
-    if (assetClass) q.set("asset_class", assetClass);
-    if (direction) q.set("direction", direction);
-    return `/api/positions/history?${q.toString()}`;
+    if (assetClass) p.assetClass = assetClass;
+    if (direction) p.direction = direction;
+    return p;
   }, [fromDate, toDate, assetClass, direction]);
 
-  const { data, error, isLoading } = useSWR<HistoryResponse>(url, historyFetcher, {
-    refreshInterval: 30_000,
-    revalidateOnFocus: false,
-  });
+  // Tuple key — swr dedupes per filter combination. The fetcher
+  // ignores the first element and calls api.history with the
+  // params. api.history() in lib/api.ts routes through
+  // NEXT_PUBLIC_API_URL → bot host.
+  const { data, error, isLoading } = useSWR<HistoryResponse>(
+    ["history", fromDate, toDate, assetClass, direction],
+    () => api.history(historyParams),
+    { refreshInterval: 30_000, revalidateOnFocus: false },
+  );
 
   const summary = data?.summary;
   const rows = data?.positions ?? [];

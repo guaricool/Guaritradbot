@@ -5,33 +5,20 @@
  * trading asset in the bot's universe. One card per asset, all
  * rendered side-by-side. Auto-refreshes every 15s via swr.
  *
- * Backed by the new /api/candles endpoint (Sprint 58) -- no
+ * Backed by the new /api/candles endpoint (Sprint 58) — no
  * position_id is required, so this works for assets that don't
- * have an open position. Same wire format as the position-scoped
- * /api/positions/{id}/candles so the PriceChart component is
- * shared between the two pages.
+ * have an open position. We use the `api` helper from lib/api.ts
+ * (not a raw `fetch()`) so the URL is prefixed with
+ * NEXT_PUBLIC_API_URL and points at the bot host, not the
+ * dashboard host. A relative fetch would 404 against the
+ * dashboard's own port-3000 origin.
  */
 import useSWR from "swr";
-import { getToken } from "@/lib/api";
-import { PriceChart, type Candle } from "@/components/PriceChart";
+import { api } from "@/lib/api";
+import type { CandlesResponse } from "@/lib/types";
+import { PriceChart } from "@/components/PriceChart";
 
-interface CandlesResponse {
-  asset: string;
-  interval: string;
-  candles: Candle[];
-}
-
-async function candlesFetcher(url: string): Promise<CandlesResponse> {
-  // Sprint 58: /api/candles is the asset-scoped candle endpoint
-  // (no position_id needed). We hit it directly with the swr
-  // cache key (which already encodes query params) and let the
-  // browser handle auth via the bearer token.
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${getToken()}` },
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
+const REFRESH_MS = 15_000; // 15s feels live without hammering yfinance
 
 const ASSETS = [
   // Crypto (24/7) — first three in the bot's operational universe
@@ -45,8 +32,6 @@ const ASSETS = [
   { ticker: "GLD",     label: "Gold ETF",         kind: "equity" as const },
   { ticker: "USO",     label: "Oil ETF",          kind: "equity" as const },
 ];
-
-const REFRESH_MS = 15_000; // 15s feels live without hammering yfinance
 
 export default function ChartsPage() {
   return (
@@ -73,8 +58,12 @@ export default function ChartsPage() {
 
 function AssetChart({ ticker, label, kind }: { ticker: string; label: string; kind: "crypto" | "equity" }) {
   const { data, error, isLoading } = useSWR<CandlesResponse>(
-    `/api/candles?asset=${encodeURIComponent(ticker)}&interval=1h&limit=100`,
-    candlesFetcher,
+    // Tuple key: swr dedupes per (ticker, interval, limit). The
+    // fetcher ignores the first element (the literal "candles"
+    // tag) and calls api.candles with the rest. This routes
+    // through lib/api.ts → NEXT_PUBLIC_API_URL → bot host.
+    ["candles", ticker, "1h", 100],
+    ([, ticker, interval, limit]) => api.candles(ticker as string, interval as string, limit as number),
     { refreshInterval: REFRESH_MS, revalidateOnFocus: false },
   );
   return (

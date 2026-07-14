@@ -10,6 +10,7 @@ import type {
   CVaRResult,
   EquityPoint,
   Health,
+  HistoryResponse,
   LoginResponse,
   ModeInfo,
   RiskConfigResponse,
@@ -135,6 +136,37 @@ export const api = {
     request<CandlesResponse>(
       `/api/positions/${id}/candles?interval=${interval}&window=${window}`,
     ),
+
+  // Sprint 58: asset-scoped candle endpoint. Works for any asset
+  // in the bot's universe (no position_id required), so the
+  // /charts page can render live charts for assets that don't
+  // have an open position yet.
+  candles: (asset: string, interval = "1h", limit = 100) =>
+    request<CandlesResponse>(
+      `/api/candles?asset=${encodeURIComponent(asset)}&interval=${interval}&limit=${limit}`,
+    ),
+
+  // Sprint 58: closed-position history with filters. All filter
+  // fields are optional -- omit them to get "no filter on this
+  // field". The bot sorts newest-first and applies the limit
+  // AFTER filtering.
+  history: (params: {
+    from?: number;
+    to?: number;
+    assetClass?: "crypto" | "equity";
+    direction?: "long" | "short";
+    asset?: string;
+    limit?: number;
+  } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.from != null) qs.set("from", String(params.from));
+    if (params.to != null) qs.set("to", String(params.to));
+    if (params.assetClass) qs.set("asset_class", params.assetClass);
+    if (params.direction) qs.set("direction", params.direction);
+    if (params.asset) qs.set("asset", params.asset);
+    if (params.limit != null) qs.set("limit", String(params.limit));
+    return request<HistoryResponse>(`/api/positions/history?${qs}`);
+  },
 
   // Audit
   audit: (limit = 100, eventType?: string) => {
