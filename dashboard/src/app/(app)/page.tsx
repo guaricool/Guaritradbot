@@ -132,25 +132,56 @@ export default function HomePage() {
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
         <KpiCard
-          label="Binance.US balance"
+          // Sprint 62: "Effective balance" — the number the bot actually
+          // uses for position sizing. In paper mode this is the virtual
+          // paper starting balance + realized P&L (so $1,000 minus any
+          // simulated losses), NOT the real broker balance. The real
+          // binance/alpaca balances are shown below as smaller "Reference"
+          // cards so the user can still see them.
+          label={data.mode.mode === "paper" ? "Paper balance (simulated)" : "Effective balance"}
+          value={
+            data.effective_balance_usd !== null && data.effective_balance_usd !== undefined
+              ? fmtUsd(data.effective_balance_usd, { decimals: 2 })
+              : "—"
+          }
+          tone={data.mode.mode === "paper" ? "gain" : "gold"}
+          hint={
+            data.mode.mode === "paper"
+              ? data.paper_starting_balance_usd
+                ? `virtual $${data.paper_starting_balance_usd.toFixed(0)} starting balance + P&L`
+                : "virtual paper account"
+              : "live from broker"
+          }
+          icon={<span>{data.mode.mode === "paper" ? "📝" : "₿"}</span>}
+        />
+        <KpiCard
+          label="Binance.US"
           value={
             data.binance_balance_usd !== null && data.binance_balance_usd !== undefined
               ? fmtUsd(data.binance_balance_usd, { decimals: 2 })
               : "—"
           }
           tone="gold"
-          hint={balanceHint(data.binance_balance_source)}
+          hint={
+            data.mode.mode === "paper"
+              ? `${balanceHint(data.binance_balance_source)} · reference only`
+              : balanceHint(data.binance_balance_source)
+          }
           icon={<span>₿</span>}
         />
         <KpiCard
-          label="Alpaca balance"
+          label="Alpaca"
           value={
             data.alpaca_balance_usd !== null && data.alpaca_balance_usd !== undefined
               ? fmtUsd(data.alpaca_balance_usd, { decimals: 2 })
               : "—"
           }
           tone="gold"
-          hint={balanceHint(data.alpaca_balance_source)}
+          hint={
+            data.mode.mode === "paper"
+              ? `${balanceHint(data.alpaca_balance_source)} · reference only`
+              : balanceHint(data.alpaca_balance_source)
+          }
           icon={<span>📈</span>}
         />
         <KpiCard
@@ -175,16 +206,6 @@ export default function HomePage() {
           value={fmtUsd(dailyPnl, { signed: true, decimals: 2 })}
           tone={dailyPnl > 0 ? "gain" : dailyPnl < 0 ? "loss" : "neutral"}
           hint={`Total ${fmtUsd(totalPnl, { signed: true, decimals: 2 })}`}
-        />
-        <KpiCard
-          label="Mode"
-          value={
-            <span className="text-base">
-              {data.mode.mode === "live" ? "LIVE" : "PAPER"}
-            </span>
-          }
-          tone={data.mode.mode === "live" ? "loss" : "neutral"}
-          hint={data.mode.use_testnet ? "testnet broker" : "real broker"}
         />
       </div>
 

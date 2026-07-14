@@ -113,6 +113,22 @@ class StateSnapshot(BaseModel):
     binance_balance_source: str = "unavailable"      # "live" | "unavailable" | "not_configured"
     alpaca_balance_usd: Optional[float] = None
     alpaca_balance_source: str = "unavailable"       # "live" | "unavailable" | "not_configured"
+    # Sprint 62: paper-mode simulation fields. In paper mode, the bot
+    # uses a virtual starting balance (config.paper.starting_balance_usd)
+    # and accumulates simulated P&L in the equity tracker. The dashboard
+    # shows this as the "Effective balance" instead of the real broker
+    # balance (which is irrelevant for sizing in paper mode).
+    #
+    # - `effective_balance_usd`: the number the bot actually uses for
+    #   position sizing. In live mode = real broker balance. In paper
+    #   mode = paper starting balance + realized P&L from the equity
+    #   tracker.
+    # - `effective_balance_source`: "broker_live" | "paper_simulated".
+    # - `paper_starting_balance_usd`: the configured paper starting
+    #   balance (only set in paper mode; null in live mode).
+    effective_balance_usd: Optional[float] = None
+    effective_balance_source: str = "broker_live"     # "broker_live" | "paper_simulated"
+    paper_starting_balance_usd: Optional[float] = None
     positions: List[PositionSummary] = Field(default_factory=list)
     open_count: int = 0
     total_unrealized_usd: float = 0.0
@@ -830,6 +846,31 @@ def build_state_snapshot(
             daily_pnl += p.realized_pnl
 
     mode = read_mode(config=config, audit_path=audit_path)
+    is_paper_mode = (mode.mode == "paper")
+
+    # Sprint 62: paper-mode effective balance. In paper mode, the bot
+    # uses `config.paper.starting_balance_usd` as the simulated
+    # starting balance and adds accumulated realized P&L. The
+    # dashboard's "Effective balance" card shows this number, so the
+    # user sees a meaningful paper account (e.g. $1,000 minus any
+    # simulated losses) instead of the real $22.08 broker balance.
+    paper_starting_usd: Optional[float] = None
+    effective_balance_usd: Optional[float] = None
+    effective_balance_source = "broker_live"
+    if is_paper_mode:
+        _paper_cfg = (config or {}).get("paper") or {}
+        try:
+            paper_starting_usd = float(_paper_cfg.get("starting_balance_usd", 1000.0))
+            if paper_starting_usd <= 0:
+                paper_starting_usd = 1000.0
+        except (TypeError, ValueError):
+            paper_starting_usd = 1000.0
+        # Effective paper balance = starting + realized P&L (not
+        # including unrealized — that already lives in its own KPI
+        # card on the dashboard). This is the same formula the
+        # EquityTracker uses internally.
+        effective_balance_usd = paper_starting_usd + total_pnl
+        effective_balance_source = "paper_simulated"
 
     # Sprint 46C: real per-broker balances. Best-effort â€” a broker
     # not being configured, or a transient network error, must never
@@ -849,6 +890,10 @@ def build_state_snapshot(
         binance_balance_source=binance_src,
         alpaca_balance_usd=alpaca_bal,
         alpaca_balance_source=alpaca_src,
+        # Sprint 62: paper-mode effective balance (see above).
+        effective_balance_usd=effective_balance_usd,
+        effective_balance_source=effective_balance_source,
+        paper_starting_balance_usd=paper_starting_usd,
         positions=summaries,
         open_count=len(summaries),
         total_unrealized_usd=total_unrealized,

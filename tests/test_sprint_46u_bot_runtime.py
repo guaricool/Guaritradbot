@@ -157,7 +157,16 @@ def _make_runtime(
     kill_switch.is_triggered.return_value = False
 
     runtime = BotRuntime(
-        config={"schedule": {"fast_monitor_interval_minutes": 2}},
+        # Sprint 62: explicit mandate.enabled=true so the post-cycle
+        # equity reconciliation runs (paper mode skips it — see
+        # bot_runtime.py's _is_paper_mode gate). Pre-62 the helper
+        # relied on the config having no `mandate:` key, which by
+        # default would now be read as paper mode and the
+        # reconciliation tests would all fail.
+        config={
+            "schedule": {"fast_monitor_interval_minutes": 2},
+            "mandate": {"enabled": True},
+        },
         once=False,
         broker_client=broker_client,
         alpaca_broker=alpaca_broker,

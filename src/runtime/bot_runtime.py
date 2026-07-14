@@ -593,36 +593,54 @@ class BotRuntime:
         # drifting by one cycle is harmless compared to a false
         # SYSTEM_ERROR every time yfinance or the broker has a
         # transient hiccup.
-        try:
-            if self.broker_client is not None:
-                _crypto_balance = self.broker_client.get_usdt_balance()
-                if _crypto_balance is not None and _crypto_balance >= 0:
-                    _crypto_open_notional = sum(
-                        p.notional_usd for p in self.position_repo.open()
-                        if self.asset_class_for(p.asset, self.brokers_config) == "crypto"
-                    )
-                    _recon = self.equity_tracker.reconcile_external_balance(
-                        broker_balance=_crypto_balance,
-                        current_open_position_notional=_crypto_open_notional,
-                    )
-                    if _recon["deposit_usd"] or _recon["withdrawal_usd"]:
-                        logger.info(
-                            f"[EquityTracker] reconcile: "
-                            f"deposit=${_recon['deposit_usd']:.4f} "
-                            f"withdrawal=${_recon['withdrawal_usd']:.4f} "
-                            f"new_starting_balance=${_recon['new_starting_balance']:.4f}"
+        #
+        # Sprint 62: skip reconciliation in PAPER mode. The equity
+        # tracker's starting_balance is `paper.starting_balance_usd`
+        # (virtual, e.g. $1,000), not the broker's real balance
+        # ($22.08). Reconciling against the broker would create a
+        # fake "deposit/withdrawal" delta every cycle, corrupting the
+        # paper equity curve. Only real-mode (mandate.enabled=true)
+        # sessions reconcile.
+        _is_paper_mode = not bool(
+            (self.config.get("mandate") or {}).get("enabled", False)
+        )
+        # Sprint 62: paper mode skips the broker reconciliation but
+        # does NOT short-circuit the function (other post-cycle work
+        # follows). The equity tracker's starting balance in paper
+        # mode is `paper.starting_balance_usd` (virtual), so the
+        # broker's real balance is irrelevant — reconciling would
+        # treat every delta as a fake deposit/withdrawal.
+        if not _is_paper_mode:
+            try:
+                if self.broker_client is not None:
+                    _crypto_balance = self.broker_client.get_usdt_balance()
+                    if _crypto_balance is not None and _crypto_balance >= 0:
+                        _crypto_open_notional = sum(
+                            p.notional_usd for p in self.position_repo.open()
+                            if self.asset_class_for(p.asset, self.brokers_config) == "crypto"
                         )
-                        try:
-                            from src.safety.equity_tracker import persist_tracker
-                            persist_tracker(self.equity_tracker, self.equity_state_path)
-                        except Exception as _persist_err:
-                            logger.warning(
-                                f"[EquityTracker] reconcile persist falló: {_persist_err}"
+                        _recon = self.equity_tracker.reconcile_external_balance(
+                            broker_balance=_crypto_balance,
+                            current_open_position_notional=_crypto_open_notional,
+                        )
+                        if _recon["deposit_usd"] or _recon["withdrawal_usd"]:
+                            logger.info(
+                                f"[EquityTracker] reconcile: "
+                                f"deposit=${_recon['deposit_usd']:.4f} "
+                                f"withdrawal=${_recon['withdrawal_usd']:.4f} "
+                                f"new_starting_balance=${_recon['new_starting_balance']:.4f}"
                             )
-        except Exception as _recon_err:
-            logger.warning(
-                f"[EquityTracker] reconcile_external_balance falló (continuando): {_recon_err}"
-            )
+                            try:
+                                from src.safety.equity_tracker import persist_tracker
+                                persist_tracker(self.equity_tracker, self.equity_state_path)
+                            except Exception as _persist_err:
+                                logger.warning(
+                                    f"[EquityTracker] reconcile persist falló: {_persist_err}"
+                                )
+            except Exception as _recon_err:
+                logger.warning(
+                    f"[EquityTracker] reconcile_external_balance falló (continuando): {_recon_err}"
+                )
 
         # Sprint 46G: capital-aware asset routing. Re-check broker
         # balances every cycle and narrow the analyze_market step's

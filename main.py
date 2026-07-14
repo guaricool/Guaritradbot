@@ -1147,13 +1147,36 @@ def main():
             print(f"[EquityTracker] loaded from disk: ${equity_tracker.starting_balance:.4f} "
                   f"({len(equity_tracker.history)} snapshots)")
         else:
-            # First time: use broker balance or $10 fallback
-            try:
-                _initial_balance = broker_client.get_usdt_balance() if broker_client else 10.0
-                if _initial_balance is None or _initial_balance <= 0:
+            # First time: pick a starting balance based on mode.
+            # - LIVE: use the broker's real balance (positions can actually
+            #   fill against real money, so the starting balance must match
+            #   reality for P&L math to be correct).
+            # - PAPER: use config.paper.starting_balance_usd. The broker
+            #   balance would be the user's $22.08 live balance, which is
+            #   too small to produce realistic test trades (the bot would
+            #   1% risk $0.22 per trade, fees alone wipe out any profit).
+            #   The paper starting balance is virtual — the bot's
+            #   paper-mode gate (B033) prevents any real order from being
+            #   sent, so this is just a number for sizing + the equity
+            #   curve to play with.
+            _is_paper = not bool((config.get("mandate") or {}).get("enabled", False))
+            if _is_paper:
+                _paper_cfg = config.get("paper") or {}
+                try:
+                    _initial_balance = float(_paper_cfg.get("starting_balance_usd", 1000.0))
+                    if _initial_balance <= 0:
+                        _initial_balance = 1000.0
+                except (TypeError, ValueError):
+                    _initial_balance = 1000.0
+                print(f"[EquityTracker] PAPER mode — using paper starting balance ${_initial_balance:.2f} "
+                      f"(from config.paper.starting_balance_usd; real broker balance IGNORED for sizing)")
+            else:
+                try:
+                    _initial_balance = broker_client.get_usdt_balance() if broker_client else 10.0
+                    if _initial_balance is None or _initial_balance <= 0:
+                        _initial_balance = 10.0
+                except Exception:
                     _initial_balance = 10.0
-            except Exception:
-                _initial_balance = 10.0
             equity_tracker = EquityTracker(
                 starting_balance=_initial_balance,
                 position_repo=position_repo,

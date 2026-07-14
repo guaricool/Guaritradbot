@@ -341,5 +341,22 @@ mandate:
 allocation_policy:
   small_account_threshold_usd: 50.0
 
+# === Sprint 62 — Paper-mode starting balance ===
+# When the bot is in PAPER mode (mandate.enabled=false), the equity tracker
+# is seeded with this virtual balance instead of the broker's real balance.
+# This makes the dashboard show a meaningful "paper account" balance
+# (e.g. $1,000) while in paper mode, instead of the real Binance.US
+# balance of $22 — which is too small for the position-sizing math to
+# produce realistic test trades.
+#
+# When the bot flips back to LIVE mode, the equity tracker re-seeds
+# from the real broker balance (this paper value is ignored).
+#
+# Set higher if you want to simulate with more capital (e.g. 10000 for
+# "what would $10K do"). The default $1,000 gives 5-10 simultaneous
+# positions room to breathe under the 1% risk_per_trade rule.
+paper:
+  starting_balance_usd: 1000.0
+
 # === Sprint 44B — Allocation policy (BlackRock-style) ===
 # Target weights

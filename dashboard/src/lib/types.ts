@@ -46,6 +46,15 @@ export interface StateSnapshot {
   binance_balance_source: BalanceSource;
   alpaca_balance_usd: number | null;
   alpaca_balance_source: BalanceSource;
+  // Sprint 62: paper-mode simulation fields.
+  // - `effective_balance_usd`: the number the bot uses for position
+  //   sizing. In paper mode = paper starting balance + realized P&L.
+  //   In live mode = real broker balance.
+  // - `effective_balance_source`: "broker_live" | "paper_simulated".
+  // - `paper_starting_balance_usd`: null in live mode.
+  effective_balance_usd: number | null;
+  effective_balance_source: "broker_live" | "paper_simulated";
+  paper_starting_balance_usd: number | null;
   positions: PositionSummary[];
   open_count: number;
   total_unrealized_usd: number;
