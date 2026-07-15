@@ -141,3 +141,16 @@ Auth is a bearer token derived from `DASHBOARD_PASSWORD` via HMAC-SHA256 (Sprint
 their own CLI entry points or tests — as of this writing neither is called from
 `main.py`'s live scheduling. Don't assume changes there affect production
 trading unless you also wire them in.
+
+## Recent Sprints & Changes
+
+- **Sprint 62 (Simulated Paper Balance)**:
+  - Added `paper.starting_balance_usd` to `config.yaml` to allow starting paper trading with a custom virtual balance (default $1000) instead of the real live balance.
+  - Skip broker balance reconciliation in paper mode to avoid fake deposit/withdrawal events.
+- **Sprint 63 (Alpaca Integration & Filter Tuning)**:
+  - Added `docs/ALPACA_SETUP.md` for multi-broker setup.
+  - Disabled StrategyAgent loss-streak suppression in `main.py` (`loss_streak_suppress=0`) to allow more trade opportunities.
+- **Sprint 64 (Notification & Execution Realignment)**:
+  - Enriched `TRADE_CLOSED` event payload in `src/data_store/position_monitor.py` with `direction`, `qty`, `entry_price`, `close_price`, and `duration_s` for detailed Telegram notifications.
+  - Dynamically align Stop Loss and Take Profit in `src/execution/execution_node.py` when the actual filled entry price differs from the requested signal entry price (preventing immediate stop-outs due to feed lag).
+
