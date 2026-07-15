@@ -46,6 +46,7 @@ class _TempPaths:
         os.environ["DASHBOARD_CONFIG_PATH"] = self.config_path
         os.environ["DASHBOARD_PASSWORD"] = "testpw123"
         os.environ["DASHBOARD_TOKEN_SECRET_FILE"] = str(self.audit_dir / "token_secret.key")
+        os.environ["DASHBOARD_BOT_PID_FILE"] = str(Path(self.tmp) / "guaritradbot_nonexistent.pid")
         return self
 
     def __exit__(self, *a):

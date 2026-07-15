@@ -639,8 +639,13 @@ class PositionMonitor:
                 {
                     "position_id": closed.position_id,
                     "asset": closed.asset,
+                    "direction": closed.direction,
+                    "qty": closed.qty,
+                    "entry_price": closed.entry_price,
+                    "close_price": price,
                     "pnl_usd": closed.realized_pnl,
                     "reason": reason,
+                    "duration_s": (closed.closed_ts - closed.entry_ts) if closed.closed_ts else 0,
                 },
             )
         return closed

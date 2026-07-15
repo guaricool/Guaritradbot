@@ -53,6 +53,7 @@ class _TempPaths:
         # test runs would silently create/reuse a stray
         # audit/token_secret.key in the real repo checkout.
         os.environ["DASHBOARD_TOKEN_SECRET_FILE"] = str(self.audit_dir / "token_secret.key")
+        os.environ["DASHBOARD_BOT_PID_FILE"] = str(Path(self.tmp) / "guaritradbot_nonexistent.pid")
         return self
 
     def __exit__(self, *a):

@@ -387,6 +387,12 @@ class ExecutionNode:
             entry_price = requested_entry_price
             if actual_entry_price is not None and actual_entry_price > 0:
                 entry_price = float(actual_entry_price)
+                if requested_entry_price > 0:
+                    price_delta = entry_price - requested_entry_price
+                    if stop_loss > 0:
+                        stop_loss = round(stop_loss + price_delta, 4)
+                    if take_profit > 0:
+                        take_profit = round(take_profit + price_delta, 4)
             # Scale risk_usd proportionally if the fill qty differs
             # from what RiskManagerAgent sized (fee deduction, minor
             # rounding) — keeps risk accounting consistent with what's

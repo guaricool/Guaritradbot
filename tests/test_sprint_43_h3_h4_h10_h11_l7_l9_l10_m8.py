@@ -213,12 +213,12 @@ class L7RequirementsLockTest(unittest.TestCase):
         lock = os.path.join(ROOT, "requirements.lock")
         self.assertTrue(os.path.exists(lock), "requirements.lock must exist (L7 fix)")
         # Must be parseable as a list of pkg==version
-        with open(lock) as f:
+        with open(lock, encoding="utf-8") as f:
             n = sum(1 for line in f if "==" in line and not line.strip().startswith("#"))
         self.assertGreater(n, 10, f"Lockfile should have many packages, got {n}")
 
     def test_lockfile_has_header(self):
-        with open(os.path.join(ROOT, "requirements.lock")) as f:
+        with open(os.path.join(ROOT, "requirements.lock"), encoding="utf-8") as f:
             content = f.read()
         self.assertIn("Sprint 43 L7", content,
                       "Lockfile should have a header explaining what it is")

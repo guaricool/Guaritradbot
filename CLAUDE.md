@@ -9,7 +9,7 @@ equities/ETFs (Alpaca), driven by a YAML-defined workflow (`src/workflows/tradin
 executed by a small custom `WorkflowEngine`. Ships as two Docker services behind
 Coolify: the bot itself (`Dockerfile.bot`) and a separate Next.js dashboard
 (`Dockerfile.dashboard`, in `dashboard/`) that reads the bot's state over a REST +
-WebSocket API the bot exposes in-process (`src/api/`).
+Server-Sent Events (SSE) stream API the bot exposes in-process (`src/api/`).
 
 ## Commands
 
@@ -50,38 +50,27 @@ or the image build won't pick it up (this has bitten the project before).
 
 ### Workflow execution
 
-`main.py` builds an `agents_registry` (`MarketAnalystAgent`, `StrategyAgent`,
-`RiskManagerAgent`, `DebateAgent`, `ExecutionAgent`, `NotificationAgent`), loads
-`src/workflows/trading_loop.yaml`, and hands both to `WorkflowEngine`
-(`src/workflows/engine.py`), which executes the YAML's steps in order, respecting
-each step's `depends_on`. Agents communicate both through direct step
-input/output (workflow data) and through a shared `EventBus`
-(`src/core/event_bus.py`) for cross-cutting notifications (`SYSTEM_ERROR`,
-`TRADE_CLOSED`, `POSITION_UPDATE`, etc.) that `NotificationAgent` subscribes to
-and forwards to Telegram.
+`main.py` builds an `agents_registry` containing:
+- `MarketAnalystAgent`: fetches market data and computes indicators.
+- `NewsAnalyst`: scans RSS news headlines (Sprint 49).
+- `SentimentAnalyst`: scans social sentiment (Sprint 50).
+- `LLMAnalyst`: generates shadow LLM validation votes (Sprint 55).
+- `StrategyAgent`: evaluates technical strategies and generates trade hypotheses.
+- `HypothesisScorer` (formerly `DebateAgent`, renamed in Sprint 47B): scores hypotheses sequentially (Bull/Bear/Risk) and applies news/sentiment adjustments.
+- `RiskManagerAgent`: sizes positions using Kelly criterion (fractional sizing added in Sprint 46S) and stress-tests portfolio limits.
+- `ExecutionAgent`: executes orders via broker.
+- `NotificationAgent` (independent): listens to the shared `EventBus` and sends Telegram alerts.
 
-### Two independent scheduling loops (important — don't conflate them)
+`main.py` instantiates these agents and hands them to the `WorkflowEngine` (`src/workflows/engine.py`), which executes the YAML-defined workflow (`src/workflows/trading_loop.yaml`) steps in order, respecting each step's `depends_on`.
 
-`main.py` registers TWO jobs on the same global `schedule` library instance that
-`EpochScheduler.start()` drives (`scheduler.run_pending()` in a single
-`while True` loop — one scheduler instance, two independently-timed jobs):
+### Two independent scheduling loops managed by BotRuntime (Sprint 46T / audit M6)
 
-- **`job_with_monitor`** (hourly, `schedule.run_interval_hours`): the full
-  analysis cycle — drawdown kill-switch check, capital-aware asset routing,
-  manual dashboard pause check, then (if none of those gate it) the full
-  `WorkflowEngine` run (fetch data → generate hypotheses → risk-size → execute →
-  debate).
-- **`fast_monitor_tick`** (every few minutes, `schedule.fast_monitor_interval_minutes`,
-  default 2): ONLY position protection for already-open positions — SL/TP
-  polling, OCO reconciliation, smart profit-take on reversal signals, equity
-  tracker updates, per-position P&L notifications. Never generates new entries.
+`main.py` builds dependencies and instantiates a `BotRuntime` (`src/runtime/bot_runtime.py`) which owns and drives the two execution loops:
 
-This split exists because stop-loss/take-profit protection can't wait an hour
-between checks, but the full analysis cycle is comparatively expensive and
-doesn't need sub-hour freshness. When touching either job, check whether a
-change belongs in the hourly cycle (new-entry logic) or the fast tick (existing-
-position protection) — they intentionally do not share code paths for the SL/TP
-check itself.
+- **`job_with_monitor`** (every 30 mins by default, `schedule.run_interval_hours` set to 0.5 since Sprint 46S): runs on the main thread via `EpochScheduler`. It checks the Drawdown Kill Switch (derived from `EquityTracker` since Sprint 46N), applies capital-aware asset routing, checks the dashboard manual pause (`trading_pause.json`), and executes the full workflow engine analysis cycle (`NewsAnalyst` -> `SentimentAnalyst` -> `MarketAnalyst` -> `LLMAnalyst` -> `StrategyAgent` -> `HypothesisScorer` -> `RiskManagerAgent` -> `ExecutionAgent`).
+- **`fast_monitor_tick`** (every 2 minutes, `schedule.fast_monitor_interval_minutes`): runs on its own dedicated daemon thread (`fast-monitor-thread`) to prevent starvation during long analysis cycles (Sprint 46N/A5). It only performs position protection: SL/TP polling, native OCO reconciliation (for crypto), smart profit-taking on fresh reversal signals (under 5 min old, Sprint 46R), updating the `EquityTracker` (persisted to `data_store/equity_state.json`), sending hourly P&L Telegram updates, and pinging the dead-man's switch (`HEALTHCHECKS_PING_URL`, Sprint 46R/M11.4).
+
+This split exists because stop-loss/take-profit protection can't wait between long cycles, and separating them into threads prevents yfinance rate-limiting delays from leaving positions unprotected.
 
 ### Position protection: polling vs. native broker orders
 
@@ -141,14 +130,9 @@ file.
 
 ### Dashboard API
 
-`src/api/server.py` (FastAPI) runs in a background thread inside the SAME
-process as the bot (`_start_api_server` in main.py) — it's a read-mostly layer
-over the same on-disk state the bot already writes (`audit/audit.jsonl`,
-`data_store/positions.json`, mirrored to `audit/positions.json` for the
-dashboard container to see, since the two Docker services don't share
-`data_store/`). Background tasks poll and broadcast over `/ws/live` every 1-2s
-for the dashboard's live audit feed and position P&L. Auth is a single shared
-bearer token (`DASHBOARD_PASSWORD`), required on all mutating endpoints.
+`src/api/server.py` (FastAPI) runs in a background thread inside the same process as the bot (`_start_api_server` in main.py). It provides a read/write layer over the bot's state (mirrored in `audit/` for the Docker container volumes).
+Instead of WebSockets, it primarily broadcasts live state updates (audit log, position lists, and stats) over a Server-Sent Events (SSE) stream at `/api/events` to bypass Traefik proxy HTTP/1.1 upgrade blocks on the VPS (Sprint 57), though `/ws/live` remains for fallback.
+Auth is a bearer token derived from `DASHBOARD_PASSWORD` via HMAC-SHA256 (Sprint 46N/A9) using a key stored in `audit/token_secret.key`. Auth is required on ALL endpoints (both reading and mutating) except `/api/health` and `/api/auth/login` (Sprint 46N/C5). Rate limiting and cooldowns guard login and restart endpoints.
 
 ### Strategy research tools (not in the live loop)
 

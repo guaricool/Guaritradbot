@@ -179,6 +179,20 @@ class PersistFilledPositionActualFillTest(unittest.TestCase):
         self.assertEqual(pos.entry_price, 60000.0)
         self.assertEqual(pos.risk_usd, 10.0)
 
+    def test_realigns_sl_and_tp_when_actual_price_differs(self):
+        """When actual_entry_price differs from requested, stop_loss and
+        take_profit must be adjusted by the price difference."""
+        order_data = _make_order_data(qty=0.001, entry_price=60000.0, risk_usd=10.0)
+        self.node._persist_filled_position(
+            order_data, "FILLED (LIVE MARKET)",
+            actual_qty=0.001, actual_entry_price=59950.0,
+        )
+        pos = self.repo.open()[0]
+        self.assertEqual(pos.entry_price, 59950.0)
+        # Delta is -50.0. SL should be 58000 - 50 = 57950. TP should be 65000 - 50 = 64950.
+        self.assertEqual(pos.stop_loss, 57950.0)
+        self.assertEqual(pos.take_profit, 64950.0)
+
     def test_actual_qty_zero_or_negative_ignored(self):
         """A defensive zero/negative actual_qty must not override the
         requested qty (would persist a non-positive position size)."""
