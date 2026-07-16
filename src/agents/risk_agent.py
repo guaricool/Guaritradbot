@@ -140,6 +140,20 @@ class RiskManagerAgent:
         kelly_fractional_multiplier: float = 0.25,
         kelly_assumed_win_prob: float = 0.55,
         kelly_max_risk_pct: float = 5.0,
+        # Gap identified reviewing kalshi-ai-trading-bot: gate sizing
+        # by each asset class's historical win rate (decision_log
+        # outcomes), not just the individual signal. Same opt-in /
+        # never-scale-up-only-down / fail-open contract as Kelly
+        # sizing above. Default OFF; when enabled, a poor track
+        # record (< category_scoring_min_trades is too few to act
+        # on) multiplies effective_risk_pct by
+        # category_scoring_reduction_factor. See
+        # src/analysis/category_scoring.py.
+        category_scoring_enabled: bool = False,
+        category_scoring_min_trades: int = 10,
+        category_scoring_poor_win_rate: float = 0.35,
+        category_scoring_reduction_factor: float = 0.5,
+        decision_log=None,
         # Sprint 46N (audit C1/C2): route position-REPLACEMENT closes by
         # asset class (crypto → broker_client, equity → alpaca_broker)
         # instead of always calling broker_client, and never place a
@@ -201,6 +215,11 @@ class RiskManagerAgent:
         self.kelly_fractional_multiplier = kelly_fractional_multiplier
         self.kelly_assumed_win_prob = kelly_assumed_win_prob
         self.kelly_max_risk_pct = kelly_max_risk_pct
+        self.category_scoring_enabled = category_scoring_enabled
+        self.category_scoring_min_trades = category_scoring_min_trades
+        self.category_scoring_poor_win_rate = category_scoring_poor_win_rate
+        self.category_scoring_reduction_factor = category_scoring_reduction_factor
+        self.decision_log = decision_log
         # Sprint 18: portfolio management
         self.enable_position_replacement = enable_position_replacement
         # New hypothesis must score at least +20% above the worst open position
@@ -655,6 +674,44 @@ class RiskManagerAgent:
                         "assumed_win_prob": self.kelly_assumed_win_prob,
                         "fractional_multiplier": self.kelly_fractional_multiplier,
                     })
+
+            # Category (asset-class) historical performance gate.
+            # Best-effort / fail-open: any error here (decision_log
+            # unavailable, malformed data) leaves effective_risk_pct
+            # unchanged rather than blocking the trade — this is a
+            # size adjustment, not a pass/fail gate like MandateGate.
+            if self.category_scoring_enabled:
+                try:
+                    from src.analysis.category_scoring import asset_category_multiplier
+                    from src.safety.decision_log import get_decision_log
+                    dlog = self.decision_log or get_decision_log()
+                    outcome_records = [
+                        r for r in dlog.all_decisions() if r.get("kind") == "outcome"
+                    ]
+                    multiplier = asset_category_multiplier(
+                        h.get("asset", ""),
+                        outcome_records,
+                        min_trades=self.category_scoring_min_trades,
+                        poor_win_rate_threshold=self.category_scoring_poor_win_rate,
+                        reduction_factor=self.category_scoring_reduction_factor,
+                    )
+                    if multiplier < 1.0:
+                        pre_category_risk_pct = effective_risk_pct
+                        effective_risk_pct *= multiplier
+                        if self.audit:
+                            self.audit.append("CATEGORY_SIZE_REDUCED", {
+                                "asset": h.get("asset"),
+                                "asset_class": get_asset_class(h.get("asset", "")).value,
+                                "multiplier": multiplier,
+                                "risk_pct_before": round(pre_category_risk_pct, 4),
+                                "risk_pct_after": round(effective_risk_pct, 4),
+                            })
+                except Exception as e:
+                    logger.warning(
+                        f"[RiskManagerAgent] category scoring failed for "
+                        f"{h.get('asset')}: {e}. Sizing unaffected."
+                    )
+
             risk_amount_usd = account_balance * (effective_risk_pct / 100.0)
             quantity = risk_amount_usd / stop_distance
 
