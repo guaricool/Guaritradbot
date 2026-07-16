@@ -54,7 +54,7 @@ class EventBus:
                 # operator sees it, and store for later audit.
                 cb_name = getattr(callback, "__qualname__", repr(callback))
                 print(
-                    f"[EventBus] ⚠️ Subscriber {i} ({cb_name}) failed on "
+                    f"[EventBus] WARNING: Subscriber {i} ({cb_name}) failed on "
                     f"event '{event_type}': {e!r}. Continuing to next subscriber."
                 )
                 # Sprint 46R audit M9: deque(maxlen) caps the buffer.
