@@ -192,6 +192,8 @@ async def _lifespan(app: FastAPI):
     APP_STATE["last_audit_ts"] = 0.0
     APP_STATE["last_audit_poll"] = 0.0
     APP_STATE["audit_poll_interval_s"] = float(os.getenv("DASHBOARD_WS_POLL_INTERVAL_S", "1.0"))
+    asyncio.create_task(_audit_tail_loop())
+    asyncio.create_task(_position_snapshot_loop())
     yield
     APP_STATE.clear()
 
@@ -411,12 +413,6 @@ async def _position_snapshot_loop() -> None:
         except Exception:
             pass
         await asyncio.sleep(interval)
-
-@app.on_event("startup")
-async def _start_background_tasks() -> None:
-    APP_STATE.setdefault("ws_clients", set())
-    asyncio.create_task(_audit_tail_loop())
-    asyncio.create_task(_position_snapshot_loop())
 
 # ----------------------------------------------------------------------
 # Health

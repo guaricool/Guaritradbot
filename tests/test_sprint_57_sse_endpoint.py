@@ -48,7 +48,7 @@ if REPO_ROOT not in sys.path:
 
 def _run(coro):
     """Drive an async coroutine to completion in a sync test."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 class RouteRegistrationTest(unittest.TestCase):
