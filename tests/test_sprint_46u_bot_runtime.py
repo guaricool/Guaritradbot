@@ -411,6 +411,73 @@ class JobWithMonitorEquityReconcileTest(unittest.TestCase):
         # outages) — the next cycle will retry.
         mocks["equity_tracker"].reconcile_external_balance.assert_not_called()
 
+    def test_reconcile_combines_crypto_and_equity(self):
+        crypto_pos = MagicMock()
+        crypto_pos.asset = "BTC-USD"
+        crypto_pos.notional_usd = 40.0
+        equity_pos = MagicMock()
+        equity_pos.asset = "SPY"
+        equity_pos.notional_usd = 60.0
+
+        runtime, mocks = _make_runtime(
+            open_positions=[crypto_pos, equity_pos],
+            crypto_balance=20.0,
+        )
+        
+        # Configure mock AlpacaBroker balance to return $39,000
+        mocks["alpaca_broker"] = MagicMock()
+        mocks["alpaca_broker"].get_usd_balance.return_value = 39000.0
+        runtime.alpaca_broker = mocks["alpaca_broker"]
+
+        runtime.job_with_monitor()
+
+        # Reconcile must sum balances ($20 + $39,000) and sum open notionals ($40 + $60)
+        mocks["equity_tracker"].reconcile_external_balance.assert_called_once_with(
+            broker_balance=39020.0,
+            current_open_position_notional=100.0,
+        )
+
+    def test_drawdown_only_alerts_on_transition(self):
+        # 1. First cycle: switch transitions from False to True -> should alert
+        runtime, mocks = _make_runtime(drawdown_triggered=True)
+        # Force triggered state to be a real boolean for testing transitions
+        runtime.drawdown_kill_switch.triggered = False
+        
+        # Mock update behavior to set triggered=True
+        dd_state = MagicMock()
+        dd_state.triggered = True
+        dd_state.drawdown_pct = 15.0
+        dd_state.peak_equity = 100.0
+        dd_state.cooldown_remaining_hours = 24.0
+        mocks["drawdown_kill_switch"].update.return_value = dd_state
+
+        runtime.job_with_monitor()
+        
+        # Verify SYSTEM_ERROR was published
+        system_errors = [
+            c for c in mocks["event_bus"].publish.call_args_list
+            if c.args and c.args[0] == "SYSTEM_ERROR"
+        ]
+        self.assertTrue(
+            any(c.args[1].get("kind") == "DRAWDOWN_KILL_ACTIVE" for c in system_errors),
+            "should publish SYSTEM_ERROR on initial trigger transition",
+        )
+        mocks["event_bus"].publish.reset_mock()
+
+        # 2. Second cycle: switch is already True -> should NOT alert
+        runtime.drawdown_kill_switch.triggered = True
+        runtime.job_with_monitor()
+        
+        system_errors = [
+            c for c in mocks["event_bus"].publish.call_args_list
+            if c.args and c.args[0] == "SYSTEM_ERROR"
+        ]
+        self.assertFalse(
+            any(c.args[1].get("kind") == "DRAWDOWN_KILL_ACTIVE" for c in system_errors),
+            "should NOT publish SYSTEM_ERROR if already triggered",
+        )
+
+
 
 # ---------------------------------------------------------------------------
 # Thread lifecycle (audit A5: own thread, own lock, daemon)

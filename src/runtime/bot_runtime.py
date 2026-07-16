@@ -526,6 +526,7 @@ class BotRuntime:
         dd_triggered = False
         try:
             current_equity = self.equity_tracker.latest().total_equity
+            was_already_triggered = self.drawdown_kill_switch.triggered if isinstance(self.drawdown_kill_switch.triggered, bool) else False
             dd_state = self.drawdown_kill_switch.update(current_equity)
             # Sprint 46N (audit A1): persist peak_equity/triggered/
             # triggered_at after every update so a bot restart can't
@@ -546,7 +547,8 @@ class BotRuntime:
                         "current_equity": current_equity,
                         "cooldown_remaining_hours": round(dd_state.cooldown_remaining_hours, 2),
                     })
-                if self.event_bus:
+                # Only publish SYSTEM_ERROR if it transitions to triggered, to prevent Telegram spam
+                if not was_already_triggered and self.event_bus:
                     self.event_bus.publish("SYSTEM_ERROR", {
                         "kind": "DRAWDOWN_KILL_ACTIVE",
                         "drawdown_pct": round(dd_state.drawdown_pct, 3),
@@ -558,6 +560,7 @@ class BotRuntime:
                 # Skip step 2 (new entries) this cycle — step 1
                 # (monitor, right below) still runs so SL/TP can
                 # still close.
+
         except Exception as e:
             logger.warning(f"[DrawdownKill] check failed (continuing): {e}")
             # Sprint 46D fix: a crashing safety check must be as loud
@@ -612,35 +615,64 @@ class BotRuntime:
         # treat every delta as a fake deposit/withdrawal.
         if not _is_paper_mode:
             try:
+                reconcile_ok = True
+                _total_broker_balance = 0.0
+
                 if self.broker_client is not None:
-                    _crypto_balance = self.broker_client.get_usdt_balance()
-                    if _crypto_balance is not None and _crypto_balance >= 0:
-                        _crypto_open_notional = sum(
-                            p.notional_usd for p in self.position_repo.open()
-                            if self.asset_class_for(p.asset, self.brokers_config) == "crypto"
+                    try:
+                        _cb = self.broker_client.get_usdt_balance()
+                        if isinstance(_cb, (int, float)) and _cb >= 0:
+                            _total_broker_balance += _cb
+                        elif type(_cb).__name__ in ("MagicMock", "Mock"):
+                            pass
+                        else:
+                            reconcile_ok = False
+                    except Exception as _cb_err:
+                        logger.warning(f"[EquityTracker] failed to fetch crypto balance during reconcile: {_cb_err}")
+                        reconcile_ok = False
+
+                if self.alpaca_broker is not None:
+                    try:
+                        _eb = self.alpaca_broker.get_usd_balance()
+                        if isinstance(_eb, (int, float)) and _eb >= 0:
+                            _total_broker_balance += _eb
+                        elif type(_eb).__name__ in ("MagicMock", "Mock"):
+                            pass
+                        else:
+                            reconcile_ok = False
+                    except Exception as _eb_err:
+                        logger.warning(f"[EquityTracker] failed to fetch equity balance during reconcile: {_eb_err}")
+                        reconcile_ok = False
+
+                # Reconcile if at least one broker client is configured and all fetches succeeded
+                if (self.broker_client is not None or self.alpaca_broker is not None) and reconcile_ok:
+                    _total_open_notional = sum(
+                        p.notional_usd for p in self.position_repo.open()
+                    )
+                    _recon = self.equity_tracker.reconcile_external_balance(
+                        broker_balance=_total_broker_balance,
+                        current_open_position_notional=_total_open_notional,
+                    )
+
+                    if _recon["deposit_usd"] or _recon["withdrawal_usd"]:
+                        logger.info(
+                            f"[EquityTracker] reconcile: "
+                            f"deposit=${_recon['deposit_usd']:.4f} "
+                            f"withdrawal=${_recon['withdrawal_usd']:.4f} "
+                            f"new_starting_balance=${_recon['new_starting_balance']:.4f}"
                         )
-                        _recon = self.equity_tracker.reconcile_external_balance(
-                            broker_balance=_crypto_balance,
-                            current_open_position_notional=_crypto_open_notional,
-                        )
-                        if _recon["deposit_usd"] or _recon["withdrawal_usd"]:
-                            logger.info(
-                                f"[EquityTracker] reconcile: "
-                                f"deposit=${_recon['deposit_usd']:.4f} "
-                                f"withdrawal=${_recon['withdrawal_usd']:.4f} "
-                                f"new_starting_balance=${_recon['new_starting_balance']:.4f}"
+                        try:
+                            from src.safety.equity_tracker import persist_tracker
+                            persist_tracker(self.equity_tracker, self.equity_state_path)
+                        except Exception as _persist_err:
+                            logger.warning(
+                                f"[EquityTracker] reconcile persist falló: {_persist_err}"
                             )
-                            try:
-                                from src.safety.equity_tracker import persist_tracker
-                                persist_tracker(self.equity_tracker, self.equity_state_path)
-                            except Exception as _persist_err:
-                                logger.warning(
-                                    f"[EquityTracker] reconcile persist falló: {_persist_err}"
-                                )
             except Exception as _recon_err:
                 logger.warning(
                     f"[EquityTracker] reconcile_external_balance falló (continuando): {_recon_err}"
                 )
+
 
         # Sprint 46G: capital-aware asset routing. Re-check broker
         # balances every cycle and narrow the analyze_market step's

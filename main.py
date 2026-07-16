@@ -1181,12 +1181,28 @@ def main():
                 print(f"[EquityTracker] PAPER mode — using paper starting balance ${_initial_balance:.2f} "
                       f"(from config.paper.starting_balance_usd; real broker balance IGNORED for sizing)")
             else:
+                _crypto_bal = 0.0
                 try:
-                    _initial_balance = broker_client.get_usdt_balance() if broker_client else 10.0
-                    if _initial_balance is None or _initial_balance <= 0:
-                        _initial_balance = 10.0
-                except Exception:
+                    if broker_client:
+                        _cb = broker_client.get_usdt_balance()
+                        if _cb is not None and _cb >= 0:
+                            _crypto_bal = _cb
+                except Exception as _cb_init_err:
+                    print(f"[EquityTracker] failed to fetch crypto balance at init: {_cb_init_err}")
+
+                _equity_bal = 0.0
+                try:
+                    if alpaca_broker:
+                        _eb = alpaca_broker.get_usd_balance()
+                        if _eb is not None and _eb >= 0:
+                            _equity_bal = _eb
+                except Exception as _eb_init_err:
+                    print(f"[EquityTracker] failed to fetch equity balance at init: {_eb_init_err}")
+
+                _initial_balance = _crypto_bal + _equity_bal
+                if _initial_balance <= 0:
                     _initial_balance = 10.0
+
             equity_tracker = EquityTracker(
                 starting_balance=_initial_balance,
                 position_repo=position_repo,
