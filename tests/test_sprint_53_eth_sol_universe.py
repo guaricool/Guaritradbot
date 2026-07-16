@@ -31,7 +31,7 @@ from pathlib import Path
 
 import yaml
 
-REPO = Path(r"C:\Users\cpier\OneDrive\Desktop\Proyectos\Trading")
+REPO = Path(__file__).resolve().parent.parent
 
 
 class ConfigYAMLTest(unittest.TestCase):
