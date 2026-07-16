@@ -102,6 +102,16 @@ DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_API_URL = "https://api.anthropic.com/v1/messages"
 DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 
+# Backup model(s), tried in order if DEFAULT_MODEL's call fails
+# (rate limit, outage, deprecation). Previous-gen Haiku: still
+# cheap, still served, and unlikely to fail for the same reason
+# as the primary model at the same moment. Cost is estimated
+# with the (higher) Haiku 4.5 rate below regardless of which
+# model in the chain actually answered — a deliberate
+# overestimate so the daily cost cap stays conservative rather
+# than under-counting a cheaper fallback call.
+DEFAULT_FALLBACK_MODELS: Tuple[str, ...] = ("claude-3-5-haiku-20241022",)
+
 # Sprint 55: cost controls. The cap is in USD/day and is
 # enforced BEFORE the call (not just tracked after).
 DEFAULT_DAILY_COST_CAP_USD = 0.50
@@ -163,6 +173,7 @@ class LLMAnalyst:
         self,
         api_key: Optional[str] = None,
         model: str = DEFAULT_MODEL,
+        fallback_models: Tuple[str, ...] = DEFAULT_FALLBACK_MODELS,
         cache_path: str = DEFAULT_CACHE_PATH,
         ttl_seconds: float = DEFAULT_TTL_SECONDS,
         daily_cost_cap_usd: float = DEFAULT_DAILY_COST_CAP_USD,
@@ -179,6 +190,7 @@ class LLMAnalyst:
         # LLM providers in the future).
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         self.model = model
+        self.fallback_models = tuple(fallback_models or ())
         self.cache_path = Path(cache_path)
         self.ttl_seconds = float(ttl_seconds)
         self.daily_cost_cap_usd = float(daily_cost_cap_usd)
@@ -307,13 +319,33 @@ class LLMAnalyst:
             asset_market = market_data.get(asset, {}) if isinstance(market_data, dict) else {}
             asset_news = news_context.get(asset, {}) if isinstance(news_context, dict) else {}
             asset_social = social_context.get(asset, {}) if isinstance(social_context, dict) else {}
-            try:
-                vote, cost, in_tok, out_tok = self._call_llm_for_asset(
-                    asset, asset_market, asset_news, asset_social
+            models_to_try = (self.model,) + self.fallback_models
+            vote = cost = in_tok = out_tok = model_used = None
+            last_error: Optional[Exception] = None
+            for candidate_model in models_to_try:
+                try:
+                    vote, cost, in_tok, out_tok = self._call_llm_for_asset(
+                        asset, asset_market, asset_news, asset_social,
+                        model=candidate_model,
+                    )
+                    model_used = candidate_model
+                    if candidate_model != self.model:
+                        logger.info(
+                            f"[LLMAnalyst] primary model {self.model!r} failed for "
+                            f"{asset}, fell back to {candidate_model!r}: {last_error}"
+                        )
+                    break
+                except Exception as e:
+                    last_error = e
+                    continue
+            if model_used is None:
+                logger.warning(
+                    f"[LLMAnalyst] call failed for {asset} on all models "
+                    f"{models_to_try}: {last_error}"
                 )
-            except Exception as e:
-                logger.warning(f"[LLMAnalyst] call failed for {asset}: {e}")
-                out[asset] = _neutral_vote(asset, f"api_error:{type(e).__name__}", from_cache=False)
+                out[asset] = _neutral_vote(
+                    asset, f"api_error:{type(last_error).__name__}", from_cache=False
+                )
                 continue
             self._cost_today_usd += cost
             self._cost_call_count += 1
@@ -327,6 +359,7 @@ class LLMAnalyst:
                 tokens_output=out_tok,
                 cost_usd=cost,
                 skip_reason=None,
+                model_used=model_used,
             )
             out[asset] = {
                 **entry.to_dict_for_response(),
@@ -352,15 +385,20 @@ class LLMAnalyst:
         market: Dict[str, Any],
         news: Dict[str, Any],
         social: Dict[str, Any],
+        model: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], float, int, int]:
         """Build the prompt, call Anthropic, parse the response.
+
+        `model` overrides `self.model` for this single call (used by
+        the fallback chain in `_llm_vote_impl` to retry with a
+        backup model without mutating instance state).
 
         Returns (vote_dict, cost_usd, input_tokens, output_tokens).
         Raises on any error (caller handles fail-open)."""
         system_prompt = self._system_prompt()
         user_payload = self._build_user_payload(asset, market, news, social)
         body = {
-            "model": self.model,
+            "model": model or self.model,
             "max_tokens": self.max_tokens,
             "system": system_prompt,
             "messages": [{"role": "user", "content": user_payload}],
@@ -391,7 +429,7 @@ class LLMAnalyst:
         usage = data.get("usage", {}) if isinstance(data, dict) else {}
         in_tok = int(usage.get("input_tokens", 0))
         out_tok = int(usage.get("output_tokens", 0))
-        cost = _estimate_cost_usd(self.model, in_tok, out_tok)
+        cost = _estimate_cost_usd(model or self.model, in_tok, out_tok)
         # Extract the text
         text = self._extract_text(data)
         vote = self._parse_vote_json(text)
@@ -558,6 +596,7 @@ class _CacheEntry:
     tokens_output: int
     cost_usd: float
     skip_reason: Optional[str] = None
+    model_used: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -724,7 +763,7 @@ def _load_cache(path: Path, ttl_seconds: float) -> Dict[str, _CacheEntry]:
                             "asset", "scanned_at", "llm_direction",
                             "llm_confidence", "llm_reasoning",
                             "tokens_input", "tokens_output",
-                            "cost_usd", "skip_reason",
+                            "cost_usd", "skip_reason", "model_used",
                         )
                     })
                 except (TypeError, ValueError):

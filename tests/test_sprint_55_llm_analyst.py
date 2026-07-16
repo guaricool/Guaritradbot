@@ -392,6 +392,44 @@ class NetworkFailureTest(unittest.TestCase):
         self.assertEqual(out, {})
 
 
+class FallbackModelTest(unittest.TestCase):
+    """If the primary model's call fails, retry with the
+    configured backup model(s) before giving up and
+    returning a neutral placeholder."""
+
+    def test_falls_back_to_backup_model_on_primary_failure(self):
+        from src.agents.llm_analyst import LLMAnalyst
+        analyst = LLMAnalyst(
+            api_key="test-key",
+            cache_path=_tmp_cache_path(),
+            fallback_models=("backup-model-1",),
+        )
+        good_vote = {"direction": "long", "confidence": 70, "reasoning": "ok"}
+        with patch.object(
+            analyst, "_call_llm_for_asset",
+            side_effect=[RuntimeError("primary down"), (good_vote, 0.001, 500, 80)],
+        ) as mock_call:
+            out = analyst.llm_vote(assets=["BTC-USD"])
+        self.assertEqual(out["BTC-USD"]["llm_direction"], "long")
+        self.assertEqual(out["BTC-USD"]["model_used"], "backup-model-1")
+        self.assertEqual(mock_call.call_count, 2)
+        # First attempt used the primary model, second the backup.
+        self.assertEqual(mock_call.call_args_list[0].kwargs["model"], "claude-haiku-4-5-20251001")
+        self.assertEqual(mock_call.call_args_list[1].kwargs["model"], "backup-model-1")
+
+    def test_neutral_when_all_models_in_chain_fail(self):
+        from src.agents.llm_analyst import LLMAnalyst
+        analyst = LLMAnalyst(
+            api_key="test-key",
+            cache_path=_tmp_cache_path(),
+            fallback_models=("backup-model-1",),
+        )
+        with patch.object(analyst, "_call_llm_for_asset", side_effect=RuntimeError("down")):
+            out = analyst.llm_vote(assets=["BTC-USD"])
+        self.assertEqual(out["BTC-USD"]["llm_direction"], "neutral")
+        self.assertTrue(out["BTC-USD"]["skip_reason"].startswith("api_error:"))
+
+
 class CostMathTest(unittest.TestCase):
     """Haiku 4.5 is $1/MTok input, $5/MTok output. If this
     is wrong, the daily cost cap is wrong. Pin the math."""
