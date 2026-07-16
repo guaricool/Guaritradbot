@@ -37,6 +37,12 @@ try:
 except ImportError:
     HAS_FCNTL = False
 
+try:
+    import msvcrt  # Windows-only equivalent of fcntl.flock.
+    HAS_MSVCRT = True
+except ImportError:
+    HAS_MSVCRT = False
+
 
 class AuditLedger:
     def __init__(self, path: str):
@@ -154,16 +160,18 @@ class AuditLedger:
         # that. fcntl.flock blocks the other writer until we're
         # done.
         #
-        # On Windows, fcntl is unavailable. We fall back to the
-        # O_APPEND-only behavior. The bot runs on Linux (VPS),
-        # so the Windows path is just for local dev on Carlos's
-        # workstation. The fsync below still ensures the bytes
-        # hit disk before we release the lock.
-        open_mode = "a"
-        if HAS_FCNTL:
-            # Use line-buffered text mode + flock. We need binary
-            # mode for fcntl.flock, so open in 'ab' and write bytes.
-            open_mode = "ab"
+        # On Windows, fcntl is unavailable; msvcrt.locking() is the
+        # equivalent (Sprint 43 M1 originally only handled POSIX --
+        # on Windows every append() was completely unlocked, so two
+        # threads/processes racing to append could both seek to the
+        # same "end of file" offset and one write clobber the
+        # other's line, silently losing an event with no corruption
+        # to even flag it). Bot runs on Linux (VPS) in production;
+        # this path matters for local dev/tests on Windows. The
+        # fsync below still ensures the bytes hit disk before we
+        # release the lock.
+        need_binary = HAS_FCNTL or HAS_MSVCRT
+        open_mode = "ab" if need_binary else "a"
         with open(self.path, open_mode) as f:
             if HAS_FCNTL:
                 try:
@@ -173,9 +181,20 @@ class AuditLedger:
                     # (e.g. NFS doesn't support it), fall through
                     # to O_APPEND-only.
                     pass
+            elif HAS_MSVCRT:
+                # Lock a 1-byte "mutex" region at offset 0 (the
+                # actual write always lands at EOF regardless of
+                # seek position, since the file was opened in
+                # append mode). LK_LOCK blocks, retrying for ~10s,
+                # before raising -- best-effort, same as the flock
+                # branch above.
+                try:
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                except OSError:
+                    pass
             line = (json.dumps(event, ensure_ascii=False, default=str) + "\n")
-            if HAS_FCNTL:
-                # Binary mode + flock → need bytes
+            if need_binary:
                 if isinstance(line, str):
                     line = line.encode("utf-8")
             f.write(line)
@@ -190,6 +209,12 @@ class AuditLedger:
                 try:
                     fcntl.flock(f.fileno(), fcntl.LOCK_UN)
                 except (OSError, AttributeError):
+                    pass
+            elif HAS_MSVCRT:
+                try:
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
                     pass
         return event
 
