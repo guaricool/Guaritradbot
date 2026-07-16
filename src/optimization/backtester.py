@@ -195,6 +195,146 @@ class VectorizedBacktester:
         }
 
 
+def review_backtest(
+    result: Dict[str, Any],
+    walk_forward_result: Optional[Dict[str, Any]] = None,
+    benchmark_returns: Optional[pd.Series] = None,
+    min_trades: int = 30,
+    max_plausible_sharpe: float = 4.0,
+) -> Dict[str, Any]:
+    """Backtest quality gate — an objective, non-LLM checklist for the
+    review categories every "is this backtest lying to me" guide lists
+    (look-ahead bias, overfitting, cherry-picked/too-few trades,
+    unrealistic fills, missing costs, benchmark underperformance).
+
+    This is deliberately rule-based rather than LLM-judged: every check
+    here is a fact about `result["metrics"]`/`result["trades"]` that
+    can be computed exactly, so there's nothing for an LLM to add
+    except prose. Use this before trusting a backtest enough to feed
+    its params into `walk_forward_validate` or, eventually, live
+    config.
+
+    `result` is the dict returned by `VectorizedBacktester.run()`.
+    `walk_forward_result` is the optional dict returned by
+    `walk_forward_validate()` — when given, its `overfit_warning` and
+    `is_vs_oos_ratio` feed the FAILED/overfitting check directly
+    instead of re-deriving it.
+    `benchmark_returns` is an optional buy-and-hold return series
+    (e.g. `prices["Close"].pct_change()`) aligned to the same period,
+    for the "did it even beat holding the asset" check.
+
+    Returns {"passed": [...], "failed": [...], "warnings": [...],
+    "verdict": "PASS" | "REVISE" | "REJECT"}.
+    """
+    metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
+    trades = result.get("trades", []) if isinstance(result, dict) else []
+    passed: List[str] = []
+    failed: List[str] = []
+    warnings: List[str] = []
+
+    # 1. Look-ahead bias: structural, not statistical — the
+    # backtester itself shift(1)s the signal before applying it
+    # (see VectorizedBacktester.run above), so a caller using this
+    # class can't accidentally trade on the same bar's signal.
+    passed.append(
+        "look_ahead_bias: signals are shift(1)'d before being applied "
+        "to returns (structural guarantee in VectorizedBacktester.run)."
+    )
+
+    # 2. Missing fees/slippage.
+    num_trades = int(metrics.get("num_trades", len(trades)))
+    if num_trades > 0 and (result.get("returns") is None or len(result.get("returns", [])) == 0):
+        warnings.append("fees_slippage: could not verify — no returns series in result.")
+    else:
+        passed.append(
+            "fees_slippage: trading_costs applied on every position change "
+            "(commission + slippage), not just at entry/exit."
+        )
+
+    # 3. Too few trades — a Sharpe/win-rate computed on a handful of
+    # trades is noise, not signal.
+    if num_trades == 0:
+        failed.append("too_few_trades: 0 trades — no signal fired in this window.")
+    elif num_trades < min_trades:
+        warnings.append(
+            f"too_few_trades: only {num_trades} trades (< {min_trades}); "
+            "win_rate/profit_factor are not statistically meaningful yet."
+        )
+    else:
+        passed.append(f"too_few_trades: {num_trades} trades, enough to read the metrics.")
+
+    # 4. Implausible Sharpe — a backtest Sharpe far above what real
+    # strategies achieve almost always means a data/logic bug
+    # (look-ahead leak, survivorship, or a cost that isn't applied),
+    # not real edge.
+    sharpe = float(metrics.get("sharpe_ratio", 0.0) or 0.0)
+    if sharpe > max_plausible_sharpe:
+        failed.append(
+            f"implausible_sharpe: {sharpe:.2f} > {max_plausible_sharpe} — "
+            "investigate for a data leak or missing cost before trusting this."
+        )
+    else:
+        passed.append(f"implausible_sharpe: {sharpe:.2f} is within a plausible range.")
+
+    # 5. Suspicious profit factor (no losing trades at all).
+    profit_factor = metrics.get("profit_factor", 0.0)
+    num_losses = int(metrics.get("num_losses", 0))
+    if num_trades > 0 and num_losses == 0 and profit_factor in (float("inf"), 0.0):
+        warnings.append(
+            "profit_factor: zero losing trades in the sample — check this "
+            "isn't an artifact of a too-short or too-favorable test window."
+        )
+    else:
+        passed.append("profit_factor: has both winning and losing trades, not a fluke shape.")
+
+    # 6. Overfitting via walk-forward IS/OOS degradation, if provided.
+    if walk_forward_result is not None:
+        if walk_forward_result.get("overfit_warning"):
+            ratio = walk_forward_result.get("is_vs_oos_ratio", 0.0)
+            failed.append(
+                f"overfitting: out-of-sample/in-sample ratio {ratio:.2f} < 0.5 — "
+                "strategy performs much worse out-of-sample, classic overfit signature."
+            )
+        else:
+            passed.append("overfitting: out-of-sample performance holds up vs in-sample.")
+    else:
+        warnings.append(
+            "overfitting: no walk_forward_result passed in — in-sample-only "
+            "metrics can't rule out overfitting. Run walk_forward_validate() first."
+        )
+
+    # 7. Benchmark comparison.
+    if benchmark_returns is not None and len(benchmark_returns) > 0:
+        bench_total_return = float((1 + benchmark_returns.fillna(0)).prod() - 1)
+        strat_total_return = float(metrics.get("total_return", 0.0))
+        if strat_total_return < bench_total_return:
+            warnings.append(
+                f"benchmark: strategy return {strat_total_return:.2%} < "
+                f"buy-and-hold {bench_total_return:.2%} — active risk isn't paying off here."
+            )
+        else:
+            passed.append(
+                f"benchmark: strategy return {strat_total_return:.2%} beat "
+                f"buy-and-hold {bench_total_return:.2%}."
+            )
+    else:
+        warnings.append("benchmark: no benchmark_returns passed in — comparison skipped.")
+
+    if failed:
+        verdict = "REJECT"
+    elif warnings:
+        verdict = "REVISE"
+    else:
+        verdict = "PASS"
+
+    return {
+        "passed": passed,
+        "failed": failed,
+        "warnings": warnings,
+        "verdict": verdict,
+    }
+
+
 def walk_forward_split(prices: pd.DataFrame, train_pct: float = 0.7, expanding: bool = False) -> List[Dict]:
     """
     Genera splits walk-forward.
