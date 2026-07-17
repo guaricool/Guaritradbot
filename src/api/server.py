@@ -388,14 +388,17 @@ async def _audit_tail_loop() -> None:
         await asyncio.sleep(interval)
 
 async def _position_snapshot_loop() -> None:
-    """Background task: every 2s, broadcast a fresh positions snapshot.
+    """Background task: every 1s, broadcast a fresh positions snapshot.
 
     The dashboard's "live P&L" use case doesn't need every audit
     event — it needs the up-to-date unrealized P&L per position. We
     compute the snapshot from the same on-disk state the bot writes
-    and push it. 2s feels live without hammering the disk.
+    and push it. Was 2s; now that `_fetch_one_price` routes through
+    the live broker ticker (ccxt/Alpaca) instead of yfinance for most
+    assets (see state.py), 1s gives a genuinely continuous-feeling
+    P&L tick instead of a visible stair-step every couple of seconds.
     """
-    interval = 2.0
+    interval = 1.0
     while True:
         try:
             config = APP_STATE.get("config") or {}

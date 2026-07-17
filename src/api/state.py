@@ -175,7 +175,12 @@ def _load_cache_ttls() -> Dict[str, float]:
     (missing file, malformed YAML, missing keys) returns the
     pre-46Y defaults — the bot should still boot if config is broken.
     """
-    defaults = {"price_ttl_s": 30.0, "balance_ttl_s": 15.0}
+    # price_ttl_s lowered from 30s: prices now come from the live broker
+    # ticker (ccxt/Alpaca) for the common case, not yfinance, so a much
+    # shorter cache still avoids hammering either API while letting the
+    # dashboard's P&L visibly move every couple of seconds instead of
+    # holding the same number for half a minute.
+    defaults = {"price_ttl_s": 3.0, "balance_ttl_s": 15.0}
     try:
         cfg_path = Path("config.yaml")
         if not cfg_path.exists():
@@ -193,15 +198,54 @@ PRICE_CACHE_TTL_S: float = _CACHE_TTLS["price_ttl_s"]
 
 
 def _fetch_one_price(asset: str) -> Tuple[Optional[float], str]:
-    """Fetch latest close for one asset via yfinance.
+    """Fetch the freshest price available for one asset.
+
+    Real-time dashboard fix: this used to ALWAYS use yfinance's
+    DAILY-CANDLE CLOSE (`interval="1d"`) — the same staleness bug
+    `main.py::_fetch_prices_for_open_positions` was fixed for in
+    Sprint 46N/A7 (SL/TP triggers), except that fix never touched
+    this function, so the dashboard's displayed "current price" and
+    unrealized P&L stayed pinned to (at best) today's daily close no
+    matter how often the UI polled — the number could not visibly
+    move within a session even though the underlying asset was.
+
+    Now tries the SAME live broker feed that will execute the
+    position's eventual close, before falling back to yfinance:
+      - crypto -> `_BROKER_CLIENT.get_ticker_price` (ccxt `fetch_ticker`
+        against binance.us — sub-second last-traded price)
+      - equity -> `_ALPACA_BROKER.get_latest_trade_price` (Alpaca's own
+        market-data API)
+    Falls back to yfinance 1-MINUTE bars (not daily) only when the
+    relevant broker isn't configured or the live call fails —
+    intraday close is still far fresher than a daily close, and this
+    keeps prices flowing (e.g. in paper mode with no live broker keys)
+    rather than going blank.
 
     Returns (price, source) where source is 'live' on a fresh fetch
-    and 'fetch_failed' if the API call returned no data. The
-    caller decides how to use this.
+    and 'fetch_failed' if every path returned no data.
     """
+    from src.data.asset_class import get_asset_class, AssetClass
+
+    try:
+        if get_asset_class(asset) == AssetClass.CRYPTO:
+            if _BROKER_CLIENT is not None:
+                ccxt_symbol = asset.replace("-", "/") if "-" in asset else asset
+                if "/" not in ccxt_symbol:
+                    ccxt_symbol = f"{ccxt_symbol}/USDT"
+                price = _BROKER_CLIENT.get_ticker_price(ccxt_symbol)
+                if price is not None and float(price) > 0:
+                    return float(price), "live"
+        else:
+            if _ALPACA_BROKER is not None:
+                price = _ALPACA_BROKER.get_latest_trade_price(asset)
+                if price is not None and float(price) > 0:
+                    return float(price), "live"
+    except Exception:
+        pass  # fall through to the yfinance fallback below
+
     from src.data.yf_safe import safe_yf_download  # local to avoid import cost at module load
     try:
-        df = safe_yf_download(asset, period="5d", interval="1d")
+        df = safe_yf_download(asset, period="1d", interval="1m")
     except Exception:
         return None, "fetch_failed"
     if df is None or df.empty:
