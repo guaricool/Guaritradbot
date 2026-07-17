@@ -472,6 +472,20 @@ class StrategyAgent:
             # Sprint 46E: trend-type expected move for EMA cross hypotheses.
             _exp_move = _estimate_expected_move_pct(df, price, atr, kind="trend")
 
+            # Bug fix: `adx_trend_min` (Sprint 10, self.params) and
+            # `adx_now` (computed just above) were never actually
+            # applied anywhere — this file's own docstring advertises
+            # "ADX trend confirmation" as a Sprint 10 feature, but
+            # every EMA cross fired regardless of trend strength,
+            # letting weak/choppy-market crosses through that ADX was
+            # meant to filter out. Gate the cross checks on it.
+            # Fail-open: only apply the gate when ADX_14 was actually
+            # computed (matches this file's other data-quality gates)
+            # — a missing column must never silently block every
+            # cross forever, only a confirmed low ADX reading should.
+            if "ADX_14" in df.columns.values and adx_now < self.params["adx_trend_min"]:
+                continue
+
             # A) Cruce estricto
             if ema20_prev <= ema50_prev and ema20_now > ema50_now:
                 self._add_hyp(
