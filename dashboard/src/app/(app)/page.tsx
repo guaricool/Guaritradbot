@@ -1,6 +1,7 @@
 "use client";
 
 import useSWR from "swr";
+import { Bitcoin, TrendingUp, Wallet, CircleDot } from "lucide-react";
 import { api } from "@/lib/api";
 import { KpiCard } from "@/components/KpiCard";
 import { PositionTable } from "@/components/PositionTable";
@@ -152,7 +153,7 @@ export default function HomePage() {
                 : "virtual paper account"
               : "live from broker"
           }
-          icon={<span>{data.mode.mode === "paper" ? "📝" : "₿"}</span>}
+          icon={<Wallet size={16} strokeWidth={2} />}
         />
         <KpiCard
           label="Binance.US"
@@ -167,7 +168,7 @@ export default function HomePage() {
               ? `${balanceHint(data.binance_balance_source)} · reference only`
               : balanceHint(data.binance_balance_source)
           }
-          icon={<span>₿</span>}
+          icon={<Bitcoin size={16} strokeWidth={2} />}
         />
         <KpiCard
           label="Alpaca"
@@ -182,7 +183,7 @@ export default function HomePage() {
               ? `${balanceHint(data.alpaca_balance_source)} · reference only`
               : balanceHint(data.alpaca_balance_source)
           }
-          icon={<span>📈</span>}
+          icon={<TrendingUp size={16} strokeWidth={2} />}
         />
         <KpiCard
           label="Open positions"
@@ -193,7 +194,7 @@ export default function HomePage() {
               {fmtUsd(exposure, { decimals: 0 })}
             </span>
           }
-          icon={<span>◉</span>}
+          icon={<CircleDot size={16} strokeWidth={2} />}
         />
         <KpiCard
           label="Unrealized P&L"

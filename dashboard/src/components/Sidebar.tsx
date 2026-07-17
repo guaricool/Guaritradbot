@@ -3,18 +3,31 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { clsx } from "clsx";
+import {
+  LayoutGrid,
+  CircleDot,
+  LineChart,
+  History as HistoryIcon,
+  ScrollText,
+  Shield,
+  Settings as SettingsIcon,
+  LogOut,
+} from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useLive } from "@/lib/use-live";
 import type { WsStatus } from "@/lib/use-live";
 
+// DESIGN.md bans emoji in the dashboard UI; a consistent stroke-icon
+// set (lucide) replaces the previous mix of emoji and ad-hoc unicode
+// dingbats for a coherent, "clinical terminal" look.
 const NAV = [
-  { href: "/", label: "Overview", icon: "◈" },
-  { href: "/positions", label: "Positions", icon: "◉" },
-  { href: "/charts", label: "Charts", icon: "📈" },
-  { href: "/history", label: "History", icon: "▦" },
-  { href: "/audit", label: "Audit", icon: "▤" },
-  { href: "/allocation", label: "Allocation & Risk", icon: "◊" },
-  { href: "/settings", label: "Settings", icon: "⚙" },
+  { href: "/", label: "Overview", Icon: LayoutGrid },
+  { href: "/positions", label: "Positions", Icon: CircleDot },
+  { href: "/charts", label: "Charts", Icon: LineChart },
+  { href: "/history", label: "History", Icon: HistoryIcon },
+  { href: "/audit", label: "Audit", Icon: ScrollText },
+  { href: "/allocation", label: "Allocation & Risk", Icon: Shield },
+  { href: "/settings", label: "Settings", Icon: SettingsIcon },
 ];
 
 function statusDot(s: WsStatus) {
@@ -64,6 +77,7 @@ export function Sidebar() {
             item.href === "/"
               ? pathname === "/"
               : pathname.startsWith(item.href);
+          const Icon = item.Icon;
           return (
             <Link
               key={item.href}
@@ -75,14 +89,14 @@ export function Sidebar() {
                   : "text-cream-50/80 hover:bg-ink-800 hover:text-cream-50",
               )}
             >
-              <span
+              <Icon
+                size={16}
+                strokeWidth={2}
                 className={clsx(
-                  "text-base transition",
+                  "shrink-0 transition",
                   active ? "text-gold" : "text-muted group-hover:text-cream-50",
                 )}
-              >
-                {item.icon}
-              </span>
+              />
               <span>{item.label}</span>
             </Link>
           );
@@ -94,7 +108,7 @@ export function Sidebar() {
           onClick={logout}
           className="btn-ghost w-full justify-start text-xs text-muted hover:text-loss"
         >
-          <span>⎋</span>
+          <LogOut size={14} strokeWidth={2} />
           <span>Sign out</span>
         </button>
       </div>
