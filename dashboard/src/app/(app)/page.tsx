@@ -8,7 +8,7 @@ import { PositionTable } from "@/components/PositionTable";
 import { ModeToggle } from "@/components/ModeToggle";
 import { TradingPauseToggle } from "@/components/TradingPauseToggle";
 import { EquityChart } from "@/components/EquityChart";
-import { PageSpinner } from "@/components/Spinner";
+import { OverviewPageSkeleton } from "@/components/Skeleton";
 import { fmtPct, fmtUsd } from "@/lib/format";
 import { useLive } from "@/lib/use-live";
 import { useEffect, useMemo, useState } from "react";
@@ -63,12 +63,16 @@ export default function HomePage() {
     if (status !== "open") setLivePositions(null);
   }, [status]);
 
-  if (isLoading) return <PageSpinner />;
+  if (isLoading) return <OverviewPageSkeleton />;
   if (error || !data) {
     return (
       <div className="rounded border border-loss/30 bg-loss/10 p-4 text-sm text-loss">
-        Failed to load dashboard: {String(((error as { message?: string })?.message) ?? error)}
-        <button onClick={() => mutate()} className="btn-ghost ml-3 text-xs">
+        Can&apos;t reach the bot&apos;s API. Check that it&apos;s running and
+        reachable from this browser, then retry.
+        <div className="mt-1 text-xs text-loss/70">
+          {String(((error as { message?: string })?.message) ?? error)}
+        </div>
+        <button onClick={() => mutate()} className="btn-ghost mt-2 text-xs">
           Retry
         </button>
       </div>

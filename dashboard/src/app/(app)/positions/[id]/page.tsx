@@ -5,7 +5,7 @@ import useSWR from "swr";
 import { api } from "@/lib/api";
 import { PositionChart } from "@/components/PositionChart";
 import { KpiCard } from "@/components/KpiCard";
-import { PageSpinner } from "@/components/Spinner";
+import { PositionDetailSkeleton } from "@/components/Skeleton";
 import { fmtPct, fmtUsd, fmtTimestamp } from "@/lib/format";
 import { ModeToggle } from "@/components/ModeToggle";
 import { useState } from "react";
@@ -35,7 +35,7 @@ export default function PositionDetailPage({
       </div>
     );
   }
-  if (!pos || !state) return <PageSpinner />;
+  if (!pos || !state) return <PositionDetailSkeleton />;
 
   const dirColor = pos.direction === "long" ? "text-gain" : "text-loss";
   const dirArrow = pos.direction === "long" ? "▲" : "▼";

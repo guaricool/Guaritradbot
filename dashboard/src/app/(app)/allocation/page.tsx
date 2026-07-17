@@ -3,7 +3,7 @@
 import useSWR from "swr";
 import { api } from "@/lib/api";
 import { KpiCard } from "@/components/KpiCard";
-import { PageSpinner } from "@/components/Spinner";
+import { CardSkeleton } from "@/components/Skeleton";
 import { fmtPct, fmtUsd } from "@/lib/format";
 import { clsx } from "clsx";
 import type { Allocation, CorrelationResult, CVaRResult, StressResult } from "@/lib/types";
@@ -26,7 +26,45 @@ export default function AllocationPage() {
     () => api.riskCvar(),
   );
 
-  if (!alloc && !allocErr) return <PageSpinner />;
+  if (!alloc && !allocErr) {
+    return (
+      <div className="space-y-5">
+        <header>
+          <div className="h-7 w-56 animate-pulse rounded-md bg-ink-800" />
+          <div className="mt-2 h-4 w-96 animate-pulse rounded-md bg-ink-800" />
+        </header>
+        <div className="card overflow-hidden">
+          <CardSkeleton lines={4} />
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="card overflow-hidden">
+            <CardSkeleton lines={3} />
+          </div>
+          <div className="card grid grid-cols-2 gap-3 overflow-hidden p-4">
+            <div className="kpi">
+              <div className="h-3 w-16 animate-pulse rounded-md bg-ink-700" />
+              <div className="mt-1 h-7 w-20 animate-pulse rounded-md bg-ink-700" />
+            </div>
+            <div className="kpi">
+              <div className="h-3 w-16 animate-pulse rounded-md bg-ink-700" />
+              <div className="mt-1 h-7 w-20 animate-pulse rounded-md bg-ink-700" />
+            </div>
+            <div className="kpi">
+              <div className="h-3 w-16 animate-pulse rounded-md bg-ink-700" />
+              <div className="mt-1 h-7 w-20 animate-pulse rounded-md bg-ink-700" />
+            </div>
+            <div className="kpi">
+              <div className="h-3 w-16 animate-pulse rounded-md bg-ink-700" />
+              <div className="mt-1 h-7 w-20 animate-pulse rounded-md bg-ink-700" />
+            </div>
+          </div>
+        </div>
+        <div className="card overflow-hidden">
+          <CardSkeleton lines={3} />
+        </div>
+      </div>
+    );
+  }
 
   const targets = alloc?.target_weights ?? {};
   const actuals = alloc?.actual_weights ?? {};

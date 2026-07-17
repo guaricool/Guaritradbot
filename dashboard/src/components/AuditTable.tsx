@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { api } from "@/lib/api";
 import { fmtTimestamp } from "@/lib/format";
-import { Spinner } from "./Spinner";
+import { TableSkeleton } from "./Skeleton";
 
 const EVENT_BADGES: Record<string, string> = {
   TRADE_APPROVED: "bg-gain/15 text-gain",
@@ -80,8 +80,8 @@ export function AuditTable({ initialLimit = 100 }: { initialLimit?: number }) {
       </div>
 
       {isLoading ? (
-        <div className="flex h-40 items-center justify-center text-muted">
-          <Spinner className="h-5 w-5" />
+        <div className="p-4">
+          <TableSkeleton rows={4} />
         </div>
       ) : !rows.length ? (
         <div className="flex h-40 flex-col items-center justify-center text-muted">

@@ -14,7 +14,7 @@ import {
 } from "recharts";
 import { api } from "@/lib/api";
 import { fmtUsd, fmtDateOnly } from "@/lib/format";
-import { Spinner } from "./Spinner";
+import { ChartSkeleton } from "./Skeleton";
 
 export function EquityChart({ windowDays = 30 }: { windowDays?: number }) {
   const { data, error, isLoading } = useSWR(
@@ -61,11 +61,7 @@ export function EquityChart({ windowDays = 30 }: { windowDays?: number }) {
   }, [series]);
 
   if (isLoading) {
-    return (
-      <div className="flex h-64 items-center justify-center text-muted">
-        <Spinner className="h-5 w-5" />
-      </div>
-    );
+    return <ChartSkeleton />;
   }
   if (error || !data) {
     return (

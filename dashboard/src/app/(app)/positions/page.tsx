@@ -3,7 +3,7 @@
 import useSWR from "swr";
 import { api } from "@/lib/api";
 import { PositionTable } from "@/components/PositionTable";
-import { PageSpinner } from "@/components/Spinner";
+import { TableSkeleton } from "@/components/Skeleton";
 import { useLive } from "@/lib/use-live";
 import { useEffect, useMemo, useState } from "react";
 import type { PositionSummary } from "@/lib/types";
@@ -51,10 +51,11 @@ export default function PositionsPage() {
       <section className="card overflow-hidden">
         <div className="p-4">
           {isLoading && !data ? (
-            <PageSpinner />
+            <TableSkeleton rows={4} />
           ) : error ? (
             <div className="rounded border border-loss/30 bg-loss/10 p-3 text-sm text-loss">
-              Failed to load positions.
+              Can&apos;t reach the bot&apos;s API — check it&apos;s running, then
+              refresh.
             </div>
           ) : (
             <PositionTable

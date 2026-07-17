@@ -13,7 +13,7 @@ import {
 } from "recharts";
 import { api } from "@/lib/api";
 import { fmtUsd, fmtTimeOnly } from "@/lib/format";
-import { Spinner } from "./Spinner";
+import { Skeleton } from "./Skeleton";
 import type { Candle } from "@/lib/types";
 
 interface Props {
@@ -34,14 +34,7 @@ export function PositionChart({
   );
 
   if (isLoading) {
-    return (
-      <div
-        className="flex items-center justify-center text-muted"
-        style={{ height }}
-      >
-        <Spinner className="h-5 w-5" />
-      </div>
-    );
+    return <Skeleton className="w-full" style={{ height }} />;
   }
   if (error || !data) {
     return (

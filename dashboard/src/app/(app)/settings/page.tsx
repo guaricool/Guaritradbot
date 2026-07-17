@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import useSWR from "swr";
 import { api, ApiError } from "@/lib/api";
-import { PageSpinner } from "@/components/Spinner";
+import { FormSkeleton } from "@/components/Skeleton";
 import { clsx } from "clsx";
 import { fmtTimestamp } from "@/lib/format";
 import type {
@@ -246,7 +246,7 @@ function RiskSettingsSection() {
     }
   }, [data, form]);
 
-  if (!data && !error) return <PageSpinner />;
+  if (!data && !error) return <FormSkeleton />;
 
   if (error) {
     return (
@@ -256,7 +256,7 @@ function RiskSettingsSection() {
     );
   }
 
-  if (!form || !data) return <PageSpinner />;
+  if (!form || !data) return <FormSkeleton />;
 
   function setField<K extends keyof RiskFormState>(key: K, value: RiskFormState[K]) {
     setForm((f) => (f ? { ...f, [key]: value } : f));
@@ -411,7 +411,7 @@ export default function SettingsPage() {
     }
   }, [data, form]);
 
-  if (!data && !error) return <PageSpinner />;
+  if (!data && !error) return <FormSkeleton />;
 
   if (error) {
     return (
@@ -421,7 +421,7 @@ export default function SettingsPage() {
     );
   }
 
-  if (!form || !data) return <PageSpinner />;
+  if (!form || !data) return <FormSkeleton />;
 
   function setField<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((f) => (f ? { ...f, [key]: value } : f));
