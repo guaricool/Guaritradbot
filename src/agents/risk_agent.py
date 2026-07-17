@@ -357,7 +357,29 @@ class RiskManagerAgent:
         if not live and self.paper_balance_provider is not None:
             try:
                 bal = float(self.paper_balance_provider())
-                if math.isfinite(bal) and bal >= 0:
+                if math.isfinite(bal):
+                    if bal < 0:
+                        # Carlos: "el sistema no puede meter en una
+                        # entrada mas que lo que esta en el balance" —
+                        # a negative paper equity (e.g. a stale
+                        # oversized position from before this sizing
+                        # fix existed, still deeply underwater) used to
+                        # fall through the `bal >= 0` check below and
+                        # silently size the NEXT paper trade against
+                        # the REAL broker balance instead — repeating
+                        # the exact bug that caused the negative equity
+                        # in the first place. Clamp to $0 instead: no
+                        # virtual capital left means no new paper entry
+                        # can size above min_order_usd, so this
+                        # correctly blocks new entries until the
+                        # underwater position closes and realized P&L
+                        # brings equity back to positive.
+                        logger.warning(
+                            f"[RiskManagerAgent] Paper equity negativa (${bal:.2f}) — "
+                            f"bloqueando nuevas entradas (balance simulado = $0) hasta "
+                            f"que la posición perdedora se cierre y el P&L se recupere."
+                        )
+                        return (0.0, "paper_simulated_depleted")
                     return (bal, "paper_simulated")
             except Exception as e:
                 logger.warning(

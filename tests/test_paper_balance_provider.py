@@ -127,6 +127,32 @@ class PaperBalanceProviderTest(unittest.TestCase):
         # a $100k account).
         self.assertLess(notional, 2000.0)
 
+    def test_negative_paper_equity_clamps_to_zero_not_real_broker(self):
+        """Carlos: 'el sistema no puede meter en una entrada mas que lo
+        que esta en el balance' -- a deeply underwater paper account
+        (e.g. a stale oversized position from before this sizing fix
+        existed) must NOT fall through to the real Alpaca/binance
+        balance for the next trade. That would repeat the exact bug
+        that caused the negative equity: sizing new paper entries
+        against real broker money."""
+        agent = self._make_agent(live=False, paper_balance_provider=lambda: -37414.57)
+        bal, source = agent.get_account_balance(asset="GLD")
+        self.assertEqual(bal, 0.0)
+        self.assertEqual(source, "paper_simulated_depleted")
+        self.alpaca.get_usd_balance.assert_not_called()
+
+    def test_negative_paper_equity_blocks_new_entries_end_to_end(self):
+        agent = self._make_agent(live=False, paper_balance_provider=lambda: -37414.57)
+        agent.risk_per_trade_pct = 1.0
+        hypothesis = {
+            "asset": "GLD", "strategy": "SUPPORT_BOUNCE", "direction": "long",
+            "price": 368.79, "atr_at_signal": 4.8,
+        }
+        state = {"generate_hypotheses": {"hypotheses": [hypothesis]}}
+        result = agent.validate_and_size({}, state)
+        self.assertEqual(result["approved_trades"], [])
+        self.alpaca.get_usd_balance.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
