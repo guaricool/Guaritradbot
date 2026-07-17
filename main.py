@@ -47,6 +47,7 @@ from src.agents.researchers import HypothesisScorer
 from src.agents.news_analyst import NewsAnalyst  # Sprint 49
 from src.agents.sentiment_analyst import SentimentAnalyst  # Sprint 50
 from src.agents.llm_analyst import LLMAnalyst  # Sprint 55 (LLM shadow vote)
+from src.agents.macro_analyst import MacroAnalyst  # Macro/geopolitical shadow scan
 from src.core.logging_setup import setup_logging
 from src.runtime.bot_runtime import BotRuntime  # Sprint 46T (audit M6)
 
@@ -1007,6 +1008,13 @@ def main():
         # returns a neutral placeholder for each asset and
         # the bot continues normally (fail-open).
         "LLMAnalyst": LLMAnalyst(),
+        # MacroAnalyst: SHADOW MODE macro/geopolitical event scan
+        # (Fed rate decisions, CPI prints, recession/geopolitical/
+        # banking-crisis signals). Logged as MACRO_SIGNAL_SHADOW audit
+        # events for empirical evaluation -- NOT consumed by the
+        # trading decision yet, same discipline as LLMAnalyst above.
+        # See macro_analyst.py's module docstring for the full design.
+        "MacroAnalyst": MacroAnalyst(audit=audit),
         "StrategyAgent": StrategyAgent(
             strategy_params=strategy_params, audit=audit,
             # Sprint 46S (audit M1 follow-up): same flag RiskManagerAgent

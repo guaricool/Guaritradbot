@@ -30,6 +30,18 @@ steps:
     depends_on: ["scan_news"]
     inputs:
       assets: ["SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO"]
+  # Macro/geopolitical SHADOW scan (Fed rate decisions, CPI prints,
+  # recession/geopolitical/banking-crisis signals). Independent of
+  # scan_news -- that step is per-ASSET ticker news, this is
+  # market-WIDE macro events, a different question entirely. Logged
+  # to the audit ledger as MACRO_SIGNAL_SHADOW for evaluation; NOT
+  # read by HypothesisScorer or anything else yet -- see
+  # macro_analyst.py's module docstring for why and the plan to
+  # promote it once there's evidence it's worth trusting.
+  - id: scan_macro
+    agent: MacroAnalyst
+    action: scan_macro
+    optional: true
   - id: analyze_market
     agent: MarketAnalystAgent
     action: fetch_and_analyze
