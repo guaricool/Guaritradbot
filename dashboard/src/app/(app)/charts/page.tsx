@@ -60,11 +60,13 @@ export default function ChartsPage() {
   const [openAsset, setOpenAsset] = useState<AssetEntry | null>(null);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-fade-in">
       <div className="flex items-baseline justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-cream-50">Live Charts</h1>
-          <p className="text-xs text-muted">
+          <h1 className="font-display text-2xl font-semibold tracking-tight">
+            Live Charts
+          </h1>
+          <p className="text-sm text-muted">
             15 assets across crypto / forex / stocks+ETFs. Click any tile to
             expand. Use the time-range chips on each tile (or in the
             modal) to zoom in/out.

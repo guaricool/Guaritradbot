@@ -75,15 +75,16 @@ export default function HistoryPage() {
   const rows = data?.positions ?? [];
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5 animate-fade-in">
       <div className="flex items-baseline justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-cream-50">Trade History</h1>
-          <p className="text-xs text-muted">
+          <h1 className="font-display text-2xl font-semibold tracking-tight">
+            Trade History
+          </h1>
+          <p className="text-sm text-muted">
             Closed positions, newest first. Filter by date, asset class, and direction.
           </p>
         </div>
-        <div className="text-[10px] uppercase tracking-wider text-muted">Sprint 58</div>
       </div>
 
       {/* Filters */}
