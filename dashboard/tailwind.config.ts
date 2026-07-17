@@ -44,9 +44,10 @@ const config: Config = {
         },
       },
       fontFamily: {
-        sans: ["var(--font-sans)", "Inter", "system-ui", "sans-serif"],
+        // DESIGN.md: Geist for display/body, Inter is explicitly banned.
+        sans: ["var(--font-geist-sans)", "system-ui", "sans-serif"],
         mono: ["var(--font-mono)", "JetBrains Mono", "ui-monospace", "monospace"],
-        display: ["var(--font-display)", "Inter", "system-ui", "sans-serif"],
+        display: ["var(--font-geist-sans)", "system-ui", "sans-serif"],
       },
       keyframes: {
         "pulse-gain": {

@@ -1,13 +1,12 @@
 import type { Metadata, Viewport } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { JetBrains_Mono } from "next/font/google";
+import { GeistSans } from "geist/font/sans";
 import "./globals.css";
 
-const inter = Inter({
-  subsets: ["latin"],
-  variable: "--font-sans",
-  display: "swap",
-});
-
+// DESIGN.md is explicit: "Banned Fonts: Inter y fuentes serif genéricas
+// ... están estrictamente prohibidas." Geist (self-hosted via the
+// `geist` package, no Google Fonts network dependency) is the spec'd
+// display/body font; JetBrains Mono remains for numeric/monospace.
 const jetbrains = JetBrains_Mono({
   subsets: ["latin"],
   variable: "--font-mono",
@@ -33,7 +32,7 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body
-        className={`${inter.variable} ${jetbrains.variable} min-h-screen bg-ink-950 text-cream-50 antialiased`}
+        className={`${GeistSans.variable} ${jetbrains.variable} min-h-screen bg-ink-950 text-cream-50 antialiased`}
       >
         <div className="relative z-10">{children}</div>
       </body>
