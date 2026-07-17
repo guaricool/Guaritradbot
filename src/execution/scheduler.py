@@ -297,6 +297,16 @@ class EpochScheduler:
             }
 
             if should_promote:
+                # Bug fix: StrategyAgent now resets `self.params` from
+                # `self._live_params` at the top of every
+                # evaluate_strategies() call (paper-vs-live profile
+                # switching -- see strategy_agent.py's paper_params_
+                # overrides docstring). Setting only `.params` here
+                # would get silently wiped on the very next cycle;
+                # `._live_params` is the actual base this promotion
+                # needs to update for it to survive past one cycle.
+                if hasattr(self.strategy_agent, "_live_params"):
+                    self.strategy_agent._live_params = new_params
                 self.strategy_agent.params = new_params
                 _write_strategy_params_override(
                     self.strategy_params_override_path, old_params, new_params, reason,

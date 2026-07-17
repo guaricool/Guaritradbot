@@ -501,6 +501,13 @@ def main():
     # / config.yaml's comment for the full rationale.
     max_auto_adjust_risk_multiplier = float(trading_cfg.get("max_auto_adjust_risk_multiplier", 2.0))
     max_open_trades = trading_cfg.get("max_open_trades", 5)
+    # Carlos: paper mode should run an aggressive profile, live the
+    # regular/recommended values above -- see config.yaml's
+    # `trading_paper_aggressive:` comment and RiskManagerAgent's
+    # `paper_overrides` constructor docstring for the full rationale.
+    # Read as its own top-level config section (not nested under
+    # `trading:`) so it's clearly a distinct, paper-only profile.
+    trading_paper_aggressive = config.get("trading_paper_aggressive") or {}
     enable_position_replacement = trading_cfg.get("enable_position_replacement", True)
     replacement_score_threshold = float(trading_cfg.get("replacement_score_threshold", 0.20))
     min_profit_to_protect = float(trading_cfg.get("min_profit_to_protect", 0.0))
@@ -1074,6 +1081,12 @@ def main():
             # positive int) to re-enable the source-side veto.
             decision_log=get_decision_log(),
             loss_streak_suppress=0,
+            mode_override_path=override_path,
+            # Carlos: paper mode should explore more aggressively
+            # (looser RSI/Stoch/BB/ADX thresholds); live keeps
+            # `strategy_params`/DEFAULT_STRATEGY_PARAMS. See
+            # config.yaml's `strategy_paper_aggressive:` comment.
+            paper_params_overrides=config.get("strategy_paper_aggressive") or {},
         ),
         "RiskManagerAgent": RiskManagerAgent(
             broker_client=broker_client,
@@ -1094,6 +1107,7 @@ def main():
             min_order_usd=min_order_usd,
             # Sprint 46N (audit A2).
             max_auto_adjust_risk_multiplier=max_auto_adjust_risk_multiplier,
+            paper_overrides=trading_paper_aggressive,
             event_bus=event_bus,
             mandate_gate=mandate_gate,
             audit=audit,

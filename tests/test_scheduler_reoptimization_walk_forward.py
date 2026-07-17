@@ -21,7 +21,7 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -245,6 +245,57 @@ class RunReoptimizationIntegrationTest(unittest.TestCase):
         self.scheduler.market_analyst = None
         self.scheduler.run_reoptimization()  # must not raise
         self.assertEqual(self.audit_events, [])
+
+
+class PromotionSurvivesStrategyAgentPerCycleResetTest(unittest.TestCase):
+    """Bug fix: StrategyAgent.evaluate_strategies() resets `self.params`
+    from `self._live_params` at the top of every call (paper-vs-live
+    profile switching -- see strategy_agent.py's paper_params_overrides
+    docstring). A promotion that only set `.params` would get silently
+    wiped on the very next evaluate_strategies() call; this test uses a
+    REAL StrategyAgent (not a MagicMock) so that per-cycle reset
+    actually runs, and confirms the promotion survives it."""
+
+    def setUp(self):
+        from src.agents.strategy_agent import StrategyAgent
+
+        self.tmpdir = tempfile.mkdtemp()
+        self.override_path = os.path.join(self.tmpdir, "strategy_params_override.json")
+        self.audit = MagicMock()
+        self.audit.append.side_effect = lambda et, p: None
+        self.strategy_agent = StrategyAgent()
+        self.market_analyst = MagicMock()
+        self.market_analyst.fetch_one.return_value = _make_trending_ohlc()
+        self.scheduler = EpochScheduler(
+            engine=MagicMock(),
+            workflow_data={"id": "test", "steps": []},
+            market_analyst=self.market_analyst,
+            strategy_agent=self.strategy_agent,
+            hyperopt=MagicMock(),
+            audit=self.audit,
+            assets=("BTC-USD", "SPY"),
+            strategy_params_override_path=self.override_path,
+        )
+
+    def test_promoted_params_survive_a_subsequent_evaluate_strategies_call(self):
+        # Force promotion deterministically -- this test is about the
+        # mechanical interaction between a promotion and StrategyAgent's
+        # per-cycle reset, not about whether THIS random synthetic data
+        # happens to produce a winning candidate.
+        with patch("src.execution.scheduler._should_promote", return_value=(True, "forced for test")):
+            self.scheduler.run_reoptimization()
+        self.assertTrue(os.path.exists(self.override_path))
+        promoted_oversold = self.strategy_agent.params["rsi_oversold"]
+        promoted_overbought = self.strategy_agent.params["rsi_overbought"]
+
+        # Simulate the next trading cycle -- this used to reset
+        # .params back to the stale DEFAULT_STRATEGY_PARAMS, silently
+        # discarding the promotion.
+        self.strategy_agent.evaluate_strategies({}, {"analyze_market": {"market_data": {}}})
+
+        self.assertEqual(self.strategy_agent.params["rsi_oversold"], promoted_oversold)
+        self.assertEqual(self.strategy_agent.params["rsi_overbought"], promoted_overbought)
+        self.assertEqual(self.strategy_agent._live_params["rsi_oversold"], promoted_oversold)
 
 
 if __name__ == "__main__":

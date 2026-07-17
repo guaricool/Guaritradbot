@@ -226,6 +226,60 @@ trading:
   # behavior.
   paper_slippage_pct: 0.0005
 
+# Carlos: "en paper la configuracion sea agresiva... en live tome los
+# valores regulares recomendados." The `trading:` block above IS the
+# live/recommended profile (these values have been tuned over many
+# sprints of live-incident fixes this session and before -- they are
+# the "regular recommended" values, not placeholders). This section
+# is layered ON TOP of `trading:` ONLY while the bot is in PAPER mode
+# (mandate_enabled=false in mode_override.json), checked fresh on
+# every RiskManagerAgent.validate_and_size() call -- so toggling
+# paper/live from the dashboard switches profiles immediately, no
+# restart needed. Only listed keys are overridden; anything omitted
+# here falls back to `trading:`'s value even in paper mode.
+#
+# Reasoning behind each aggressive value (loosen exploration, but
+# NEVER loosen the hard safety ceilings -- max_auto_adjust_risk_multiplier
+# and min_order_usd stay at their `trading:` values in both modes,
+# since those protect the INTEGRITY of the sizing math itself, not
+# just the account balance):
+#   - risk_per_trade_pct 2x live: more P&L signal per trade, still
+#     capped well under a level that could wipe a paper account in a
+#     handful of losses.
+#   - max_capital_per_trade_pct 80%: fewer trades sit idle waiting for
+#     a "perfect" small-notional setup; more of the paper account's
+#     capacity gets exercised per idea.
+#   - atr_stop_multiplier/atr_take_profit_multiplier tighter (1.5/3.0
+#     vs 2.0/4.0): faster round-trips (hit SL/TP sooner) -> more
+#     completed trades per day -> more data for the walk-forward
+#     re-optimization (EpochScheduler) and decision_log lessons to
+#     learn from, in less wall-clock time.
+#   - max_open_trades 8 vs 5: more concurrent hypotheses explored at
+#     once across the asset universe.
+trading_paper_aggressive:
+  risk_per_trade_pct: 2.0
+  max_capital_per_trade_pct: 80
+  atr_stop_multiplier: 1.5
+  atr_take_profit_multiplier: 3.0
+  max_open_trades: 8
+
+# Same idea as trading_paper_aggressive above, but for StrategyAgent's
+# entry-signal thresholds (src/agents/strategy_agent.py's
+# DEFAULT_STRATEGY_PARAMS is the live/recommended profile). Looser
+# oversold/overbought zones and a lower ADX floor mean more signals
+# actually fire in paper, so there's more real (if noisier) trade
+# history for the walk-forward re-optimizer to learn from -- live
+# keeps the tighter, more selective defaults.
+strategy_paper_aggressive:
+  rsi_oversold: 35
+  rsi_overbought: 65
+  rsi_zone_oversold: 40
+  rsi_zone_overbought: 60
+  stoch_oversold: 25
+  stoch_overbought: 75
+  bb_pct_b: 0.10
+  adx_trend_min: 10
+
 schedule:
   # Sprint 46S: was 1 (hourly). Carlos wanted more chances to catch a
   # good entry, especially since crypto trades 24/7 and doesn't wait

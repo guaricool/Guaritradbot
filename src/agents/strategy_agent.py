@@ -25,8 +25,12 @@ mercado actual no tiene esos cruces → 0 señales todo el día. Ahora:
 - Deduplicación: no genera 2 señales del mismo asset/direction en mismo
   ciclo
 """
+from typing import Optional
+
 import pandas as pd
 import numpy as np
+
+from src.execution.broker_routing import is_mandate_enabled
 
 # Sprint 46G: Qlib-inspired alpha factors (KBAR/RSV/CNTD/WVMA/etc — see
 # src/analysis/alpha_factors.py's module docstring for the Qlib
@@ -238,8 +242,23 @@ class StrategyAgent:
     def __init__(self, strategy_params: dict = None, audit=None, ml_predictors: dict = None,
                  ml_long_threshold: float = 0.6, ml_short_threshold: float = 0.4,
                  allow_crypto_short: bool = False, decision_log=None,
-                 loss_streak_suppress: int = 3):
-        self.params = strategy_params or dict(DEFAULT_STRATEGY_PARAMS)
+                 loss_streak_suppress: int = 3,
+                 mode_override_path: str = "audit/mode_override.json",
+                 # Carlos: paper should explore more aggressively (looser
+                 # RSI/Stoch/BB/ADX thresholds -> more signals fire, more
+                 # trade history for the walk-forward re-optimizer and
+                 # decision_log to learn from); live keeps the tighter,
+                 # more selective `strategy_params`/DEFAULT_STRATEGY_PARAMS.
+                 # Checked fresh (via is_mandate_enabled) at the top of
+                 # every evaluate_strategies() call, so toggling paper/
+                 # live from the dashboard switches profiles immediately.
+                 # Same "listed keys only, everything else keeps the live
+                 # value" contract as RiskManagerAgent's paper_overrides.
+                 paper_params_overrides: Optional[dict] = None):
+        self._live_params = dict(strategy_params or DEFAULT_STRATEGY_PARAMS)
+        self.params = dict(self._live_params)
+        self.mode_override_path = mode_override_path
+        self.paper_params_overrides = paper_params_overrides or {}
         # B022 fix: audit ledger para emitir HYPOTHESIS_GENERATED events.
         # Esto permite que PositionMonitor.check_with_signals() encuentre
         # las señales recientes y dispare SMART_PROFIT_TAKE cuando hay
@@ -293,6 +312,18 @@ class StrategyAgent:
         })
 
     def evaluate_strategies(self, inputs: dict, state: dict):
+        # Select the active signal-threshold profile fresh every call --
+        # paper gets the aggressive overrides (if configured), live
+        # always gets the recommended/base params, recomputed from
+        # `_live_params` rather than restored from saved state (no risk
+        # of a stuck-in-aggressive-mode leak across cycles). See
+        # paper_params_overrides' constructor docstring.
+        _is_live = is_mandate_enabled(self.mode_override_path)
+        if not _is_live and self.paper_params_overrides:
+            self.params = {**self._live_params, **self.paper_params_overrides}
+        else:
+            self.params = dict(self._live_params)
+
         market_data = state.get("analyze_market", {}).get("market_data", {})
         logger.info(f'[StrategyAgent] Evaluando {len(market_data)} assets...')
 

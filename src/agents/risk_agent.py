@@ -178,6 +178,23 @@ class RiskManagerAgent:
         # mode (before ever touching a broker) and its return value is
         # used as the sizing balance instead.
         paper_balance_provider: Optional[Callable[[], float]] = None,
+        # Carlos: paper should run an AGGRESSIVE profile (more risk per
+        # trade, looser caps, faster round-trips) so it explores more
+        # paths and accumulates more trade history for the walk-forward
+        # re-optimizer/decision_log to learn from; live should use the
+        # regular/recommended values (the constructor defaults/config.yaml
+        # `trading:` values above). Keys recognized: risk_per_trade_pct,
+        # max_capital_per_trade_pct, atr_stop_multiplier,
+        # atr_take_profit_multiplier, max_open_trades. Applied fresh at
+        # the top of every validate_and_size() call (checked via
+        # is_mandate_enabled), so toggling paper/live from the dashboard
+        # switches profiles immediately -- no restart needed. Anything
+        # NOT in this dict keeps the live/base value even in paper mode
+        # -- notably max_auto_adjust_risk_multiplier and min_order_usd
+        # are never in scope here: those protect the INTEGRITY of the
+        # sizing math itself (see their own docstrings), not just the
+        # account balance, and must not loosen in either mode.
+        paper_overrides: Optional[dict] = None,
         # Sprint 46N (audit A2): the min_order_usd auto-adjust (below,
         # Sprint 18) inflates a risk-sized trade up to min_order_usd
         # whenever the raw risk/stop_distance notional would be smaller
@@ -211,6 +228,16 @@ class RiskManagerAgent:
         self.max_capital_per_trade_pct = max_capital_per_trade_pct
         self.atr_stop_multiplier = atr_stop_multiplier
         self.atr_take_profit_multiplier = atr_take_profit_multiplier
+        # Shadow copies of the LIVE/recommended values, so
+        # validate_and_size() can always recompute the active profile
+        # fresh from these (never from whatever it left self.xxx set
+        # to on the previous cycle) -- see paper_overrides' docstring.
+        self._live_risk_per_trade_pct = risk_per_trade_pct
+        self._live_max_capital_per_trade_pct = max_capital_per_trade_pct
+        self._live_atr_stop_multiplier = atr_stop_multiplier
+        self._live_atr_take_profit_multiplier = atr_take_profit_multiplier
+        self._live_max_open_trades = max_open_trades
+        self.paper_overrides = paper_overrides or {}
         # Sprint 46R audit B2: SL/TP minimum-distance floor as
         # percent of entry (the B1 fix's 0.005). Defaults
         # preserve the pre-46R hard-coded behavior; config.yaml
@@ -390,6 +417,32 @@ class RiskManagerAgent:
             raise RuntimeError("Balance no disponible y simulación deshabilitada") from e
 
     def validate_and_size(self, inputs: dict, state: dict) -> Dict[str, Any]:
+        # Select the active risk profile fresh on every call -- paper
+        # gets the aggressive overrides (if configured), live always
+        # gets the recommended/base values, recomputed from the shadow
+        # `_live_*` copies rather than restored from a saved state, so
+        # there's no risk of a stuck-in-aggressive-mode leak across
+        # cycles if something raises mid-call. See paper_overrides'
+        # constructor docstring for the full rationale.
+        _is_live = is_mandate_enabled(self.mode_override_path)
+        if not _is_live and self.paper_overrides:
+            self.risk_per_trade_pct = self.paper_overrides.get(
+                "risk_per_trade_pct", self._live_risk_per_trade_pct)
+            self.max_capital_per_trade_pct = self.paper_overrides.get(
+                "max_capital_per_trade_pct", self._live_max_capital_per_trade_pct)
+            self.atr_stop_multiplier = self.paper_overrides.get(
+                "atr_stop_multiplier", self._live_atr_stop_multiplier)
+            self.atr_take_profit_multiplier = self.paper_overrides.get(
+                "atr_take_profit_multiplier", self._live_atr_take_profit_multiplier)
+            self.max_open_trades = self.paper_overrides.get(
+                "max_open_trades", self._live_max_open_trades)
+        else:
+            self.risk_per_trade_pct = self._live_risk_per_trade_pct
+            self.max_capital_per_trade_pct = self._live_max_capital_per_trade_pct
+            self.atr_stop_multiplier = self._live_atr_stop_multiplier
+            self.atr_take_profit_multiplier = self._live_atr_take_profit_multiplier
+            self.max_open_trades = self._live_max_open_trades
+
         # Sprint 3: si HypothesisScorer corrió, usa SOLO las hipótesis que
         # pasaron el debate. Si no hay debate, fallback al total
         # (retrocompatible con versiones sin Sprint 3).
