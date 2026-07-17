@@ -903,8 +903,15 @@ def build_state_snapshot(
     mode = read_mode(config=config, audit_path=audit_path)
     is_paper_mode = (mode.mode == "paper")
 
-    # Sprint 62: paper-mode effective balance. In paper mode, the bot
-    # uses `config.paper.starting_balance_usd` as the simulated
+    # Sprint 46C: real per-broker balances. Best-effort â€” a broker
+    # not being configured, or a transient network error, must never
+    # break the whole /api/state response (the dashboard still needs
+    # positions/P&L even if a balance call fails).
+    binance_bal, binance_src = _get_binance_balance()
+    alpaca_bal, alpaca_src = _get_alpaca_balance()
+
+    # Sprint 62 / gap fix: paper-mode effective balance. In paper mode,
+    # the bot uses `config.paper.starting_balance_usd` as the simulated
     # starting balance and adds accumulated realized P&L. The
     # dashboard's "Effective balance" card shows this number, so the
     # user sees a meaningful paper account (e.g. $1,000 minus any
@@ -920,19 +927,31 @@ def build_state_snapshot(
                 paper_starting_usd = 1000.0
         except (TypeError, ValueError):
             paper_starting_usd = 1000.0
-        # Effective paper balance = starting + realized P&L (not
-        # including unrealized — that already lives in its own KPI
-        # card on the dashboard). This is the same formula the
-        # EquityTracker uses internally.
-        effective_balance_usd = paper_starting_usd + total_pnl
+        # Carlos: "no se ve el descuento en el balance... si eso pasa
+        # en live puede causar confusion" — the old formula was
+        # `starting + realized_pnl` only, which never changes the
+        # instant a position OPENS (only once it closes). That let the
+        # card show the full $1,000 "available" while $200 of it was
+        # actually locked in an open position — exactly the confusion
+        # a real broker's cash-available balance never causes (buying
+        # an asset immediately debits cash). Now: available cash =
+        # starting + realized P&L - notional of currently OPEN
+        # positions (total_exposure, computed above from the same
+        # position summaries the "Open positions" card uses), so
+        # opening a position visibly debits this number and closing it
+        # credits it back (via realized_pnl).
+        effective_balance_usd = paper_starting_usd + total_pnl - total_exposure
         effective_balance_source = "paper_simulated"
-
-    # Sprint 46C: real per-broker balances. Best-effort â€” a broker
-    # not being configured, or a transient network error, must never
-    # break the whole /api/state response (the dashboard still needs
-    # positions/P&L even if a balance call fails).
-    binance_bal, binance_src = _get_binance_balance()
-    alpaca_bal, alpaca_src = _get_alpaca_balance()
+    else:
+        # Gap fix: this branch never existed before — in live mode
+        # `effective_balance_usd` stayed None forever (always "—" on
+        # the dashboard's hero card) despite this field's own docstring
+        # claiming "In live mode = real broker balance". Real broker
+        # balances already reflect cash locked in open positions (the
+        # exchange debits it on fill), so no manual subtraction needed
+        # here — just surface what the brokers report.
+        effective_balance_usd = (binance_bal or 0.0) + (alpaca_bal or 0.0)
+        effective_balance_source = "broker_live"
 
     return StateSnapshot(
         mode=mode,

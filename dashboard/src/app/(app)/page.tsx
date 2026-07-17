@@ -166,13 +166,16 @@ export default function HomePage() {
       <div className="grid gap-3 md:grid-cols-2 stagger-children">
         <KpiCard
           size="lg"
-          // Sprint 62: "Effective balance" — the number the bot actually
-          // uses for position sizing. In paper mode this is the virtual
-          // paper starting balance + realized P&L (so $1,000 minus any
-          // simulated losses), NOT the real broker balance. The real
-          // binance/alpaca balances are shown below as smaller "Reference"
-          // cards so the user can still see them.
-          label={data.mode.mode === "paper" ? "Paper balance (simulated)" : "Effective balance"}
+          // Sprint 62 (+ gap fix): "Available balance" — cash NOT
+          // currently locked in an open position. In paper mode this
+          // is the virtual paper starting balance + realized P&L -
+          // notional of open positions, so opening a position visibly
+          // debits it (was previously starting + P&L only, which
+          // never moved until a position closed — looked like the
+          // full balance was still "available" mid-trade). The real
+          // binance/alpaca balances are shown below as smaller
+          // "Reference" cards so the user can still see them.
+          label={data.mode.mode === "paper" ? "Paper balance available" : "Available balance"}
           value={
             data.effective_balance_usd !== null && data.effective_balance_usd !== undefined
               ? fmtUsd(data.effective_balance_usd, { decimals: 2 })
@@ -182,9 +185,9 @@ export default function HomePage() {
           hint={
             data.mode.mode === "paper"
               ? data.paper_starting_balance_usd
-                ? `virtual $${data.paper_starting_balance_usd.toFixed(0)} starting balance + P&L`
+                ? `virtual $${data.paper_starting_balance_usd.toFixed(0)} start + P&L − open positions`
                 : "virtual paper account"
-              : "live from broker"
+              : "live from broker, minus open positions"
           }
           icon={<Wallet size={18} strokeWidth={2} />}
           trend={
