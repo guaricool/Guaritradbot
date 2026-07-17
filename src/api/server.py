@@ -231,7 +231,7 @@ app = FastAPI(
 _CORS_ORIGINS = [o.strip() for o in os.getenv("DASHBOARD_CORS_ORIGINS", "").split(",") if o.strip()]
 if not _CORS_ORIGINS:
     print(
-        "[server] ⚠️  DASHBOARD_CORS_ORIGINS is not set — no browser origin "
+        "[server] WARNING: DASHBOARD_CORS_ORIGINS is not set — no browser origin "
         "is allowed to call this API (fails closed). Set it to the "
         "dashboard's public URL (comma-separated if more than one) to "
         "unlock the dashboard, e.g. DASHBOARD_CORS_ORIGINS=http://13.140.181.29:3050"
@@ -1374,7 +1374,7 @@ def post_restart(_: None = Depends(auth.require_auth)) -> Dict[str, Any]:
         if elapsed < _RESTART_COOLDOWN_SECONDS:
             retry_after = _RESTART_COOLDOWN_SECONDS - elapsed
             print(
-                f"[server] ⚠️  POST /api/restart blocked by cooldown — a restart "
+                f"[server] WARNING: POST /api/restart blocked by cooldown — a restart "
                 f"was requested {elapsed:.0f}s ago (cooldown={_RESTART_COOLDOWN_SECONDS:.0f}s). "
                 f"If this wasn't you, the shared dashboard token may be compromised."
             )

@@ -308,9 +308,15 @@ def _resample_ohlcv(df_60m: pd.DataFrame, rule: str, asset: str = None) -> pd.Da
     return resampled
 
 
+# Bug fix: "1d" was missing here, so fetch_one() never trimmed a
+# still-forming daily candle before computing indicators on it (see
+# fetch_one's docstring/comments below) -- the exact "read the live-
+# updating Close as if it were a closed bar" failure mode
+# _trim_in_progress_bar exists to prevent for intraday bars, just left
+# uncovered for daily.
 _YF_INTERVAL_SECONDS = {
     "1m": 60, "2m": 120, "5m": 300, "15m": 900, "30m": 900 * 2,
-    "60m": 3600, "90m": 5400, "1h": 3600,
+    "60m": 3600, "90m": 5400, "1h": 3600, "1d": 86400,
 }
 
 
@@ -393,7 +399,13 @@ class MarketAnalystAgent(Component):
         self.ready()
 
     def fetch_one(self, asset: str, interval: str = "1d", period: str = "1y") -> "pd.DataFrame | None":
-        """Helper público (Sprint 2): trae datos OHLCV de un solo asset. Usado por PositionMonitor.
+        """Helper público (Sprint 2): trae datos OHLCV de un solo asset.
+
+        Docstring fix: this used to claim "usado por PositionMonitor",
+        but PositionMonitor doesn't call this method at all — the
+        actual (only) current caller is `EpochScheduler`
+        (src/execution/scheduler.py), for its periodic walk-forward
+        RSI-parameter re-optimization, always with interval='1d'.
 
         Sprint 43 M6 fix: when `interval='4h'`, the previous code
         mapped it to yfinance's 60m and returned 4x more bars,
@@ -431,6 +443,24 @@ class MarketAnalystAgent(Component):
             # not a method), so we call it without self.
             if interval == "4h":
                 df = _resample_ohlcv(df, "4h", asset=asset)
+            # Bug fix: fetch_and_analyze() validates every candle
+            # (NaN/Inf/negative/monotonic/duplicate-index) via
+            # `_validate_or_fault` before computing indicators;
+            # fetch_one() had no equivalent check at all, so a
+            # corrupt bar from yfinance would flow straight into
+            # RSI/ATR/MACD/ADX unvalidated. Use the underlying
+            # `validate_dataframe` directly (not `_validate_or_fault`)
+            # so this doesn't call `self.degrade()` — fetch_one's only
+            # caller is EpochScheduler's periodic walk-forward
+            # re-optimization (a background task), not the live
+            # trading pipeline `fetch_and_analyze` drives, and a bad
+            # bar here shouldn't flip this agent's health status to
+            # DEGRADED on the dashboard.
+            try:
+                validate_dataframe(df)
+            except DataIntegrityError as e:
+                logger.warning(f"[MarketAnalystAgent] fetch_one({asset}, {interval}): {e}")
+                return None
             # Calcular todos los indicadores (incluyendo los nuevos del PDF2)
             close = df["Close"]
             df["EMA_20"] = close.ewm(span=20, adjust=False).mean()
