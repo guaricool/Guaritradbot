@@ -378,6 +378,62 @@ class SentimentAnalystHypothesisScorerIntegrationTest(unittest.TestCase):
             with_social_only["bull_score"] - base["bull_score"], 2.5, delta=0.5
         )
 
+    def test_short_hypothesis_applies_sentiment_in_opposite_direction(self):
+        """Bug fix: sentiment describes the asset's PRICE direction, not
+        the hypothesis's. Bullish (positive) news is evidence AGAINST a
+        SHORT hypothesis (bear_score), and bearish (negative) news is
+        evidence FOR it (bull_score) -- the reverse of a long."""
+        from src.agents.researchers import HypothesisScorer
+        scorer = HypothesisScorer(position_repo=None, audit=None)
+        base = scorer.manager.decide(
+            {
+                "asset": "BTC-USD", "direction": "short",
+                "strategy": "MACD_BearCross",
+                "rsi_at_signal": 50, "macd_at_signal": -0.1, "atr_at_signal": 100.0,
+            },
+            open_positions=[],
+        )
+        # Positive (bullish) news on a SHORT hypothesis must hurt it:
+        # bear_score up, bull_score unchanged.
+        with_bullish_news = scorer.manager.decide(
+            {
+                "asset": "BTC-USD", "direction": "short",
+                "strategy": "MACD_BearCross",
+                "rsi_at_signal": 50, "macd_at_signal": -0.1, "atr_at_signal": 100.0,
+            },
+            open_positions=[],
+            news_context={
+                "BTC-USD": {"news_sentiment": 1.0, "news_count": 5,
+                            "top_headline": "x", "key_themes": [], "raw_titles": []},
+            },
+        )
+        self.assertAlmostEqual(
+            with_bullish_news["bear_score"] - base["bear_score"], 2.5, delta=0.5
+        )
+        self.assertAlmostEqual(
+            with_bullish_news["bull_score"], base["bull_score"], places=4
+        )
+        # Negative (bearish) news on a SHORT hypothesis must help it:
+        # bull_score up, bear_score unchanged.
+        with_bearish_news = scorer.manager.decide(
+            {
+                "asset": "BTC-USD", "direction": "short",
+                "strategy": "MACD_BearCross",
+                "rsi_at_signal": 50, "macd_at_signal": -0.1, "atr_at_signal": 100.0,
+            },
+            open_positions=[],
+            news_context={
+                "BTC-USD": {"news_sentiment": -1.0, "news_count": 5,
+                            "top_headline": "x", "key_themes": [], "raw_titles": []},
+            },
+        )
+        self.assertAlmostEqual(
+            with_bearish_news["bull_score"] - base["bull_score"], 2.5, delta=0.5
+        )
+        self.assertAlmostEqual(
+            with_bearish_news["bear_score"], base["bear_score"], places=4
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

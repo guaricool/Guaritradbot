@@ -267,22 +267,36 @@ class ScoreSynthesizer:
         # Combined: simple average of the two, then clamp.
         combined_sent = (news_sent + social_sent) / 2.0
         combined_sent = max(-1.0, min(1.0, combined_sent))
-        if combined_sent != 0.0:
-            bull_adj = 5.0 * max(0.0, combined_sent)
-            bear_adj = 5.0 * max(0.0, -combined_sent)
+        # Bug fix: news/social sentiment describes whether news is
+        # bullish or bearish for the ASSET'S PRICE, not for this
+        # specific hypothesis. bull_score/bear_score mean "evidence
+        # FOR / AGAINST this hypothesis" (see BullScorer/BearScorer
+        # above, which both branch on direction) — so for a SHORT
+        # hypothesis, positive (price-bullish) sentiment is evidence
+        # AGAINST the short and must go to bear_score, not bull_score.
+        # Previously this block applied combined_sent to bull/bear
+        # with no direction check at all, which was correct for longs
+        # by coincidence but backwards for shorts.
+        direction = hypothesis.get("direction", "long")
+        aligned_sent = -combined_sent if direction == "short" else combined_sent
+        if aligned_sent != 0.0:
+            bull_adj = 5.0 * max(0.0, aligned_sent)
+            bear_adj = 5.0 * max(0.0, -aligned_sent)
             if bull_adj > 0:
                 bull_score += bull_adj
                 bull_reasons = list(bull_reasons) + [
-                    f"combined_sentiment +{combined_sent:.2f} "
+                    f"combined_sentiment {combined_sent:+.2f} "
                     f"(news {news_sent:+.2f}/{news_count}h + "
-                    f"social {social_sent:+.2f}/{social_count}p) → bull +{bull_adj:.1f}"
+                    f"social {social_sent:+.2f}/{social_count}p), aligned with "
+                    f"{direction} → bull +{bull_adj:.1f}"
                 ]
             if bear_adj > 0:
                 bear_score += bear_adj
                 bear_reasons = list(bear_reasons) + [
-                    f"combined_sentiment {combined_sent:.2f} "
+                    f"combined_sentiment {combined_sent:+.2f} "
                     f"(news {news_sent:+.2f}/{news_count}h + "
-                    f"social {social_sent:+.2f}/{social_count}p) → bear +{bear_adj:.1f}"
+                    f"social {social_sent:+.2f}/{social_count}p), against "
+                    f"{direction} → bear +{bear_adj:.1f}"
                 ]
 
         final = 0.4 * bull_score + 0.4 * (100 - bear_score) - 0.2 * risk_penalty
