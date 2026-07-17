@@ -1260,6 +1260,19 @@ def main():
             history_size=200,
         )
 
+    # Bug fix: wire RiskManagerAgent's paper_balance_provider now that
+    # equity_tracker exists (RiskManagerAgent was constructed earlier in
+    # the registry dict, before this tracker was built) -- see
+    # risk_agent.py's paper_balance_provider docstring for the exact
+    # inconsistency this fixes: without it, every paper-mode trade was
+    # sized against the REAL broker balance (Alpaca's own paper-sandbox
+    # account, or binance.us's real USDT balance), completely
+    # decoupled from the ~$1000 virtual "Paper Balance (Simulated)"
+    # this tracker computes and the dashboard shows.
+    registry["RiskManagerAgent"].paper_balance_provider = (
+        lambda: equity_tracker.latest().total_equity
+    )
+
     # Sprint 46T (audit M6): the two critical money-protecting paths
     # (`fast_monitor_tick` and `job_with_monitor`) used to be nested
     # closures here capturing ~15 local variables. They are now

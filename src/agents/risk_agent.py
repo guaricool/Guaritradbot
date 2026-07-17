@@ -18,7 +18,7 @@ gap entre "5 posiciones abiertas" y "5 bets independientes".
 """
 import os
 import math
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Callable, Dict, Any, List, Optional, Tuple
 
 from src.data_store.positions import Position, PositionRepository
 from src.data.asset_class import get_asset_class, AssetClass
@@ -161,6 +161,23 @@ class RiskManagerAgent:
         alpaca_broker=None,
         brokers_config: Optional[dict] = None,
         mode_override_path: str = "audit/mode_override.json",
+        # Bug fix: in PAPER mode, get_account_balance() used to call the
+        # REAL broker balance (Alpaca's own sandbox account, or
+        # binance.us's real USDT balance) to size every trade -- since
+        # no real order is ever sent in paper mode (B033 gate), that
+        # real balance is a completely different number from the bot's
+        # own "virtual paper balance" concept (config.paper.
+        # starting_balance_usd + realized P&L, the same number
+        # EquityTracker computes and the dashboard shows as "Paper
+        # Balance (Simulated)"). A trade could be sized against Alpaca's
+        # $100k paper-sandbox default while the dashboard showed a
+        # ~$1000 virtual account -- wildly inconsistent, and the
+        # resulting notional (tens of thousands of dollars) had nothing
+        # to do with the account size the operator thinks they're
+        # running. When set, this callable is consulted FIRST in paper
+        # mode (before ever touching a broker) and its return value is
+        # used as the sizing balance instead.
+        paper_balance_provider: Optional[Callable[[], float]] = None,
         # Sprint 46N (audit A2): the min_order_usd auto-adjust (below,
         # Sprint 18) inflates a risk-sized trade up to min_order_usd
         # whenever the raw risk/stop_distance notional would be smaller
@@ -252,6 +269,7 @@ class RiskManagerAgent:
         self.alpaca_broker = alpaca_broker
         self.brokers_config = brokers_config or {}
         self.mode_override_path = mode_override_path
+        self.paper_balance_provider = paper_balance_provider
         self._asset_to_class = build_asset_to_class_map(self.brokers_config)
         # Sprint 46N (audit A2).
         self.max_auto_adjust_risk_multiplier = max_auto_adjust_risk_multiplier
@@ -300,6 +318,26 @@ class RiskManagerAgent:
            setups with no broker credentials configured at all.
         """
         live = is_mandate_enabled(self.mode_override_path)
+
+        # Bug fix: size against the bot's own virtual paper balance
+        # (same number the dashboard shows as "Paper Balance (Simulated)")
+        # instead of the real broker balance -- see paper_balance_provider's
+        # docstring above for the exact inconsistency this caused (a
+        # $38k GLD position sized against Alpaca's real $100k paper-
+        # sandbox balance while the dashboard showed a ~$1000 virtual
+        # account). Checked before any broker resolution, since paper
+        # mode should never need a broker at all for sizing purposes.
+        if not live and self.paper_balance_provider is not None:
+            try:
+                bal = float(self.paper_balance_provider())
+                if math.isfinite(bal) and bal >= 0:
+                    return (bal, "paper_simulated")
+            except Exception as e:
+                logger.warning(
+                    f"[RiskManagerAgent] paper_balance_provider falló ({type(e).__name__}: {e}), "
+                    f"cayendo al balance real del broker para este ciclo."
+                )
+
         if asset is not None:
             broker, asset_class = resolve_broker_for_close(
                 asset, self._asset_to_class, self.broker, self.alpaca_broker,
