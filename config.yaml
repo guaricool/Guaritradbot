@@ -398,6 +398,16 @@ mandate_paper_aggressive:
   max_daily_loss_usd: 100             # virtual money, but still exercises the kill-switch path
   max_daily_trades: 0                 # unlimited — paper is where the bot should explore freely
 
+# DrawdownKillSwitch override active ONLY in paper mode. The live
+# cooldown (risk.drawdown_cooldown_hours, default 24h) is the right
+# call for real money, but in paper it means a single bad cycle
+# freezes exploration for a full day for no real financial reason.
+# Checked fresh every update() call — switches with the dashboard's
+# paper/live toggle, no restart needed. Delete/empty to make paper use
+# the same 24h cooldown as live.
+drawdown_paper_aggressive:
+  cooldown_hours: 2.0                 # vs 24h in live — paper resumes trying much sooner
+
 # === Sprint 47A (audit M15 Option B) — Allocation policy bypass for small accounts ===
 # With a $20-100 account and the $10 minimum order, the 44B drift policy
 # (40% crypto, 40% equity, 10% commodities + 10% drift tolerance) is

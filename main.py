@@ -735,6 +735,13 @@ def main():
         # equity wobble into a triple-digit "drawdown" that re-triggers
         # the switch forever. See DrawdownKillSwitch.__init__'s docstring.
         min_peak_equity_usd=float(_risk_cfg.get("drawdown_min_peak_equity_usd", 10.0)),
+        # Carlos: a 24h freeze after every drawdown trip is a lot of
+        # lost paper-exploration time for a bad cycle that isn't real
+        # money. Paper gets a much shorter cooldown (config:
+        # drawdown_paper_aggressive.cooldown_hours); live always keeps
+        # the 24h above.
+        mode_override_path=override_path,
+        paper_overrides=config.get("drawdown_paper_aggressive") or {},
     )
     # Sprint 46F: these 4 portfolio-risk gate caps have existed as
     # RiskManagerAgent constructor params since Sprint 44/45, but

@@ -43,6 +43,7 @@ from typing import Optional
 
 from src.core.atomic_write import atomic_write_text
 from src.core.logging_setup import get_logger
+from src.execution.broker_routing import is_mandate_enabled
 
 logger = get_logger(__name__)
 
@@ -166,9 +167,22 @@ class DrawdownKillSwitch:
         threshold_pct: float = 15.0,
         cooldown_hours: float = 24.0,
         min_peak_equity_usd: float = 10.0,
+        mode_override_path: str = "audit/mode_override.json",
+        paper_overrides: Optional[dict] = None,
     ):
         self.threshold_pct = threshold_pct
+        self._live_cooldown_hours = cooldown_hours
         self.cooldown_hours = cooldown_hours
+        # Carlos: 24h is the right call for real money (live), but for
+        # paper it just means a bad cycle silently blocks exploration
+        # for a full day. Same dual-profile pattern already used for
+        # RiskManagerAgent/StrategyAgent/MandateGate: paper gets a
+        # shorter cooldown (if configured), live always keeps the
+        # cooldown passed at construction. Re-checked fresh on every
+        # update() call so toggling paper/live from the dashboard
+        # switches profiles immediately, no restart needed.
+        self.mode_override_path = mode_override_path
+        self.paper_overrides = paper_overrides
         # Bug fix: after a real blowup (e.g. a stale oversized position
         # driving equity deeply negative), the cooldown-rebase path
         # above sets peak_equity = current_equity, which can itself be
@@ -215,6 +229,18 @@ class DrawdownKillSwitch:
         The same threshold_pct still protects the account from here
         forward; it just stops enforcing recovery to a stale peak.
         """
+        # Select the active cooldown fresh on every call -- paper gets
+        # the shorter override (if configured), live always gets the
+        # value passed at construction. Recomputed from
+        # `_live_cooldown_hours` rather than restored from saved
+        # state, so there's no risk of a stuck-in-paper-cooldown leak
+        # if the mode flips mid-drawdown.
+        is_live = is_mandate_enabled(self.mode_override_path)
+        if not is_live and self.paper_overrides and "cooldown_hours" in self.paper_overrides:
+            self.cooldown_hours = float(self.paper_overrides["cooldown_hours"])
+        else:
+            self.cooldown_hours = self._live_cooldown_hours
+
         # Update peak (if equity is new high, this is the new peak)
         if current_equity > self.peak_equity:
             self.peak_equity = current_equity
@@ -330,6 +356,8 @@ class DrawdownKillSwitch:
         threshold_pct: float = 15.0,
         cooldown_hours: float = 24.0,
         min_peak_equity_usd: float = 10.0,
+        mode_override_path: str = "audit/mode_override.json",
+        paper_overrides: Optional[dict] = None,
     ) -> "DrawdownKillSwitch":
         """Construct a DrawdownKillSwitch, restoring persisted
         peak_equity/triggered/triggered_at if `path` exists and is
@@ -349,6 +377,8 @@ class DrawdownKillSwitch:
             threshold_pct=threshold_pct,
             cooldown_hours=cooldown_hours,
             min_peak_equity_usd=min_peak_equity_usd,
+            mode_override_path=mode_override_path,
+            paper_overrides=paper_overrides,
         )
         p = Path(path)
         if not p.exists():
