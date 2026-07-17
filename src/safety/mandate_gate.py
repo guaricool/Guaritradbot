@@ -25,10 +25,12 @@ Si todo pasa, se sella con `mandate_ok=True` y la razón.
 NO muta estado. Es una clase pura de validación.
 """
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Set, Optional
 import math
 import time
+
+from src.execution.broker_routing import is_mandate_enabled
 
 
 @dataclass
@@ -57,20 +59,61 @@ class MandateVerdict:
 
 
 class MandateGate:
-    def __init__(self, config: MandateConfig, audit_ledger=None, position_repo=None, event_bus=None):
+    def __init__(
+        self,
+        config: MandateConfig,
+        audit_ledger=None,
+        position_repo=None,
+        event_bus=None,
+        mode_override_path: str = "audit/mode_override.json",
+        paper_overrides: Optional[dict] = None,
+    ):
         """
         Args:
-            config: Mandate limits
+            config: Mandate limits (the LIVE/recommended baseline)
             audit_ledger: optional, used as fallback if position_repo missing
             position_repo: preferred source of truth for exposure + realized PnL
             event_bus: optional, used to publish SYSTEM_ERROR (Sprint 43 C6)
                        so NotificationAgent alerts when the mandate
                        blocks a trade (daily-loss cap, exposure cap, etc.)
+            mode_override_path: path to mode_override.json (the paper/live
+                       toggle written by the dashboard) — checked fresh on
+                       every validate() call, same pattern as
+                       RiskManagerAgent.paper_overrides /
+                       StrategyAgent.paper_params_overrides.
+            paper_overrides: dict of MandateConfig field overrides (e.g.
+                       max_position_usd, max_total_exposure_usd) active
+                       ONLY while in paper mode. Without this, a single
+                       hardcoded MandateConfig would have to satisfy both
+                       the aggressive paper-exploration profile (large
+                       per-trade %) and the conservative live profile —
+                       whichever wins, the other mode's caps are wrong.
+                       None (default) preserves old behavior: config is
+                       never overridden.
         """
+        self._live_config = config
         self.config = config
         self.audit = audit_ledger
         self.position_repo = position_repo
         self.event_bus = event_bus
+        self.mode_override_path = mode_override_path
+        self.paper_overrides = paper_overrides
+
+    def _refresh_active_config(self) -> None:
+        """Select the active MandateConfig fresh on every validate() call
+        — paper gets `paper_overrides` (if configured), live always gets
+        the base config passed at construction. Recomputed from
+        `_live_config` rather than restored from saved state, so
+        toggling paper/live from the dashboard switches profiles
+        immediately (no restart) and there's no risk of a stuck-in-
+        aggressive-mode leak across calls."""
+        is_live = is_mandate_enabled(self.mode_override_path)
+        if not is_live and self.paper_overrides:
+            valid_fields = {f for f in MandateConfig.__dataclass_fields__}
+            overrides = {k: v for k, v in self.paper_overrides.items() if k in valid_fields}
+            self.config = replace(self._live_config, **overrides)
+        else:
+            self.config = self._live_config
 
     def _daily_loss_usd(self, now_ts: float | None = None) -> float:
         """
@@ -170,6 +213,7 @@ class MandateGate:
     def validate(
         self, trade_proposal: dict, extra_pending_exposure_usd: float = 0.0
     ) -> MandateVerdict:
+        self._refresh_active_config()
         if not self.config.enabled:
             return MandateVerdict(ok=True, reason="mandate_disabled")
 

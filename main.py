@@ -68,7 +68,9 @@ def _audit_path(config: dict) -> str:
     return os.path.join(audit_dir, "audit.jsonl")
 
 
-def _build_mandate(config: dict, audit, position_repo=None, event_bus=None) -> tuple:
+def _build_mandate(
+    config: dict, audit, position_repo=None, event_bus=None, mode_override_path: str = "audit/mode_override.json"
+) -> tuple:
     cfg = config.get("mandate", {})
     if not cfg.get("enabled", False):
         return (None, None)
@@ -82,7 +84,20 @@ def _build_mandate(config: dict, audit, position_repo=None, event_bus=None) -> t
         # config.yaml default) = unlimited, unchanged behavior.
         max_daily_trades=int(cfg.get("max_daily_trades", 0)),
     )
-    return (MandateGate(mc, audit_ledger=audit, position_repo=position_repo, event_bus=event_bus), mc)
+    # Carlos: paper needs room for the aggressive risk profile
+    # (RiskManagerAgent.paper_overrides can size up to 80% capital/trade)
+    # — a single hardcoded max_position_usd/max_total_exposure_usd can't
+    # fit both that AND a conservative live cap. See config.yaml's
+    # `mandate_paper_aggressive:` comment.
+    mandate_gate = MandateGate(
+        mc,
+        audit_ledger=audit,
+        position_repo=position_repo,
+        event_bus=event_bus,
+        mode_override_path=mode_override_path,
+        paper_overrides=config.get("mandate_paper_aggressive") or {},
+    )
+    return (mandate_gate, mc)
 
 
 def _asset_class_for(asset: str, brokers_config: dict) -> str:
@@ -879,7 +894,9 @@ def main():
         else:
             print(f"\n✅ Pre-flight passed. Live mode is GO.")
 
-    mandate_gate, mandate_cfg = _build_mandate(config, audit, position_repo=position_repo, event_bus=event_bus)
+    mandate_gate, mandate_cfg = _build_mandate(
+        config, audit, position_repo=position_repo, event_bus=event_bus, mode_override_path=override_path
+    )
 
     if kill_switch.is_triggered():
         audit.append("BOT_START_BLOCKED_KILLSWITCH", {"reason": "kill_file_present"})
