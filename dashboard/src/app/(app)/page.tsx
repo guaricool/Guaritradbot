@@ -134,9 +134,15 @@ export default function HomePage() {
         </div>
       </header>
 
-      {/* KPIs */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
+      {/* KPIs — asymmetric bento (DESIGN.md: "destacar visualmente las
+          metricas principales... de las secundarias" instead of a row
+          of equal-weight cards). Balance + unrealized P&L are the two
+          numbers that matter most moment-to-moment, so they get the
+          hero slots; broker reference balances, open-position count,
+          and today's realized P&L are supporting detail underneath. */}
+      <div className="grid gap-3 md:grid-cols-2">
         <KpiCard
+          size="lg"
           // Sprint 62: "Effective balance" — the number the bot actually
           // uses for position sizing. In paper mode this is the virtual
           // paper starting balance + realized P&L (so $1,000 minus any
@@ -157,8 +163,17 @@ export default function HomePage() {
                 : "virtual paper account"
               : "live from broker"
           }
-          icon={<Wallet size={16} strokeWidth={2} />}
+          icon={<Wallet size={18} strokeWidth={2} />}
         />
+        <KpiCard
+          size="lg"
+          label="Unrealized P&L"
+          value={fmtUsd(unrealized, { signed: true, decimals: 2 })}
+          tone={unrealized > 0 ? "gain" : unrealized < 0 ? "loss" : "neutral"}
+          hint={`${fmtPct(unrealizedPct, { signed: true, decimals: 2 })} of exposure`}
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <KpiCard
           label="Binance.US"
           value={
@@ -199,12 +214,6 @@ export default function HomePage() {
             </span>
           }
           icon={<CircleDot size={16} strokeWidth={2} />}
-        />
-        <KpiCard
-          label="Unrealized P&L"
-          value={fmtUsd(unrealized, { signed: true, decimals: 2 })}
-          tone={unrealized > 0 ? "gain" : unrealized < 0 ? "loss" : "neutral"}
-          hint={fmtPct(unrealizedPct, { signed: true, decimals: 2 })}
         />
         <KpiCard
           label="Realized today"

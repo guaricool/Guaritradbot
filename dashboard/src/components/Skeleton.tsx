@@ -22,14 +22,14 @@ export function Skeleton({
   );
 }
 
-export function KpiCardSkeleton() {
+export function KpiCardSkeleton({ size = "sm" }: { size?: "sm" | "lg" }) {
   return (
-    <div className="kpi">
+    <div className={`kpi ${size === "lg" ? "p-5" : ""}`}>
       <div className="flex items-center justify-between">
         <Skeleton className="h-3 w-20" />
         <Skeleton className="h-4 w-4 rounded" />
       </div>
-      <Skeleton className="mt-1 h-7 w-24" />
+      <Skeleton className={size === "lg" ? "mt-2 h-9 w-36" : "mt-1 h-7 w-24"} />
       <Skeleton className="mt-1.5 h-2.5 w-28" />
     </div>
   );
@@ -131,7 +131,16 @@ export function OverviewPageSkeleton() {
           <Skeleton className="h-9 w-24 rounded-lg" />
         </div>
       </div>
-      <KpiRowSkeleton />
+      <div className="grid gap-3 md:grid-cols-2">
+        <KpiCardSkeleton size="lg" />
+        <KpiCardSkeleton size="lg" />
+      </div>
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <KpiCardSkeleton />
+        <KpiCardSkeleton />
+        <KpiCardSkeleton />
+        <KpiCardSkeleton />
+      </div>
       <div className="card overflow-hidden">
         <div className="card-header">
           <Skeleton className="h-4 w-28" />

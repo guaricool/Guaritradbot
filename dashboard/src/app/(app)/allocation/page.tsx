@@ -102,7 +102,7 @@ export default function AllocationPage() {
         </div>
         <div className="p-4">
           {allocErr ? (
-            <div className="text-sm text-loss">Failed to load.</div>
+            <div className="text-sm text-loss">Couldn&apos;t load allocation data — check the bot API connection.</div>
           ) : !classes.length ? (
             <div className="text-sm text-muted">No open positions to allocate.</div>
           ) : (
@@ -163,7 +163,7 @@ export default function AllocationPage() {
           </div>
           <div className="p-4">
             {stressErr ? (
-              <div className="text-sm text-loss">Failed to load.</div>
+              <div className="text-sm text-loss">Couldn&apos;t load stress scenarios.</div>
             ) : !stress?.scenarios?.length ? (
               <div className="text-sm text-muted">No open positions to stress.</div>
             ) : (
@@ -212,7 +212,7 @@ export default function AllocationPage() {
           </div>
           <div className="grid grid-cols-2 gap-3 p-4">
             {cvarErr ? (
-              <div className="col-span-2 text-sm text-loss">Failed to load.</div>
+              <div className="col-span-2 text-sm text-loss">Couldn&apos;t load tail-risk metrics.</div>
             ) : !cvar ? (
               <div className="col-span-2 text-sm text-muted">Loading...</div>
             ) : (
@@ -263,7 +263,7 @@ export default function AllocationPage() {
         </div>
         <div className="p-4">
           {corrErr ? (
-            <div className="text-sm text-loss">Failed to load.</div>
+            <div className="text-sm text-loss">Couldn&apos;t load correlation matrix.</div>
           ) : !corr || corr.assets.length < 2 ? (
             <div className="text-sm text-muted">
               Need at least 2 distinct assets to compute correlation.
