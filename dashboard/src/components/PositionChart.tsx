@@ -1,5 +1,6 @@
 "use client";
 
+import { useId } from "react";
 import useSWR from "swr";
 import {
   CartesianGrid,
@@ -30,7 +31,11 @@ export function PositionChart({
   const { data, error, isLoading } = useSWR(
     ["candles", positionId, interval],
     () => api.positionCandles(positionId, interval, 200),
-    { refreshInterval: 30_000, revalidateOnFocus: false },
+    // Was 30s -- state.py's _fetch_one_price now routes through the
+    // live broker ticker (ccxt/Alpaca) instead of yfinance for most
+    // assets, so a much shorter poll here actually shows new bars
+    // instead of re-fetching the same stale candle.
+    { refreshInterval: 5_000, revalidateOnFocus: false },
   );
 
   if (isLoading) {
@@ -74,6 +79,15 @@ function Chart({
   takeProfit: number | null;
   height: number;
 }) {
+  // Bug fix: the gradient's SVG id used to be the hardcoded literal
+  // "priceLine" -- harmless with one chart on a page, but PositionTable
+  // renders one <PositionChart> per open position simultaneously, and
+  // SVG element ids are global to the document. Every chart's <Line
+  // stroke="url(#priceLine)"> resolved to whichever <linearGradient
+  // id="priceLine"> the browser saw LAST, so every position's line
+  // silently used one shared gradient instead of its own. useId()
+  // gives each mounted chart a unique id.
+  const gradientId = `priceLine-${useId()}`;
   if (!candles.length) {
     return (
       <div
@@ -97,6 +111,19 @@ function Chart({
   const pad = (refMax - refMin) * 0.08 || refMax * 0.01;
   const yDomain: [number, number] = [refMin - pad, refMax + pad];
 
+  // Carlos: "si pasa abajo de la linea se ve rojo... si sube verde" --
+  // color the price line itself by whether it's above (gain, green) or
+  // below (loss, red) the entry price, with a hard color-stop exactly
+  // at the entry's height, instead of one flat gold line regardless of
+  // P&L direction. `entryOffset` is the entry price's position within
+  // the Y-domain as a 0..1 fraction from the TOP (SVG gradient objectBoundingBox
+  // convention), so a vertical gradient can transition precisely there.
+  const domainSpan = yDomain[1] - yDomain[0];
+  const entryOffsetPct =
+    entry !== null && domainSpan > 0
+      ? Math.min(1, Math.max(0, ((yDomain[1] - entry) / domainSpan) * 100))
+      : null;
+
   return (
     <div className="w-full" style={{ height }}>
       <ResponsiveContainer width="100%" height="100%">
@@ -105,11 +132,20 @@ function Chart({
           margin={{ top: 12, right: 16, left: 0, bottom: 8 }}
         >
           <defs>
-            <linearGradient id="priceLine" x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%" stopColor="#e6a93b" stopOpacity={0.3} />
-              <stop offset="50%" stopColor="#e6a93b" stopOpacity={1} />
-              <stop offset="100%" stopColor="#e6a93b" stopOpacity={0.3} />
-            </linearGradient>
+            {entryOffsetPct !== null ? (
+              <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#10b981" />
+                <stop offset={`${entryOffsetPct}%`} stopColor="#10b981" />
+                <stop offset={`${entryOffsetPct}%`} stopColor="#ef6b5a" />
+                <stop offset="100%" stopColor="#ef6b5a" />
+              </linearGradient>
+            ) : (
+              <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stopColor="#e6a93b" stopOpacity={0.3} />
+                <stop offset="50%" stopColor="#e6a93b" stopOpacity={1} />
+                <stop offset="100%" stopColor="#e6a93b" stopOpacity={0.3} />
+              </linearGradient>
+            )}
           </defs>
           <CartesianGrid stroke="#1c2438" strokeDasharray="3 3" />
           <XAxis
@@ -183,7 +219,7 @@ function Chart({
           <Line
             type="monotone"
             dataKey="close"
-            stroke="url(#priceLine)"
+            stroke={`url(#${gradientId})`}
             strokeWidth={1.5}
             dot={false}
             isAnimationActive={false}

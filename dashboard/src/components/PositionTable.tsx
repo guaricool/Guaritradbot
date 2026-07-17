@@ -4,8 +4,10 @@ import { Fragment, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { fmtPct, fmtUsd, pnlClass } from "@/lib/format";
+import { useAnimatedNumber } from "@/lib/useAnimatedNumber";
 import { Spinner } from "./Spinner";
 import { PositionChart } from "./PositionChart";
+import { PositionDetailModal } from "./PositionDetailModal";
 import type { PositionSummary } from "@/lib/types";
 
 // Sprint 46S: Carlos wanted the entry chart to show up automatically as
@@ -64,6 +66,9 @@ export function PositionTable({
   // Default (id absent from the set) = EXPANDED, i.e. the chart shows up
   // automatically the moment a position appears in this table.
   const [collapsed, setCollapsed] = useState<Set<string>>(() => readCollapsedSet());
+  // Big live popup, opened by clicking a position's asset name.
+  const [openPositionId, setOpenPositionId] = useState<string | null>(null);
+  const openPosition = positions.find((p) => p.id === openPositionId) ?? null;
 
   function toggleChart(id: string) {
     setCollapsed((prev) => {
@@ -140,111 +145,143 @@ export function PositionTable({
             </tr>
           </thead>
           <tbody>
-            {positions.map((p) => {
-              const dirClass =
-                p.direction === "long" ? "text-gain" : "text-loss";
-              const dirArrow = p.direction === "long" ? "▲" : "▼";
-              return (
-                <Fragment key={p.id}>
-                <tr className="animate-fade-in">
-                  <td className="font-semibold">
-                    <a
-                      href={`/positions/${p.id}`}
-                      className="hover:text-gold hover:underline"
-                    >
-                      {p.asset}
-                    </a>
-                    <div className="text-[10px] uppercase tracking-wider text-muted">
-                      {p.strategy}
-                    </div>
-                  </td>
-                  <td>
-                    <span className={dirClass}>
-                      {dirArrow} {p.direction.toUpperCase()}
-                    </span>
-                  </td>
-                  <td className="num-cell">{p.qty}</td>
-                  <td className="num-cell">
-                    {fmtUsd(p.entry_price, { decimals: 2 })}
-                  </td>
-                  <td className="num-cell">
-                    {fmtUsd(p.current_price ?? null, { decimals: 2 })}
-                    {p.current_price_source === "entry_fallback" && (
-                      <div className="text-[10px] text-gold/80">fallback</div>
-                    )}
-                    {p.current_price_source === "fetch_failed" && (
-                      <div className="text-[10px] text-loss/80">offline</div>
-                    )}
-                  </td>
-                  <td className="num-cell text-[11px]">
-                    <div className="text-loss">
-                      {fmtUsd(p.stop_loss, { decimals: 2 })}
-                    </div>
-                    <div className="text-gain">
-                      {fmtUsd(p.take_profit, { decimals: 2 })}
-                    </div>
-                  </td>
-                  <td className="num-cell">
-                    {fmtUsd(p.notional_usd, { decimals: 0 })}
-                  </td>
-                  <td className={`num-cell ${pnlClass(p.unrealized_pnl_usd ?? null)}`}>
-                    {fmtUsd(p.unrealized_pnl_usd ?? null, {
-                      signed: true,
-                      decimals: 2,
-                    })}
-                  </td>
-                  <td className={`num-cell ${pnlClass(p.unrealized_pnl_pct ?? null)}`}>
-                    {fmtPct(p.unrealized_pnl_pct ?? null, {
-                      signed: true,
-                      decimals: 2,
-                    })}
-                  </td>
-                  <td className="num-cell text-muted">
-                    {p.age_hours !== null
-                      ? p.age_hours < 48
-                        ? `${p.age_hours.toFixed(1)}h`
-                        : `${(p.age_hours / 24).toFixed(1)}d`
-                      : "—"}
-                  </td>
-                  <td className="whitespace-nowrap">
-                    <button
-                      onClick={() => toggleChart(p.id)}
-                      className="btn-ghost mr-1 text-xs text-muted hover:text-gold"
-                      title={
-                        collapsed.has(p.id) ? "Show entry chart" : "Hide entry chart"
-                      }
-                    >
-                      {collapsed.has(p.id) ? "▸ Chart" : "▾ Chart"}
-                    </button>
-                    <button
-                      onClick={() => onClose(p)}
-                      disabled={closing === p.id}
-                      className="btn-ghost text-xs text-loss hover:bg-loss/10"
-                    >
-                      {closing === p.id ? <Spinner /> : "Close"}
-                    </button>
-                  </td>
-                </tr>
-                {/* Sprint 46S: auto-shown entry chart -- same component/
-                    endpoint the position detail page uses, works for any
-                    asset (crypto or equity) since /api/positions/{id}/candles
-                    is a generic yfinance lookup keyed on the position's own
-                    asset field. Defaults to visible (see `collapsed`'s
-                    docstring above) so it appears automatically the moment
-                    a position shows up in this table -- no click required. */}
-                {!collapsed.has(p.id) && (
-                  <tr key={`${p.id}-chart`} className="bg-ink-900/40">
-                    <td colSpan={11} className="p-3">
-                      <PositionChart positionId={p.id} interval="15m" height={300} />
-                    </td>
-                  </tr>
-                )}
-                </Fragment>
-              );
-            })}
+            {positions.map((p) => (
+              <PositionRow
+                key={p.id}
+                position={p}
+                collapsedChart={collapsed.has(p.id)}
+                closing={closing === p.id}
+                onToggleChart={() => toggleChart(p.id)}
+                onClose={() => onClose(p)}
+                onOpenDetail={() => setOpenPositionId(p.id)}
+              />
+            ))}
           </tbody>
         </table>
       </div>
+      {openPosition && (
+        <PositionDetailModal
+          position={openPosition}
+          onClose={() => setOpenPositionId(null)}
+        />
+      )}
     </div>
+  );
+}
+
+function PositionRow({
+  position: p,
+  collapsedChart,
+  closing,
+  onToggleChart,
+  onClose,
+  onOpenDetail,
+}: {
+  position: PositionSummary;
+  collapsedChart: boolean;
+  closing: boolean;
+  onToggleChart: () => void;
+  onClose: () => void;
+  onOpenDetail: () => void;
+}) {
+  // Tween each row's own P&L between the ~1s live snapshots (see
+  // server.py's _position_snapshot_loop) so it visibly glides instead
+  // of jumping every update -- one hook instance per row, independent
+  // of how many other positions are open.
+  const animatedPnl = useAnimatedNumber(p.unrealized_pnl_usd);
+  const animatedPnlPct = useAnimatedNumber(p.unrealized_pnl_pct);
+  const dirClass = p.direction === "long" ? "text-gain" : "text-loss";
+  const dirArrow = p.direction === "long" ? "▲" : "▼";
+
+  return (
+    <Fragment>
+      <tr className="animate-fade-in">
+        <td className="font-semibold">
+          <button
+            type="button"
+            onClick={onOpenDetail}
+            className="text-left hover:text-gold hover:underline"
+            title="Open live detail"
+          >
+            {p.asset}
+          </button>
+          <div className="text-[10px] uppercase tracking-wider text-muted">
+            {p.strategy}
+          </div>
+        </td>
+        <td>
+          <span className={dirClass}>
+            {dirArrow} {p.direction.toUpperCase()}
+          </span>
+        </td>
+        <td className="num-cell">{p.qty}</td>
+        <td className="num-cell">
+          {fmtUsd(p.entry_price, { decimals: 2 })}
+        </td>
+        <td className="num-cell">
+          {fmtUsd(p.current_price ?? null, { decimals: 2 })}
+          {p.current_price_source === "entry_fallback" && (
+            <div className="text-[10px] text-gold/80">fallback</div>
+          )}
+          {p.current_price_source === "fetch_failed" && (
+            <div className="text-[10px] text-loss/80">offline</div>
+          )}
+        </td>
+        <td className="num-cell text-[11px]">
+          <div className="text-loss">
+            {fmtUsd(p.stop_loss, { decimals: 2 })}
+          </div>
+          <div className="text-gain">
+            {fmtUsd(p.take_profit, { decimals: 2 })}
+          </div>
+        </td>
+        <td className="num-cell">
+          {fmtUsd(p.notional_usd, { decimals: 0 })}
+        </td>
+        <td className={`num-cell ${pnlClass(p.unrealized_pnl_usd ?? null)}`}>
+          {fmtUsd(animatedPnl, { signed: true, decimals: 2 })}
+        </td>
+        <td className={`num-cell ${pnlClass(p.unrealized_pnl_pct ?? null)}`}>
+          {fmtPct(animatedPnlPct, { signed: true, decimals: 2 })}
+        </td>
+        <td className="num-cell text-muted">
+          {p.age_hours !== null
+            ? p.age_hours < 48
+              ? `${p.age_hours.toFixed(1)}h`
+              : `${(p.age_hours / 24).toFixed(1)}d`
+            : "—"}
+        </td>
+        <td className="whitespace-nowrap">
+          <button
+            onClick={onToggleChart}
+            className="btn-ghost mr-1 text-xs text-muted hover:text-gold"
+            title={collapsedChart ? "Show entry chart" : "Hide entry chart"}
+          >
+            {collapsedChart ? "▸ Chart" : "▾ Chart"}
+          </button>
+          <button
+            onClick={onClose}
+            disabled={closing}
+            className="btn-ghost text-xs text-loss hover:bg-loss/10"
+          >
+            {closing ? <Spinner /> : "Close"}
+          </button>
+        </td>
+      </tr>
+      {/* Sprint 46S: auto-shown entry chart -- same component/
+          endpoint the position detail page uses, works for any
+          asset (crypto or equity) since /api/positions/{id}/candles
+          is a generic yfinance lookup keyed on the position's own
+          asset field. Defaults to visible (see `collapsed`'s
+          docstring above) so it appears automatically the moment
+          a position shows up in this table -- no click required. */}
+      {!collapsedChart && (
+        <tr className="bg-ink-900/40">
+          <td colSpan={11} className="p-3">
+            <PositionChart positionId={p.id} interval="15m" height={300} />
+          </td>
+        </tr>
+      )}
+    </Fragment>
   );
 }

@@ -10,6 +10,7 @@ import { TradingPauseToggle } from "@/components/TradingPauseToggle";
 import { EquityChart } from "@/components/EquityChart";
 import { OverviewPageSkeleton } from "@/components/Skeleton";
 import { fmtPct, fmtUsd } from "@/lib/format";
+import { useAnimatedNumber } from "@/lib/useAnimatedNumber";
 import { useLive } from "@/lib/use-live";
 import { useEffect, useMemo, useState } from "react";
 import type { PositionSummary } from "@/lib/types";
@@ -63,6 +64,21 @@ export default function HomePage() {
     if (status !== "open") setLivePositions(null);
   }, [status]);
 
+  // Computed above the early returns (and useAnimatedNumber called
+  // unconditionally right after) so hook order stays stable across
+  // loading/error/loaded renders -- rules-of-hooks forbids calling a
+  // hook only on some render paths.
+  const unrealized = positions.reduce(
+    (s, p) => s + (p.unrealized_pnl_usd ?? 0),
+    0,
+  );
+  const exposure = positions.reduce((s, p) => s + p.notional_usd, 0);
+  const unrealizedPct = exposure > 0 ? unrealized / exposure : 0;
+  // Tween the hero P&L number between the ~1s live snapshots (see
+  // server.py's _position_snapshot_loop + state.py's live-broker-ticker
+  // price fix) so it visibly glides instead of stair-stepping.
+  const animatedUnrealized = useAnimatedNumber(unrealized);
+
   if (isLoading) return <OverviewPageSkeleton />;
   if (error || !data) {
     return (
@@ -79,12 +95,6 @@ export default function HomePage() {
     );
   }
 
-  const unrealized = positions.reduce(
-    (s, p) => s + (p.unrealized_pnl_usd ?? 0),
-    0,
-  );
-  const exposure = positions.reduce((s, p) => s + p.notional_usd, 0);
-  const unrealizedPct = exposure > 0 ? unrealized / exposure : 0;
   const dailyPnl = data.daily_realized_pnl_usd ?? 0;
   const totalPnl = data.total_realized_pnl_usd ?? 0;
 
@@ -168,7 +178,7 @@ export default function HomePage() {
         <KpiCard
           size="lg"
           label="Unrealized P&L"
-          value={fmtUsd(unrealized, { signed: true, decimals: 2 })}
+          value={fmtUsd(animatedUnrealized, { signed: true, decimals: 2 })}
           tone={unrealized > 0 ? "gain" : unrealized < 0 ? "loss" : "neutral"}
           hint={`${fmtPct(unrealizedPct, { signed: true, decimals: 2 })} of exposure`}
         />
