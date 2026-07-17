@@ -965,10 +965,17 @@ def _df_to_candles(df: pd.DataFrame) -> List[Dict[str, Any]]:
 def get_candles(
     asset: str = Query(..., min_length=1, max_length=20),
     interval: str = Query("1h", pattern="^(1m|5m|15m|1h|1d|1wk|1mo)$"),
-    limit: int = Query(200, ge=10, le=1000),
+    limit: int = Query(200, ge=2, le=1000),
     _: None = Depends(auth.require_auth),
 ) -> Dict[str, Any]:
     """Historical OHLCV for `asset` at `interval`.
+
+    `limit` floor is 2 (not higher) — the dashboard's TickerStrip asks
+    for exactly 2 candles per asset (just enough to compute a % change
+    for the ticker tape) and does this on every asset in the universe
+    on a poll interval; a stricter floor made every one of those
+    requests 422 (console flooded with `GET /api/candles?...&limit=2
+    422 Unprocessable Content` on every poll).
 
     Sprint 58: companion to the position-scoped `/api/positions/{id}/candles`
     -- this one doesn't need a position_id, so the dashboard's /charts
