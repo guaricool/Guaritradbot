@@ -980,7 +980,38 @@ def main():
     # one-shot startup grid search ever was. Removed rather than fixed,
     # per the audit's own suggested resolution. `optimize_on_start` was
     # also removed from config.yaml since nothing reads it anymore.
-    strategy_params = None
+    #
+    # Bug fix (Carlos: paper should learn parameters live can use):
+    # `run_reoptimization` now WRITES its promoted RSI thresholds to
+    # `audit/strategy_params_override.json` (previously it only mutated
+    # the in-memory StrategyAgent instance, so a restart silently lost
+    # every promotion), but nothing ever READ that file back at
+    # startup — the next boot would start from hardcoded defaults again,
+    # discarding everything the last epoch's walk-forward validation
+    # promoted. Merged on top of DEFAULT_STRATEGY_PARAMS (not used to
+    # replace it outright) so a partial override (currently just
+    # rsi_oversold/rsi_overbought) can't accidentally drop the other
+    # params (adx_trend_min, stoch_*, bb_pct_b) StrategyAgent reads
+    # unconditionally elsewhere. Same "never touches config.yaml
+    # directly, fails open on any parse error" contract as
+    # trading_config_override.json below.
+    from src.agents.strategy_agent import DEFAULT_STRATEGY_PARAMS
+    strategy_params = dict(DEFAULT_STRATEGY_PARAMS)
+    _strategy_params_override_path = os.path.join(
+        config.get("mandate", {}).get("audit_log_dir", "audit"),
+        "strategy_params_override.json",
+    )
+    if os.path.exists(_strategy_params_override_path):
+        try:
+            with open(_strategy_params_override_path, "r", encoding="utf-8") as f:
+                _strategy_overrides = json.load(f)
+            if isinstance(_strategy_overrides, dict):
+                _applied = {k: v for k, v in _strategy_overrides.items() if not k.startswith("_")}
+                strategy_params.update(_applied)
+                if _applied:
+                    print(f"[Init] Strategy params override applied from {_strategy_params_override_path}: {_applied}")
+        except Exception as e:
+            print(f"[Init] strategy_params_override.json parse error (ignored): {e}")
 
     registry = {
         "MarketAnalystAgent": MarketAnalystAgent(event_bus=event_bus, audit=audit),
@@ -1144,6 +1175,7 @@ def main():
         audit=audit,
         assets=("BTC-USD", "SPY", "GLD", "QQQ", "USO"),
         event_bus=event_bus,  # Sprint 45 fix (N6/H11): alert on aborted cycles
+        strategy_params_override_path=_strategy_params_override_path,
     )
 
     # Sprint 23: Live Equity Tracker

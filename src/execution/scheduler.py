@@ -2,12 +2,51 @@ import time
 import schedule
 import logging
 import json
+import statistics
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+from pathlib import Path
 import yaml
 import os
 
 from src.workflows.engine import WorkflowAgentFaultError, WorkflowDependencyError
+
+# Bug fix (Carlos: "paper agresivo... que aprenda... y lo use en live"):
+# `run_reoptimization` used to grid-search RSI thresholds with
+# `HyperoptManager.optimize()` directly and apply whatever it found —
+# despite this module already importing `walk_forward_split` (from
+# src.optimization.backtester) as if it validated the result, that
+# import was NEVER ACTUALLY USED. In-sample-only grid search reliably
+# finds parameters that overfit the specific window tested; nothing
+# checked whether the "improvement" held up out-of-sample, and nothing
+# compared the candidate against the CURRENT params before overwriting
+# them. It also only ever optimized on `self.assets[0]` (BTC-USD),
+# silently ignoring the other 4 assets main.py actually configures
+# (SPY/GLD/QQQ/USO). The bot's live strategy parameters could be
+# (and, on a 7-day epoch, eventually would be) overwritten by noise.
+#
+# Fixed to use `walk_forward_validate` (already existed, fully built,
+# just never called from here): trains on the first ~70%, validates
+# out-of-sample on the rest, and reports an `overfit_warning` when the
+# out-of-sample result doesn't hold up to the in-sample one. Promotion
+# now requires ALL of:
+#   1. No overfit warning on any asset the candidate was tested on.
+#   2. The candidate's average out-of-sample Sharpe beats the CURRENT
+#      params' own out-of-sample Sharpe (evaluated through the exact
+#      same walk-forward mechanics, not just "whatever number the old
+#      code remembered from months ago") by at least
+#      MIN_SHARPE_IMPROVEMENT.
+#   3. At least MIN_ASSETS_WITH_DATA assets had enough history to test.
+# Even when the answer is "yes, promote", the previous params are
+# still recoverable: every reoptimization decision -- promoted or not
+# -- is written to `audit/strategy_params_override.json` under `_history`
+# (see `_write_strategy_params_override`), and the promotion itself is
+# audited as REOPT_NEW_PARAMS with both old and new values plus the
+# out-of-sample metrics that justified it.
+from src.optimization.backtester import walk_forward_validate
+
+MIN_SHARPE_IMPROVEMENT = 0.15
+MIN_ASSETS_WITH_DATA = 2
 
 # Sprint 19: Carlos lives in America/Chicago (IL). All timestamps the bot
 # writes to disk are stored as tz-aware ISO strings in CT, so the
@@ -16,6 +55,70 @@ CT = ZoneInfo("America/Chicago")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("Scheduler")
+
+
+def _should_promote(
+    candidate_oos_sharpes: list,
+    baseline_oos_sharpes: list,
+    any_overfit: bool,
+    min_improvement: float = MIN_SHARPE_IMPROVEMENT,
+    min_assets: int = MIN_ASSETS_WITH_DATA,
+) -> tuple:
+    """Pure decision function (no I/O) so the promotion gate is directly
+    unit-testable without mocking market data / walk_forward_validate.
+
+    Returns (should_promote: bool, reason: str).
+    """
+    if len(candidate_oos_sharpes) < min_assets or len(baseline_oos_sharpes) < min_assets:
+        return False, f"insufficient_data (only {len(candidate_oos_sharpes)} assets had enough history)"
+    if any_overfit:
+        return False, "overfit_warning on at least one asset's walk-forward split"
+    avg_candidate = statistics.mean(candidate_oos_sharpes)
+    avg_baseline = statistics.mean(baseline_oos_sharpes)
+    improvement = avg_candidate - avg_baseline
+    if improvement < min_improvement:
+        return False, (
+            f"insufficient_improvement (candidate OOS sharpe {avg_candidate:.3f} vs "
+            f"baseline {avg_baseline:.3f}, needed +{min_improvement:.2f}, got {improvement:+.3f})"
+        )
+    return True, (
+        f"promoted (candidate OOS sharpe {avg_candidate:.3f} vs baseline "
+        f"{avg_baseline:.3f}, +{improvement:.3f})"
+    )
+
+
+def _write_strategy_params_override(
+    override_path: str, old_params: dict, new_params: dict, reason: str,
+) -> None:
+    """Persist a promoted strategy_params change so it (a) survives a
+    restart -- main.py merges this file into StrategyAgent's params at
+    startup the same way trading_config_override.json already works
+    for RiskManagerAgent's params -- and (b) keeps a `_history` trail
+    of every past promotion for manual audit/rollback, since an
+    automatic promotion (Carlos explicitly chose automatic over
+    manual-review promotion) still needs to be reversible by a human
+    if a promoted config underperforms once it's actually live.
+    """
+    path = Path(override_path)
+    history = []
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            history = existing.get("_history", [])
+        except Exception:
+            history = []
+    history.append({
+        "ts": time.time(),
+        "old": old_params,
+        "new": new_params,
+        "reason": reason,
+    })
+    payload = dict(new_params)
+    payload["_history"] = history[-20:]  # cap so this file can't grow forever
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 class EpochScheduler:
@@ -30,6 +133,7 @@ class EpochScheduler:
         audit=None,
         assets=("BTC-USD", "SPY"),
         event_bus=None,
+        strategy_params_override_path="audit/strategy_params_override.json",
     ):
         self.engine = engine
         self.workflow_data = workflow_data
@@ -39,6 +143,7 @@ class EpochScheduler:
         self.hyperopt = hyperopt
         self.audit = audit
         self.assets = assets
+        self.strategy_params_override_path = strategy_params_override_path
         # Sprint 45 fix (N6/H11): needed so `job()` can publish
         # SYSTEM_ERROR when the workflow engine refuses to run a
         # cycle (FAULTED component / unmet depends_on), instead of
@@ -65,13 +170,23 @@ class EpochScheduler:
 
     def run_reoptimization(self):
         """
-        Sprint 5 — Re-optimization real.
+        Re-optimization real, walk-forward validated (see this module's
+        top-of-file comment for the bug this replaced: the previous
+        version imported `walk_forward_split` but never called it,
+        optimized in-sample only, only ever tested `self.assets[0]`,
+        and applied whatever it found with no comparison to the
+        current params).
 
-        Para cada asset en el universe del bot, descargamos histórico
-        reciente y corremos HyperoptManager.optimize(). Si los nuevos
-        parámetros son mejores (por la métrica optimizada) y NO son
-        overfit (walk-forward ratio > 0.5), los inyectamos al
-        StrategyAgent y los emitimos al audit ledger.
+        For every configured asset with enough history: run
+        `walk_forward_validate` for the RSI param grid (the candidate)
+        AND for the current live params alone (the baseline, evaluated
+        through the identical walk-forward mechanics for a fair
+        comparison). Promote the candidate only if `_should_promote`
+        says yes across the aggregate of all assets tested — see that
+        function's docstring for the exact gate. Every decision
+        (promoted or not) is logged to the audit ledger; a promotion
+        is also persisted to `strategy_params_override_path` so it
+        survives a restart and is reversible.
         """
         if not self.market_analyst or not self.strategy_agent or not self.hyperopt:
             logger.info("[EpochScheduler] Re-optimization skipped: dependencias no inyectadas")
@@ -79,69 +194,120 @@ class EpochScheduler:
 
         logger.info("[EpochScheduler] Starting re-optimization…")
         if self.audit:
-            self.audit.append("REOPT_START", {"epoch_days": self.epoch_days})
+            self.audit.append("REOPT_START", {"epoch_days": self.epoch_days, "assets": list(self.assets)})
 
-        # Grid search space — versión compacta para que termine en <1 min
         param_space = {
             "rsi_oversold": [25, 30, 35],
             "rsi_overbought": [65, 70, 75],
         }
+        old_params = dict(self.strategy_agent.params)
+        # Single-point "grid" so walk_forward_validate's internal
+        # optimize step trivially returns the CURRENT params back —
+        # this gives an apples-to-apples out-of-sample baseline
+        # computed through the exact same walk-forward mechanics as
+        # the candidate, not a stale number from whenever this last ran.
+        baseline_space = {
+            k: [old_params[k]] for k in param_space if k in old_params
+        }
 
-        # Cada asset es su propio universe de optimización.
-        # En producción esto debería ser por estrategia (BTC = MACD,
-        # SPY/QQQ = RSI mean-reversion, GLD/USO = EMA). Para Sprint 5
-        # optimizamos RSI sobre el primer asset del set (proxy rápido).
-        # El hyperopt devuelve el mejor set global de RSI.
         try:
-            from src.optimization.backtester import walk_forward_split
-            asset = self.assets[0]
-            df = self.market_analyst.fetch_one(asset, interval="1d", period="2y")
-            if df is None or len(df) < 100:
-                logger.info(f"[EpochScheduler] datos insuficientes para {asset}, skip")
-                return
-
-            # Pre-popular con EMA / RSI
+            import numpy as np
             import pandas as pd
-            close = df["Close"]
-            df["EMA_20"] = close.ewm(span=20, adjust=False).mean()
-            df["EMA_50"] = close.ewm(span=50, adjust=False).mean()
-            delta = close.diff()
-            gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
-            loss = (-delta).clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
-            rs = gain / loss.replace(0, pd.NA)
-            df["RSI"] = (100 - (100 / (1 + rs))).astype(float).fillna(50)
-            df = df.dropna(subset=["Close", "RSI", "EMA_20", "EMA_50"])
+            from src.agents.strategy_agent import StrategyAgent
 
             def rsi_sig(d, **p):
-                from src.agents.strategy_agent import StrategyAgent
                 return StrategyAgent.generate_vectorized_signals(d, strategy_type="RSI", **p)
 
-            best_params = self.hyperopt.optimize(
-                f"epoch_{int(time.time())}",
-                df,
-                param_space,
-                rsi_sig,
-                metric="sharpe_ratio",
-            )
+            candidate_sharpes, baseline_sharpes = [], []
+            any_overfit = False
+            per_asset_results = {}
+            tested_assets = []
 
-            if not best_params:
-                logger.info("[EpochScheduler] hyperopt no devolvió params")
+            for asset in self.assets:
+                df = self.market_analyst.fetch_one(asset, interval="1d", period="2y")
+                if df is None or len(df) < 100:
+                    logger.info(f"[EpochScheduler] datos insuficientes para {asset}, skip")
+                    continue
+
+                close = df["Close"]
+                df["EMA_20"] = close.ewm(span=20, adjust=False).mean()
+                df["EMA_50"] = close.ewm(span=50, adjust=False).mean()
+                delta = close.diff()
+                gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+                loss = (-delta).clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+                # Bug fix: `pd.NA` (pandas' nullable-dtype sentinel) doesn't
+                # survive `.astype(float)` the way `np.nan` does --
+                # `float(pd.NA)` raises `TypeError: float() argument must
+                # be a string or a real number, not 'NAType'`, which used
+                # to blow up this whole re-optimization pass any time a
+                # zero-loss stretch occurred (a real possibility over a
+                # 2-year window, just apparently never hit before this
+                # function's first real test coverage).
+                rs = gain / loss.replace(0, np.nan)
+                df["RSI"] = (100 - (100 / (1 + rs))).astype(float).fillna(50)
+                df = df.dropna(subset=["Close", "RSI", "EMA_20", "EMA_50"])
+                if len(df) < 100:
+                    continue
+
+                wf_candidate = walk_forward_validate(df, rsi_sig, param_space, optimize_metric="sharpe_ratio")
+                wf_baseline = walk_forward_validate(df, rsi_sig, baseline_space, optimize_metric="sharpe_ratio")
+                if "error" in wf_candidate or "error" in wf_baseline:
+                    continue
+
+                tested_assets.append(asset)
+                candidate_sharpes.append(wf_candidate["avg_out_of_sample"].get("sharpe_ratio", 0.0))
+                baseline_sharpes.append(wf_baseline["avg_out_of_sample"].get("sharpe_ratio", 0.0))
+                any_overfit = any_overfit or bool(wf_candidate.get("overfit_warning"))
+                per_asset_results[asset] = {
+                    "candidate_oos_sharpe": wf_candidate["avg_out_of_sample"].get("sharpe_ratio", 0.0),
+                    "baseline_oos_sharpe": wf_baseline["avg_out_of_sample"].get("sharpe_ratio", 0.0),
+                    "overfit_warning": bool(wf_candidate.get("overfit_warning")),
+                    "candidate_best_params": wf_candidate["splits"][-1]["best_params"] if wf_candidate.get("splits") else {},
+                }
+
+            if not tested_assets:
+                logger.info("[EpochScheduler] ningún asset tuvo datos suficientes, skip")
+                if self.audit:
+                    self.audit.append("REOPT_SKIPPED", {"reason": "no_asset_had_enough_data"})
                 return
 
-            new_params = dict(self.strategy_agent.params)
-            new_params.update(best_params)
-            old_params = dict(self.strategy_agent.params)
-            self.strategy_agent.params = new_params
+            should_promote, reason = _should_promote(candidate_sharpes, baseline_sharpes, any_overfit)
 
-            logger.info(
-                f"[EpochScheduler] ⚙️  params actualizados: "
-                f"{old_params} → {new_params}"
-            )
-            if self.audit:
-                self.audit.append(
-                    "REOPT_NEW_PARAMS",
-                    {"asset": asset, "old": old_params, "new": new_params},
+            # Robustness: the promoted params are the mode (most common)
+            # of each tested asset's own best_params, not just whichever
+            # asset happened first — a combination that wins across
+            # MULTIPLE assets is more trustworthy than one that only won
+            # on a single asset by chance.
+            candidate_param_tuples = [
+                tuple(sorted(r["candidate_best_params"].items()))
+                for r in per_asset_results.values() if r["candidate_best_params"]
+            ]
+            new_params = dict(old_params)
+            if candidate_param_tuples:
+                mode_tuple = statistics.mode(candidate_param_tuples)
+                new_params.update(dict(mode_tuple))
+
+            audit_payload = {
+                "assets_tested": tested_assets,
+                "old_params": old_params,
+                "candidate_params": new_params,
+                "promoted": should_promote,
+                "reason": reason,
+                "per_asset": per_asset_results,
+            }
+
+            if should_promote:
+                self.strategy_agent.params = new_params
+                _write_strategy_params_override(
+                    self.strategy_params_override_path, old_params, new_params, reason,
                 )
+                logger.info(f"[EpochScheduler] params promoted: {old_params} -> {new_params} ({reason})")
+                if self.audit:
+                    self.audit.append("REOPT_NEW_PARAMS", audit_payload)
+            else:
+                logger.info(f"[EpochScheduler] no promotion: {reason}")
+                if self.audit:
+                    self.audit.append("REOPT_NOT_PROMOTED", audit_payload)
         except Exception as e:
             logger.error(f"[EpochScheduler] re-optimization failed: {e}")
             if self.audit:

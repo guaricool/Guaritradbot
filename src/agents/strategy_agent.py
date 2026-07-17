@@ -206,6 +206,26 @@ def _estimate_expected_move_pct(
     return 0.1
 
 
+# Exposed at module level (not just inline in __init__) so main.py can
+# merge a promoted strategy_params_override.json on top of the REAL
+# defaults instead of replacing the whole dict -- a partial override
+# (e.g. just rsi_oversold/rsi_overbought, all EpochScheduler's
+# walk-forward re-optimization currently tunes) would otherwise silently
+# drop adx_trend_min/stoch_*/bb_pct_b, which self.params[...] accesses
+# unconditionally elsewhere in this file (KeyError at the first signal
+# check that reads one of them).
+DEFAULT_STRATEGY_PARAMS = {
+    "rsi_oversold": 30,         # cruce estricto
+    "rsi_overbought": 70,
+    "rsi_zone_oversold": 35,   # zona permisiva (Sprint 10)
+    "rsi_zone_overbought": 65,
+    "stoch_oversold": 20,
+    "stoch_overbought": 80,
+    "bb_pct_b": 0.05,          # dentro del 5% de la banda
+    "adx_trend_min": 20,        # ADX > 20 = tendencia
+}
+
+
 class StrategyAgent:
     """
     Analiza market_data y genera hipótesis de trade (entry signals).
@@ -219,16 +239,7 @@ class StrategyAgent:
                  ml_long_threshold: float = 0.6, ml_short_threshold: float = 0.4,
                  allow_crypto_short: bool = False, decision_log=None,
                  loss_streak_suppress: int = 3):
-        self.params = strategy_params or {
-            "rsi_oversold": 30,         # cruce estricto
-            "rsi_overbought": 70,
-            "rsi_zone_oversold": 35,   # zona permisiva (Sprint 10)
-            "rsi_zone_overbought": 65,
-            "stoch_oversold": 20,
-            "stoch_overbought": 80,
-            "bb_pct_b": 0.05,          # dentro del 5% de la banda
-            "adx_trend_min": 20,        # ADX > 20 = tendencia
-        }
+        self.params = strategy_params or dict(DEFAULT_STRATEGY_PARAMS)
         # B022 fix: audit ledger para emitir HYPOTHESIS_GENERATED events.
         # Esto permite que PositionMonitor.check_with_signals() encuentre
         # las señales recientes y dispare SMART_PROFIT_TAKE cuando hay
