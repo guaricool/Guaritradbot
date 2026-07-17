@@ -224,9 +224,17 @@ class PaperSlippageTest(unittest.TestCase):
     def test_paper_mode_with_broker_configured_also_gets_slippage(self):
         """Paper mode (mandate_enabled=false) with a REAL broker object
         configured must still simulate the fill locally (never call the
-        broker -- that's the pre-existing B033 gate) AND apply
-        slippage, same as the no-broker path."""
+        broker's order-submission methods -- that's the pre-existing
+        B033 gate) AND apply slippage, same as the no-broker path.
+
+        Real-time-parity fix: paper fills now fetch a live ticker price
+        (get_ticker_price) before applying slippage, instead of trusting
+        the stale signal price -- return the SAME price as the signal
+        here so this test's slippage-math assertion stays meaningful
+        (a plain MagicMock()'s auto-mocked __float__ would otherwise
+        silently resolve to 1.0, not a real price)."""
         fake_broker = MagicMock()
+        fake_broker.get_ticker_price.return_value = 50000.0
         node = ExecutionNode(
             self.bus,
             brokers_config={"crypto": {"symbols": ["BTC-USD"]}},

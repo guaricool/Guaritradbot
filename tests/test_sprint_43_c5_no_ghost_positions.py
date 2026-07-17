@@ -168,6 +168,13 @@ class ExecutionNodePersistsOnFillTest(unittest.TestCase):
         self.broker.exchange.symbols = ["BTC/USD", "ETH/USD"]
         self.broker.exchange.options = {"sandboxMode": True}
         self.broker.create_market_order.return_value = {"id": "FAKE_1", "status": "filled"}
+        # Real-time-parity fix: paper fills now fetch a live ticker
+        # price before applying slippage (see ExecutionNode's
+        # _get_live_price_for_paper_fill). Return the same price as the
+        # signal here so this fixture's exact-price assertions stay
+        # meaningful -- a plain MagicMock()'s auto-mocked __float__
+        # would otherwise silently resolve to 1.0, not a real price.
+        self.broker.get_ticker_price.return_value = 50000.0
         # Paper mode (default) — fills are simulated, broker NOT called
         self.mode_override_path = _make_mode_override(self.tmpdir, False)
         self.node = ExecutionNode(

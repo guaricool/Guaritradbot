@@ -630,6 +630,40 @@ class ExecutionNode:
             logger.warning(f'[ExecutionNode] ⚠️ Could not fetch supported symbols: {e}')
         return None
 
+    def _get_live_price_for_paper_fill(
+        self, asset: str, asset_class: str, broker, fallback_price: float,
+    ) -> float:
+        """Carlos asked paper mode to behave exactly like live so its
+        behavior can be observed and evaluated -- the biggest gap was
+        here: a paper fill used to record at the STALE SIGNAL price
+        (`entry_price`, derived from indicator/candle data that can lag
+        the real market by minutes-to-hours), while a live fill records
+        the exchange's own real-time execution price. Route through the
+        SAME live broker feed the SL/TP monitor already uses
+        (`main.py::_fetch_prices_for_open_positions`) -- ccxt
+        `get_ticker_price` for crypto, Alpaca `get_latest_trade_price`
+        for equity -- so paper fills at a genuinely current price
+        before slippage is applied on top, same as a real order would.
+
+        Best-effort: any failure (network, missing method, bad broker)
+        falls back to `fallback_price` (the signal price) rather than
+        blocking the paper fill -- a paper trade must never fail just
+        because a live-price probe didn't work.
+        """
+        try:
+            if asset_class == "crypto":
+                symbol = asset.replace("-", "/") if "-" in asset else asset
+                if "/" not in symbol:
+                    symbol = f"{symbol}/USDT"
+                price = broker.get_ticker_price(symbol)
+            else:
+                price = broker.get_latest_trade_price(asset)
+            if price is not None and float(price) > 0:
+                return float(price)
+        except Exception:
+            pass
+        return fallback_price
+
     def _apply_paper_slippage(self, entry_price: float, direction: str) -> float:
         """Sprint 46N (audit M3): simulate execution slippage on a
         PAPER/no-broker fill, moving the recorded fill price AGAINST
@@ -802,12 +836,67 @@ class ExecutionNode:
         # simulate the fill locally and skip the broker entirely.
         is_paper_mode = not _is_mandate_enabled(self.mode_override_path)
         if is_paper_mode:
-            # Sprint 46N (audit M3): same slippage simulation as the
-            # no-broker path above — the audit specifically called out
-            # paper fills as "always complete, at the exact signal
-            # price, no slippage" as a cause of paper/live divergence.
-            sim_fill_price = self._apply_paper_slippage(entry_price, direction)
-            logger.info(f'[ExecutionNode] 🟡 PAPER MODE — orden {asset} {direction} simulada @ ${sim_fill_price:.4f} via {asset_class} broker (NO enviada a broker real)')
+            # Carlos: paper should behave exactly like live so its
+            # decisions can be observed/evaluated, not take shortcuts
+            # live doesn't. Equity entries in live are gated by real
+            # market hours + a symbol-tradeable pre-flight
+            # (`_execute_equity_order` below) -- paper used to skip
+            # straight past both and instant-fill 24/7 at the stale
+            # signal price. Run the identical gates here so an
+            # off-hours paper "entry" queues/skips exactly like a real
+            # one would, instead of silently filling at a price that
+            # may be far from the next real open.
+            if asset_class == "equity":
+                if hasattr(broker_instance, "is_market_open") and not broker_instance.is_market_open():
+                    logger.info(f'[ExecutionNode] ⏸️  MARKET_CLOSED (PAPER) — orden de entrada {asset} {direction} SALTADA (Alpaca reporta mercado cerrado). Se reintentará en un ciclo futuro con el mercado abierto.')
+                    status = f"SKIPPED (MARKET_CLOSED: {asset})"
+                    if self.audit:
+                        self.audit.append(
+                            "TRADE_SKIPPED_MARKET_CLOSED",
+                            {
+                                "asset": asset, "direction": direction, "qty": qty,
+                                "entry_price": entry_price, "status": status,
+                                "asset_class": "equity", "simulated": True,
+                            },
+                        )
+                    if self.event_bus:
+                        self.event_bus.publish(
+                            "ORDER_EXECUTED",
+                            {"status": status, "order": order_data, "asset_class": "equity", "simulated": True},
+                        )
+                    return
+                if hasattr(broker_instance, "is_symbol_tradeable") and not broker_instance.is_symbol_tradeable(asset):
+                    logger.error(f"[ExecutionNode] ❌ SYMBOL_NOT_TRADEABLE (PAPER): '{asset}' is not active/tradeable on Alpaca.")
+                    status = f"FAILED (SYMBOL_NOT_TRADEABLE: {asset})"
+                    if self.audit:
+                        self.audit.append(
+                            "TRADE_FAILED",
+                            {
+                                "asset": asset, "direction": direction, "qty": qty,
+                                "entry_price": entry_price, "status": status,
+                                "asset_class": "equity", "simulated": True,
+                            },
+                        )
+                    if self.event_bus:
+                        self.event_bus.publish(
+                            "ORDER_EXECUTED",
+                            {"status": status, "order": order_data, "simulated": True},
+                        )
+                    return
+
+            # Sprint 46N (audit M3): simulated slippage (see
+            # `_apply_paper_slippage`'s docstring) so this fill isn't
+            # recorded at the exact, frictionless signal price. Now
+            # applied on top of a freshly-fetched LIVE price (see
+            # `_get_live_price_for_paper_fill`) instead of the stale
+            # signal price -- the same "fill at the exact signal price"
+            # gap the audit flagged for slippage applied equally to the
+            # base price slippage is computed from.
+            live_price = self._get_live_price_for_paper_fill(
+                asset, asset_class, broker_instance, entry_price,
+            )
+            sim_fill_price = self._apply_paper_slippage(live_price, direction)
+            logger.info(f'[ExecutionNode] 🟡 PAPER MODE — orden {asset} {direction} simulada @ ${sim_fill_price:.4f} (live {live_price:.4f}) via {asset_class} broker (NO enviada a broker real)')
             status = "FILLED (PAPER)"
             if self.audit:
                 self.audit.append(
@@ -818,6 +907,7 @@ class ExecutionNode:
                         "qty": qty,
                         "entry_price": sim_fill_price,
                         "requested_entry_price": entry_price,
+                        "live_price_at_fill": live_price,
                         "status": status,
                         "simulated": True,
                         "asset_class": asset_class,
