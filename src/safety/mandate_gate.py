@@ -167,7 +167,9 @@ class MandateGate:
                 open_notional.pop(pid, None)
         return sum(open_notional.values())
 
-    def validate(self, trade_proposal: dict) -> MandateVerdict:
+    def validate(
+        self, trade_proposal: dict, extra_pending_exposure_usd: float = 0.0
+    ) -> MandateVerdict:
         if not self.config.enabled:
             return MandateVerdict(ok=True, reason="mandate_disabled")
 
@@ -276,7 +278,15 @@ class MandateGate:
         # Use notional+fees for the projected total so a series of
         # near-cap trades can't collectively overflow the cap by the
         # accumulated entry fees (Sprint 46O / audit M2).
-        open_exp = self._open_exposure_usd()
+        #
+        # `extra_pending_exposure_usd`: trades already approved earlier
+        # in the SAME analysis cycle by RiskManagerAgent, not yet
+        # persisted to position_repo (that only happens later, in
+        # ExecutionNode). Without adding this in, N hypotheses in one
+        # cycle each get checked against the same stale open_exp and
+        # could all individually pass while collectively blowing
+        # through max_total_exposure_usd.
+        open_exp = self._open_exposure_usd() + float(extra_pending_exposure_usd or 0.0)
         projected = open_exp + notional_with_fees
         if projected > self.config.max_total_exposure_usd:
             verdict = MandateVerdict(

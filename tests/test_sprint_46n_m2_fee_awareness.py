@@ -635,9 +635,9 @@ class RiskAgentEntryFeeInProposalTest(unittest.TestCase):
         captured = {}
         original_validate = gate.validate
 
-        def _capture_validate(trade):
+        def _capture_validate(trade, **kwargs):
             captured.update(trade)
-            return original_validate(trade)
+            return original_validate(trade, **kwargs)
 
         gate.validate = _capture_validate
 
@@ -725,9 +725,9 @@ class RiskAgentEntryFeeInProposalTest(unittest.TestCase):
         ))
         captured = {}
         original_validate = gate.validate
-        def _capture_validate(trade):
+        def _capture_validate(trade, **kwargs):
             captured.update(trade)
-            return original_validate(trade)
+            return original_validate(trade, **kwargs)
         gate.validate = _capture_validate
 
         from src.agents.risk_agent import RiskManagerAgent

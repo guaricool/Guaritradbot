@@ -516,6 +516,17 @@ class RiskManagerAgent:
         # moments earlier in this same loop still isn't in the repo yet.
         # Track assets approved earlier in THIS batch too.
         assets_approved_this_cycle: set[str] = set()
+        # Same reasoning applies to the mandate's total-exposure cap:
+        # position_repo.total_exposure_usd() only reflects positions
+        # already FILLED, not trades approved moments earlier in this
+        # same loop (they aren't persisted until ExecutionNode's later
+        # step). Without this, N hypotheses in one cycle each get
+        # checked against the same stale open_exp and could all pass
+        # individually while collectively blowing through
+        # max_total_exposure_usd. Accumulate here and pass it to the
+        # mandate so each check sees exposure "as if" prior approvals
+        # in this cycle had already filled.
+        pending_exposure_usd_this_cycle = 0.0
         for h in hypotheses:
             entry_price = float(h.get("price", 0))
             atr = float(h.get("atr_at_signal", 0))
@@ -1052,7 +1063,9 @@ class RiskManagerAgent:
 
             # --- Sprint 1: Mandate gate ---
             if self.mandate is not None:
-                verdict = self.mandate.validate(trade)
+                verdict = self.mandate.validate(
+                    trade, extra_pending_exposure_usd=pending_exposure_usd_this_cycle
+                )
                 if not verdict.ok:
                     rejected.append({"trade": trade, "reason": verdict.reason})
                     if self.audit:
@@ -1217,6 +1230,9 @@ class RiskManagerAgent:
 
             approved.append(trade)
             assets_approved_this_cycle.add(asset)
+            pending_exposure_usd_this_cycle += float(
+                trade.get("notional_with_fees_usd", trade.get("notional_usd", 0.0)) or 0.0
+            )
             slots_left -= 1
 
             if self.audit:
