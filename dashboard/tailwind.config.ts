@@ -62,11 +62,20 @@ const config: Config = {
           "0%": { opacity: "0", transform: "translateY(4px)" },
           "100%": { opacity: "1", transform: "translateY(0)" },
         },
+        // "Live" marker ring for the last point of a live-refreshing
+        // chart (EquityChart / PositionChart) -- transform + opacity
+        // only, per DESIGN.md's performance rule, and a plain solid
+        // color (no blurred/neon glow).
+        "live-ping": {
+          "0%": { transform: "scale(1)", opacity: "0.7" },
+          "100%": { transform: "scale(2.6)", opacity: "0" },
+        },
       },
       animation: {
         "pulse-gain": "pulse-gain 1.2s ease-in-out 1",
         "pulse-loss": "pulse-loss 1.2s ease-in-out 1",
         "fade-in": "fade-in 0.2s ease-out",
+        "live-ping": "live-ping 1.8s cubic-bezier(0,0,0.2,1) infinite",
       },
     },
   },

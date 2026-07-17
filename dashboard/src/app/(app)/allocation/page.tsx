@@ -210,7 +210,7 @@ export default function AllocationPage() {
           <div className="card-header">
             <span>Tail risk (CVaR)</span>
           </div>
-          <div className="grid grid-cols-2 gap-3 p-4">
+          <div className="grid grid-cols-2 gap-3 p-4 stagger-children">
             {cvarErr ? (
               <div className="col-span-2 text-sm text-loss">Couldn&apos;t load tail-risk metrics.</div>
             ) : !cvar ? (

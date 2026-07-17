@@ -11,6 +11,9 @@ import { EquityChart } from "@/components/EquityChart";
 import { OverviewPageSkeleton } from "@/components/Skeleton";
 import { fmtPct, fmtUsd } from "@/lib/format";
 import { useAnimatedNumber } from "@/lib/useAnimatedNumber";
+import { useFlashOnChange } from "@/lib/useFlashOnChange";
+import { useRollingHistory } from "@/lib/useRollingHistory";
+import { MiniTrend } from "@/components/MiniTrend";
 import { useLive } from "@/lib/use-live";
 import { useEffect, useMemo, useState } from "react";
 import type { PositionSummary } from "@/lib/types";
@@ -78,6 +81,16 @@ export default function HomePage() {
   // server.py's _position_snapshot_loop + state.py's live-broker-ticker
   // price fix) so it visibly glides instead of stair-stepping.
   const animatedUnrealized = useAnimatedNumber(unrealized);
+  // Flash the card background translucent green/red on each real
+  // backend update (DESIGN.md's cell-flash spec), and keep a rolling
+  // in-session history of the raw value for the corner MiniTrend --
+  // both driven off the raw `unrealized` so they fire on genuine
+  // updates rather than every eased animation frame.
+  const unrealizedFlash = useFlashOnChange(unrealized);
+  const unrealizedHistory = useRollingHistory(unrealized);
+  const effectiveBalanceHistory = useRollingHistory(
+    data?.effective_balance_usd ?? null,
+  );
 
   if (isLoading) return <OverviewPageSkeleton />;
   if (error || !data) {
@@ -150,7 +163,7 @@ export default function HomePage() {
           numbers that matter most moment-to-moment, so they get the
           hero slots; broker reference balances, open-position count,
           and today's realized P&L are supporting detail underneath. */}
-      <div className="grid gap-3 md:grid-cols-2">
+      <div className="grid gap-3 md:grid-cols-2 stagger-children">
         <KpiCard
           size="lg"
           // Sprint 62: "Effective balance" — the number the bot actually
@@ -174,6 +187,11 @@ export default function HomePage() {
               : "live from broker"
           }
           icon={<Wallet size={18} strokeWidth={2} />}
+          trend={
+            effectiveBalanceHistory.length >= 2 ? (
+              <MiniTrend values={effectiveBalanceHistory} width={110} height={36} />
+            ) : undefined
+          }
         />
         <KpiCard
           size="lg"
@@ -181,9 +199,15 @@ export default function HomePage() {
           value={fmtUsd(animatedUnrealized, { signed: true, decimals: 2 })}
           tone={unrealized > 0 ? "gain" : unrealized < 0 ? "loss" : "neutral"}
           hint={`${fmtPct(unrealizedPct, { signed: true, decimals: 2 })} of exposure`}
+          flashClassName={unrealizedFlash}
+          trend={
+            unrealizedHistory.length >= 2 ? (
+              <MiniTrend values={unrealizedHistory} width={110} height={36} />
+            ) : undefined
+          }
         />
       </div>
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4 stagger-children">
         <KpiCard
           label="Binance.US"
           value={

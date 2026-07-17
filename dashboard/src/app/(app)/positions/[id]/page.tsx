@@ -66,7 +66,7 @@ export default function PositionDetailPage({
         <ModeToggle mode={state.mode} size="sm" />
       </header>
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4 stagger-children">
         <KpiCard
           label="Entry"
           value={fmtUsd(pos.entry_price, { decimals: 2 })}

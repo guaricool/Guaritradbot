@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { fmtPct, fmtUsd, pnlClass } from "@/lib/format";
 import { useAnimatedNumber } from "@/lib/useAnimatedNumber";
+import { useFlashOnChange } from "@/lib/useFlashOnChange";
 import { Spinner } from "./Spinner";
 import { PositionChart } from "./PositionChart";
 import { PositionDetailModal } from "./PositionDetailModal";
@@ -190,6 +191,12 @@ function PositionRow({
   // of how many other positions are open.
   const animatedPnl = useAnimatedNumber(p.unrealized_pnl_usd);
   const animatedPnlPct = useAnimatedNumber(p.unrealized_pnl_pct);
+  // Flash the cell itself translucent green/red on each real backend
+  // update (raw value, not the tweened one -- flashing on every eased
+  // animation frame would never settle). DESIGN.md: "efecto flash muy
+  // sutil en las celdas de precio... verde translucido subidas, rojo
+  // translucido bajadas".
+  const pnlFlash = useFlashOnChange(p.unrealized_pnl_usd);
   const dirClass = p.direction === "long" ? "text-gain" : "text-loss";
   const dirArrow = p.direction === "long" ? "▲" : "▼";
 
@@ -238,7 +245,7 @@ function PositionRow({
         <td className="num-cell">
           {fmtUsd(p.notional_usd, { decimals: 0 })}
         </td>
-        <td className={`num-cell ${pnlClass(p.unrealized_pnl_usd ?? null)}`}>
+        <td className={`num-cell rounded ${pnlClass(p.unrealized_pnl_usd ?? null)} ${pnlFlash}`}>
           {fmtUsd(animatedPnl, { signed: true, decimals: 2 })}
         </td>
         <td className={`num-cell ${pnlClass(p.unrealized_pnl_pct ?? null)}`}>

@@ -28,11 +28,14 @@
     -moz-osx-font-smoothing: grayscale;
   }
 
-  /* Subtle warm noise overlay — gives the dashboard some texture without being noisy */
+  /* Subtle warm noise overlay — gives the dashboard some texture without being noisy.
+     The gradient centers drift very slowly (24s loop) via background-position,
+     so the backdrop reads as quietly "alive" rather than static, without ever
+     drawing attention away from the data itself. */
   body::before {
     content: "";
     position: fixed;
-    inset: 0;
+    inset: -10%;
     pointer-events: none;
     background-image: radial-gradient(
         circle at 20% 10%,
@@ -44,7 +47,28 @@
         rgba(16, 185, 129, 0.02) 0%,
         transparent 40%
       );
+    background-repeat: no-repeat;
+    animation: ambient-drift 24s ease-in-out infinite alternate;
     z-index: 0;
+  }
+
+  @keyframes ambient-drift {
+    0% {
+      background-position:
+        0% 0%,
+        0% 0%;
+    }
+    100% {
+      background-position:
+        3% 4%,
+        -3% -4%;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    body::before {
+      animation: none;
+    }
   }
 
   /* Tabular numbers everywhere by default — finance UI */
@@ -78,7 +102,9 @@
   }
 
   .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition;
+    /* DESIGN.md 4: buttons get a -1px translateY "tactility" on click —
+       transform-only so it stays on the hardware-accelerated path. */
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition duration-150 ease-out active:-translate-y-px;
   }
 
   .btn-primary {
@@ -144,6 +170,23 @@
   .text-muted {
     color: var(--muted);
   }
+
+  /* Staggered mount for a row/grid of KPI cards — each direct child fades
+     in slightly after the previous one instead of popping in as one flat
+     block. Pair with `animate-fade-in` on each child. Capped at 8 cards;
+     beyond that they all share the last delay rather than compounding. */
+  .stagger-children > * {
+    opacity: 0;
+    animation: fade-in 0.35s ease-out forwards;
+  }
+  .stagger-children > *:nth-child(1) { animation-delay: 0ms; }
+  .stagger-children > *:nth-child(2) { animation-delay: 45ms; }
+  .stagger-children > *:nth-child(3) { animation-delay: 90ms; }
+  .stagger-children > *:nth-child(4) { animation-delay: 135ms; }
+  .stagger-children > *:nth-child(5) { animation-delay: 180ms; }
+  .stagger-children > *:nth-child(6) { animation-delay: 225ms; }
+  .stagger-children > *:nth-child(7) { animation-delay: 270ms; }
+  .stagger-children > *:nth-child(n+8) { animation-delay: 315ms; }
 
   /* Slim scrollbar for the dashboard */
   .scrollbar-thin::-webkit-scrollbar {

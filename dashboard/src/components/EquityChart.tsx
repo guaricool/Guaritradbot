@@ -15,6 +15,7 @@ import {
 import { api } from "@/lib/api";
 import { fmtUsd, fmtDateOnly } from "@/lib/format";
 import { ChartSkeleton } from "./Skeleton";
+import { LiveDot } from "./LiveDot";
 
 export function EquityChart({ windowDays = 30 }: { windowDays?: number }) {
   const { data, error, isLoading } = useSWR(
@@ -87,11 +88,19 @@ export function EquityChart({ windowDays = 30 }: { windowDays?: number }) {
           margin={{ top: 8, right: 16, left: 0, bottom: 8 }}
         >
           <defs>
+            {/* Richer fill: was a flat 2-stop wash on each side of zero
+                (0.35 -> 0.05). Adding a mid stop gives the area some
+                depth/"glass" quality near the line itself without ever
+                introducing a blurred glow -- still plain flat color
+                stops, just more of them, which is what recharts'
+                gradient fill actually supports. */}
             <linearGradient id="equityFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#10b981" stopOpacity={0.35} />
-              <stop offset={zeroOffset} stopColor="#10b981" stopOpacity={0.05} />
-              <stop offset={zeroOffset} stopColor="#ef4444" stopOpacity={0.05} />
-              <stop offset="100%" stopColor="#ef4444" stopOpacity={0.35} />
+              <stop offset="0%" stopColor="#10b981" stopOpacity={0.4} />
+              <stop offset={Math.max(0, zeroOffset - 0.15)} stopColor="#10b981" stopOpacity={0.16} />
+              <stop offset={zeroOffset} stopColor="#10b981" stopOpacity={0.04} />
+              <stop offset={zeroOffset} stopColor="#ef4444" stopOpacity={0.04} />
+              <stop offset={Math.min(1, zeroOffset + 0.15)} stopColor="#ef4444" stopOpacity={0.16} />
+              <stop offset="100%" stopColor="#ef4444" stopOpacity={0.4} />
             </linearGradient>
             <linearGradient id="equityStroke" x1="0" y1="0" x2="0" y2="1">
               <stop offset={zeroOffset} stopColor="#10b981" />
@@ -133,6 +142,23 @@ export function EquityChart({ windowDays = 30 }: { windowDays?: number }) {
             strokeWidth={1.5}
             fill="url(#equityFill)"
             isAnimationActive={false}
+            // Only the LAST point gets a marker -- a pulsing "live" dot
+            // so the curve reads as "still updating", not a static
+            // historical image, even though it refetches on a 30s
+            // interval rather than every tick.
+            dot={(props: { cx?: number; cy?: number; index?: number }) => {
+              const isLast = props.index === series.length - 1;
+              if (!isLast) return <g key={`dot-${props.index}`} />;
+              const last = series[series.length - 1]?.cumulative_usd ?? 0;
+              return (
+                <LiveDot
+                  key="equity-live-dot"
+                  cx={props.cx}
+                  cy={props.cy}
+                  color={last >= 0 ? "#10b981" : "#ef4444"}
+                />
+              );
+            }}
           />
         </AreaChart>
       </ResponsiveContainer>

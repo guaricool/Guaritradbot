@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { clsx } from "clsx";
+import { motion } from "framer-motion";
 import {
   LayoutGrid,
   CircleDot,
@@ -83,17 +84,27 @@ export function Sidebar() {
               key={item.href}
               href={item.href}
               className={clsx(
-                "group flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition",
+                "group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors duration-200",
                 active
                   ? "bg-gold/10 text-gold"
                   : "text-cream-50/80 hover:bg-ink-800 hover:text-cream-50",
               )}
             >
+              {/* Active-item accent — a shared layoutId lets framer-motion
+                  glide this bar from the old active link to the new one
+                  instead of popping, without any glow/shadow. */}
+              {active && (
+                <motion.span
+                  layoutId="sidebar-active-indicator"
+                  className="absolute left-0 top-1 bottom-1 w-0.5 rounded-full bg-gold"
+                  transition={{ type: "spring", stiffness: 500, damping: 40 }}
+                />
+              )}
               <Icon
                 size={16}
                 strokeWidth={2}
                 className={clsx(
-                  "shrink-0 transition",
+                  "shrink-0 transition-transform duration-200 group-hover:scale-110",
                   active ? "text-gold" : "text-muted group-hover:text-cream-50",
                 )}
               />

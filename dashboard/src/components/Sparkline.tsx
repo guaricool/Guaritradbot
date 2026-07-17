@@ -13,6 +13,12 @@
  * up vs the first bar in the window, red otherwise. Color is
  * also exposed via a CSS-friendly class so a parent can use the
  * same color for the % change label without recomputing.
+ *
+ * No "live pulsing dot" here (unlike EquityChart/PositionChart): its
+ * only caller, the /charts market tile grid, fetches with
+ * `refreshInterval: 0` (static/historical, see charts/page.tsx) -- a
+ * pulsing "this is moving right now" marker on data that never
+ * refreshes would be misleading, not "impactante".
  */
 
 import { useMemo } from "react";

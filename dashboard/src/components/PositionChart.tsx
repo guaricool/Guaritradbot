@@ -15,6 +15,7 @@ import {
 import { api } from "@/lib/api";
 import { fmtUsd, fmtTimeOnly } from "@/lib/format";
 import { Skeleton } from "./Skeleton";
+import { LiveDot } from "./LiveDot";
 import type { Candle } from "@/lib/types";
 
 interface Props {
@@ -221,8 +222,37 @@ function Chart({
             dataKey="close"
             stroke={`url(#${gradientId})`}
             strokeWidth={1.5}
-            dot={false}
+            // isAnimationActive stays false: this poll every 5s
+            // re-fetches the same fixed-size (~200 candle) window
+            // rather than appending to a growing array, so recharts'
+            // `matchByIndex` animation strategy would re-draw the
+            // ENTIRE line from scratch on every poll (a visible
+            // left-to-right sweep every 5s), and `matchAppend` doesn't
+            // help either since the array length doesn't grow. A full
+            // redraw-in on every tick would read as janky/flickery
+            // rather than "live", so we keep the base line static and
+            // get the "this is moving right now" read entirely from
+            // the LiveDot marker below instead.
             isAnimationActive={false}
+            dot={(props: { cx?: number; cy?: number; index?: number }) => {
+              const isLast = props.index === pts.length - 1;
+              if (!isLast) return <g key={`dot-${props.index}`} />;
+              const lastClose = pts[pts.length - 1]?.close ?? 0;
+              const color =
+                entry !== null
+                  ? lastClose >= entry
+                    ? "#10b981"
+                    : "#ef6b5a"
+                  : "#e6a93b";
+              return (
+                <LiveDot
+                  key="position-live-dot"
+                  cx={props.cx}
+                  cy={props.cy}
+                  color={color}
+                />
+              );
+            }}
           />
         </LineChart>
       </ResponsiveContainer>
