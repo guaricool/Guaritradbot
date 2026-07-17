@@ -106,19 +106,27 @@ class KillSwitchStateMachineTest(unittest.TestCase):
             # at the highest seen, not the latest)
             self.assertAlmostEqual(self.kds.peak_equity, 100.0, places=2)
 
-    def test_cooldown_does_not_auto_reset_while_still_in_drawdown(self):
-        """The auto-reset guard: if cooldown elapses but equity
-        is still in drawdown, the kill switch must STAY active.
-        Otherwise we'd reset and immediately re-trigger in a
-        loop every cycle (the audit's pre-Sprint-46N concern)."""
+    def test_cooldown_still_in_drawdown_rebases_peak_instead_of_deadlocking(self):
+        """Bug fix (deadlock): this test used to assert the kill switch
+        stays triggered forever once cooldown elapses while still in
+        drawdown -- but recovering equity requires NEW trades, which
+        this switch itself blocks while triggered, so that old
+        contract meant the switch could NEVER release once equity fell
+        far enough (no way to out-earn its own lockout). It now
+        releases anyway once the cooldown genuinely elapses, rebasing
+        `peak_equity` to the current equity (a fresh, reachable
+        baseline) rather than requiring recovery to the old peak."""
         with self.time_patches[0]:
             self.kds.update(100.0)
             self.kds.update(80.0)  # triggers
             self._advance(self.kds.cooldown_hours * 3600 + 60)
             state = self.kds.update(80.0)  # equity unchanged
-            self.assertTrue(state.triggered,
-                            "cooldown elapsed but still in drawdown -> "
-                            "kill switch must NOT auto-reset")
+            self.assertFalse(state.triggered,
+                             "cooldown elapsed -> kill switch must release even if "
+                             "still nominally 'in drawdown' vs the OLD peak, by "
+                             "rebasing the peak instead of deadlocking forever")
+            self.assertTrue(state.peak_rebased)
+            self.assertEqual(state.peak_equity, 80.0)
 
     def test_cooldown_with_recovery_auto_resets(self):
         """The happy-path recovery: cooldown elapsed AND equity

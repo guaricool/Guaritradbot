@@ -129,6 +129,13 @@ class DrawdownState:
     # the cycle fall through to normal trading instead of skipping it.
     # 0.0 when not triggered (nothing to count down).
     cooldown_remaining_hours: float = 0.0
+    # Bug fix (deadlock): True on the cycle this reset happened by
+    # rebasing the peak to current equity rather than by genuinely
+    # recovering above -threshold_pct. See DrawdownKillSwitch.update's
+    # docstring for why this exists -- callers should treat this as
+    # noteworthy (log it distinctly) since it means the switch let
+    # trading resume despite still being in a real drawdown.
+    peak_rebased: bool = False
 
 
 class DrawdownKillSwitch:
@@ -171,6 +178,23 @@ class DrawdownKillSwitch:
 
         Auto-triggers kill switch if drawdown exceeds threshold.
         Auto-resets if cooldown has elapsed (only if not currently in drawdown).
+
+        Bug fix (deadlock): the old reset condition required BOTH the
+        cooldown to elapse AND `drawdown_pct > -threshold_pct` (recovered
+        above the threshold) before even checking the cooldown timer.
+        But recovering equity requires NEW trades, and new trades are
+        exactly what this switch blocks while triggered -- so once
+        equity fell far enough below peak (e.g. a real historical
+        sizing bug compounding losses before a fix), the switch could
+        never release itself: the account is stuck below peak forever
+        with trading permanently disabled, no matter how long the
+        cooldown window is. Now: once the cooldown has genuinely
+        elapsed, the switch resets AND rebases `peak_equity` to the
+        CURRENT equity if the account never recovered on its own --
+        drawdown resets to 0% from a new, reachable baseline instead of
+        requiring a return to a peak that may no longer be reachable.
+        The same threshold_pct still protects the account from here
+        forward; it just stops enforcing recovery to a stale peak.
         """
         # Update peak (if equity is new high, this is the new peak)
         if current_equity > self.peak_equity:
@@ -186,17 +210,25 @@ class DrawdownKillSwitch:
             self.triggered = True
             self.triggered_at = time.time()
 
-        # Auto-reset if cooldown elapsed AND we're no longer in drawdown
-        # (otherwise we'd reset and immediately re-trigger)
-        if (
-            self.triggered
-            and self.triggered_at is not None
-            and drawdown_pct > -self.threshold_pct  # not in drawdown anymore
-        ):
+        peak_rebased = False
+        if self.triggered and self.triggered_at is not None:
             elapsed_h = (time.time() - self.triggered_at) / 3600.0
             if elapsed_h >= self.cooldown_hours:
-                self.triggered = False
-                self.triggered_at = None
+                if drawdown_pct > -self.threshold_pct:
+                    # Genuine recovery -- simple reset, peak untouched.
+                    self.triggered = False
+                    self.triggered_at = None
+                else:
+                    # Still deep in drawdown after a full cooldown --
+                    # without a rebase this would never release. Rebase
+                    # the peak to current equity and recompute drawdown
+                    # (now 0%) so the caller's snapshot reflects the
+                    # post-rebase state on this same cycle.
+                    self.peak_equity = current_equity
+                    drawdown_pct = 0.0
+                    self.triggered = False
+                    self.triggered_at = None
+                    peak_rebased = True
 
         # Sprint 45 fix (N2): compute how many hours remain in the
         # cooldown window, for display/alerting. 0.0 whenever the
@@ -212,6 +244,7 @@ class DrawdownKillSwitch:
             drawdown_pct=drawdown_pct,
             triggered=self.triggered,
             cooldown_remaining_hours=cooldown_remaining_hours,
+            peak_rebased=peak_rebased,
         )
 
     def is_triggered(self) -> bool:

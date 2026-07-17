@@ -167,18 +167,42 @@ class DrawdownKillSwitchTest(unittest.TestCase):
         self.assertFalse(state.triggered)
         # But peak stays at 120 and drawdown from peak is 0.83% (within threshold)
 
-    def test_no_auto_reset_if_still_in_drawdown(self):
-        """If equity is still below threshold after cooldown, kill switch stays active."""
+    def test_rebases_peak_and_releases_if_still_in_drawdown_after_cooldown(self):
+        """Bug fix (deadlock): recovering equity requires NEW trades, and
+        new trades are exactly what this switch blocks while triggered --
+        so requiring recovery above -threshold_pct before ever releasing
+        meant the switch could NEVER auto-reset once equity fell far
+        enough (it can't out-earn its own lockout). After the cooldown
+        genuinely elapses, the switch now releases anyway and rebases
+        `peak_equity` to the current equity (drawdown resets to 0% from
+        a new, reachable baseline) instead of staying triggered forever."""
         ds = DrawdownKillSwitch(threshold_pct=15.0, cooldown_hours=0.001)
         ds.update(100.0)
         ds.update(120.0)
         ds.update(80.0)  # triggers
         self.assertTrue(ds.is_triggered())
         time.sleep(4.0)
-        # Equity still low (still 25% below peak)
+        # Equity still low (still 33% below peak) -- old behavior would
+        # stay triggered forever; new behavior releases + rebases.
         state = ds.update(80.0)
-        # Even after cooldown, we're still in drawdown → stays triggered
+        self.assertFalse(state.triggered)
+        self.assertTrue(state.peak_rebased)
+        self.assertEqual(state.peak_equity, 80.0)
+        self.assertAlmostEqual(state.drawdown_pct, 0.0)
+        self.assertFalse(ds.is_triggered())
+
+    def test_still_stays_active_before_cooldown_elapses(self):
+        """The deadlock fix only kicks in once cooldown_hours has
+        genuinely elapsed -- a long cooldown must still be respected,
+        not bypassed instantly."""
+        ds = DrawdownKillSwitch(threshold_pct=15.0, cooldown_hours=24.0)
+        ds.update(100.0)
+        ds.update(120.0)
+        ds.update(80.0)  # triggers
+        self.assertTrue(ds.is_triggered())
+        state = ds.update(80.0)  # no time has passed
         self.assertTrue(state.triggered)
+        self.assertFalse(state.peak_rebased)
 
     def test_manual_reset(self):
         ds = DrawdownKillSwitch(threshold_pct=15.0)

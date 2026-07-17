@@ -538,6 +538,19 @@ class BotRuntime:
                 logger.warning(
                     f"[DrawdownKill] persist falló (continuando): {_dd_persist_err}"
                 )
+            if dd_state.peak_rebased and self.audit:
+                # Bug fix (deadlock): the switch just released trading
+                # by rebasing its peak to current equity instead of
+                # genuinely recovering -- see DrawdownKillSwitch.update's
+                # docstring. Distinct, visible audit event so this
+                # doesn't look like a silent, ordinary reset.
+                self.audit.append("BOT_DRAWDOWN_PEAK_REBASED", {
+                    "new_peak_equity": dd_state.peak_equity,
+                    "current_equity": current_equity,
+                    "note": "Cooldown elapsed while still in drawdown; peak rebased to "
+                            "current equity so trading could resume (recovery to the old "
+                            "peak was unreachable without trading).",
+                })
             if dd_state.triggered:
                 dd_triggered = True
                 if self.audit:
