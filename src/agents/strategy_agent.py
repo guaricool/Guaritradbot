@@ -416,8 +416,18 @@ class StrategyAgent:
                 h_prev = float(hist.iloc[-2])
                 h_prev2 = float(hist.iloc[-3])
                 h_now = float(hist.iloc[-1])
+                # Bug fix: "getting more negative" means the value is
+                # DECREASING (h_prev2 > h_prev, e.g. -1 -> -3), not
+                # increasing. The old condition (`h_prev2 < h_prev`)
+                # required the histogram to already be RISING for two
+                # bars before this check — i.e. it fired on momentum
+                # CONTINUATION (e.g. -5, -3, -1, still negative but
+                # climbing throughout), never on the V-shaped
+                # REVERSAL the comment/name describe (e.g. -1, -3, -1:
+                # decline then bounce). Fixed to match the documented
+                # intent: was declining while negative, now turns up.
                 # turning bullish: was negative and getting more negative, now rising
-                if h_prev2 < h_prev < 0 and h_now > h_prev:
+                if h_prev2 > h_prev < 0 and h_now > h_prev:
                     self._add_hyp(
                         hypotheses, asset, "1h", "long",
                         "MACD_HistTurn_Bull", price,
@@ -425,7 +435,7 @@ class StrategyAgent:
                         expected_move_pct=_exp_move,
                     )
                 # turning bearish: was positive and getting more positive, now falling
-                elif h_prev2 > h_prev > 0 and h_now < h_prev:
+                elif h_prev2 < h_prev > 0 and h_now < h_prev:
                     self._add_hyp(
                         hypotheses, asset, "1h", "short",
                         "MACD_HistTurn_Bear", price,
