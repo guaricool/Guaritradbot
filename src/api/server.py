@@ -568,15 +568,60 @@ def get_mode(_: None = Depends(auth.require_auth)) -> ModeInfo:
 
 @app.post("/api/mode", response_model=SetModeResponse)
 def set_mode(req: SetModeRequest, _: None = Depends(auth.require_auth)) -> SetModeResponse:
+    """Toggle LIVE/PAPER.
+
+    Paper -> live is the dangerous direction: any open paper positions
+    do NOT exist on the real exchange. `main.py` already guards this at
+    process STARTUP via `PaperToLiveChecklist` (see its module
+    docstring), but that guard never ran for a live toggle flipped from
+    the dashboard mid-session — the bot re-reads `mandate_enabled` from
+    this override file every cycle without a restart, so a paper
+    position could silently start being tracked as live (and a real
+    close order sent for a position the broker never had) with no
+    checklist in between. This runs the SAME checklist here, inline,
+    before the override file is ever written to live.
+    """
     if req.mode not in ("live", "paper"):
         raise HTTPException(status_code=400, detail=f"mode must be 'live' or 'paper', got {req.mode!r}")
     mandate_enabled = (req.mode == "live")
+
+    note = ""
+    if mandate_enabled:
+        from src.safety.audit_ledger import AuditLedger
+        from src.safety.paper_to_live import PaperToLiveChecklist
+        from src.api.state import get_broker_client
+
+        repo = get_position_repo(_positions_path())
+        if repo.count_open() > 0:
+            audit = AuditLedger(path=_audit_path())
+            config = APP_STATE.get("config") or {}
+            checklist = PaperToLiveChecklist(
+                position_repo=repo,
+                audit=audit,
+                broker=get_broker_client(),
+                interactive=False,
+                auto_action=config.get("live_transition", {}).get("auto_action", "abort"),
+                min_order_qty=config.get("live_transition", {}).get("dry_run_qty", 0.00001),
+            )
+            decision = checklist.run(dry_run=True)
+            if not decision.proceed:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Live transition blocked by pre-flight checklist: {decision.reason}. "
+                        "Close or resolve open paper positions first (see 'Clean Paper Positions' "
+                        "in the dashboard sidebar), or configure live_transition.auto_action."
+                    ),
+                )
+            if decision.paper_positions_closed:
+                note = f"Closed {decision.paper_positions_closed} paper position(s) pre-flight before going live. "
+
     new_mode = write_mode(
         mandate_enabled=mandate_enabled,
         switched_by=req.switched_by or "api",
         audit_path=_audit_path(),
     )
-    return SetModeResponse(mode=new_mode)
+    return SetModeResponse(mode=new_mode, note=note or SetModeResponse.model_fields["note"].default)
 
 # ----------------------------------------------------------------------
 # Auth

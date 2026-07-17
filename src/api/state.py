@@ -342,6 +342,17 @@ def set_brokers(broker_client=None, alpaca_broker=None) -> None:
     _ALPACA_BROKER = alpaca_broker
 
 
+def get_broker_client():
+    """Return the bot's shared crypto `BrokerClient` (binance.us/ccxt)
+    if one was registered via `set_brokers`, else None.
+
+    Used by `set_mode()` in server.py to run `PaperToLiveChecklist`
+    against the SAME broker instance the trading loop uses, instead of
+    building a throwaway one — same rationale as `get_position_repo`.
+    """
+    return _BROKER_CLIENT
+
+
 # Sprint 46N (audit C8): the bot's own live PositionRepository, shared
 # with the dashboard API instead of each request building its own
 # disk-backed copy. See `set_position_repo`'s docstring for the full
