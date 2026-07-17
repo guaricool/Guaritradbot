@@ -106,6 +106,19 @@ class NotificationAgent:
             return False
         return True
 
+    def _mode_tag(self) -> str:
+        """Bug fix: handle_trade_opened/closed/position_update all had
+        the literal string "LIVE" hardcoded in the message text,
+        regardless of the bot's actual mode. Harmless while
+        `live_only=True` (the default), since these notifications
+        only fire in live mode then anyway -- but with
+        `notifications.live_only: false` (paper notifications
+        enabled), every message still claimed "LIVE" while the bot
+        was in PAPER, which is exactly backwards for a message whose
+        whole point is telling the operator whether real money moved.
+        """
+        return "LIVE" if _is_live_mode(self.mode_override_path) else "PAPER"
+
     # ------------------------------------------------------------------
     #  Telegram transport
     # ------------------------------------------------------------------
@@ -268,7 +281,7 @@ class NotificationAgent:
             sl_pct = tp_pct = 0.0
 
         msg = (
-            "🟢 <b>NUEVA ENTRADA — LIVE</b>\n"
+            f"🟢 <b>NUEVA ENTRADA — {self._mode_tag()}</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             f"🔹 <b>Par:</b> {asset}\n"
             f"🔹 <b>Dirección:</b> {direction}\n"
@@ -308,7 +321,7 @@ class NotificationAgent:
         pct_str = f"{sign}{abs(pnl_pct):.2f}%"
 
         msg = (
-            f"{emoji} <b>POSICIÓN CERRADA — LIVE</b>\n"
+            f"{emoji} <b>POSICIÓN CERRADA — {self._mode_tag()}</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             f"🔹 <b>Par:</b> {asset}\n"
             f"🔹 <b>Dirección:</b> {direction}\n"
@@ -358,7 +371,7 @@ class NotificationAgent:
         progress_bar = self._progress_bar(pnl_pct)
 
         msg = (
-            f"{emoji} <b>UPDATE ({duration_h:.1f}h) — LIVE</b>\n"
+            f"{emoji} <b>UPDATE ({duration_h:.1f}h) — {self._mode_tag()}</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             f"🔹 <b>Par:</b> {asset} ({direction})\n"
             f"🔹 <b>Entrada:</b> ${entry_price:,.2f}\n"
