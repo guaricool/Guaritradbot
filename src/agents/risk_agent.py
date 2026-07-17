@@ -848,16 +848,26 @@ class RiskManagerAgent:
             # min_order_usd is necessary (binance.us/exchange minimums
             # exist regardless of what risk_per_trade_pct would size),
             # but it must not be allowed to silently turn a 1%-risk
-            # config into a 5%-risk trade. If the auto-adjust fired AND
-            # the resulting effective risk exceeds
-            # max_auto_adjust_risk_multiplier x the originally-intended
-            # risk_amount_usd, reject the trade instead of opening it —
-            # better to skip a trade this account is too small for than
-            # to size it at a multiple of the risk the operator
-            # configured. Only applies when auto-adjust actually fired;
-            # a normally-sized trade (no adjustment) is never touched by
-            # this gate.
-            if auto_adjust_reason is not None and risk_amount_usd > 0:
+            # config into a 5%-risk trade. If the resulting effective
+            # risk exceeds max_auto_adjust_risk_multiplier x the
+            # originally-intended risk_amount_usd, reject the trade
+            # instead of opening it — better to skip a trade this
+            # account is too small for than to size it at a multiple
+            # of the risk the operator configured.
+            #
+            # Bug fix: this used to only run `if auto_adjust_reason is
+            # not None` — i.e. only when Step 2's min_order_usd bump
+            # fired. But the exchange lot-size/min-notional quantize
+            # block above (Sprint 46N audit A3) can ALSO inflate
+            # quantity/notional via its own `buffered_floor`, entirely
+            # independent of whether Step 2 fired — a trade whose raw
+            # notional already cleared min_order_usd but not the
+            # exchange's real min-notional would silently bypass this
+            # cap. The multiplier check must run unconditionally
+            # whenever there's an intended risk to compare against;
+            # `auto_adjust_reason` (possibly still None) is now only
+            # used for the audit log's "reason" breadcrumb.
+            if risk_amount_usd > 0:
                 risk_multiplier = risk_amount_usd_eff / risk_amount_usd
                 if risk_multiplier > self.max_auto_adjust_risk_multiplier:
                     rejected.append({
@@ -867,14 +877,14 @@ class RiskManagerAgent:
                     if self.audit:
                         self.audit.append("CAP_AUTO_ADJUSTED_REJECTED", {
                             "asset": h.get("asset"),
-                            "auto_adjust_reason": auto_adjust_reason,
+                            "auto_adjust_reason": auto_adjust_reason or "exchange_min_notional_quantize",
                             "intended_risk_usd": round(risk_amount_usd, 4),
                             "effective_risk_usd": round(risk_amount_usd_eff, 4),
                             "risk_multiplier": round(risk_multiplier, 2),
                             "max_allowed_multiplier": self.max_auto_adjust_risk_multiplier,
                             "min_order_usd": self.min_order_usd,
                         })
-                    logger.info(f"  🚫 {h['asset']:8} {direction:5} — auto-adjust to min_order_usd would risk ${risk_amount_usd_eff:.4f} vs ${risk_amount_usd:.4f} intended ({risk_multiplier:.1f}x > {self.max_auto_adjust_risk_multiplier}x cap). Rejecting — account too small for this stop distance at the configured risk_per_trade_pct.")
+                    logger.info(f"  🚫 {h['asset']:8} {direction:5} — sizing would risk ${risk_amount_usd_eff:.4f} vs ${risk_amount_usd:.4f} intended ({risk_multiplier:.1f}x > {self.max_auto_adjust_risk_multiplier}x cap). Rejecting — account too small for this stop distance at the configured risk_per_trade_pct.")
                     continue
 
             # --- Min order check (post-adjustment) ---
