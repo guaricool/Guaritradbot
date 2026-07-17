@@ -3,10 +3,10 @@
 /**
  * PriceChart — Sprint 58 + Sprint 59
  *
- * Single-asset price chart for the /charts dashboard. Renders an
- * OHLC line over a `close`-keyed LineChart, with the asset label,
- * last close, percent change, and a 1D/5D/1M/3M/1Y/ALL time-range
- * selector at the top.
+ * Single-asset price chart for the /charts dashboard. Renders real
+ * OHLC candlesticks (via the shared `CandlestickChart`), with the
+ * asset label, last close, percent change, and a 1D/5D/1M/3M/1Y/ALL
+ * time-range selector at the top.
  *
  * Sprint 59 changes:
  *  - Component is now range-aware. The parent passes `range` and
@@ -27,17 +27,9 @@
 
 import { useMemo } from "react";
 import useSWR from "swr";
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  ReferenceLine,
-} from "recharts";
 import { api } from "@/lib/api";
 import { TimeRangeSelector } from "@/components/TimeRangeSelector";
+import { CandlestickChart } from "@/components/CandlestickChart";
 import type { Candle, TimeRange, YfInterval } from "@/lib/types";
 
 export type { Candle };
@@ -71,12 +63,12 @@ const RANGE_PARAMS: Record<TimeRange, { interval: YfInterval; limit: number }> =
   "ALL": { interval: "1wk", limit: 520 },
 };
 
+// Aligned with DESIGN.md's exact up/down colors (Terminal Emerald /
+// Coral Crimson) so the header's last-price/pct-change color matches
+// the candle body colors CandlestickChart renders below it.
 const COLORS = {
-  gain: "#3fb950",
-  loss: "#f85149",
-  grid: "#30363d",
-  axis: "#8b949e",
-  text: "#c9d1d9",
+  gain: "#10b981",
+  loss: "#ef6b5a",
 };
 
 function formatTime(ts: number, interval: YfInterval) {
@@ -90,17 +82,6 @@ function formatTime(ts: number, interval: YfInterval) {
     return d.toLocaleDateString([], { month: "short", day: "2-digit" });
   }
   return d.toLocaleDateString([], { month: "short", year: "2-digit" });
-}
-
-function formatDateTime(ts: number) {
-  const d = new Date(ts * 1000);
-  return d.toLocaleString([], {
-    month: "short",
-    day: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }
 
 function formatPrice(p: number) {
@@ -141,23 +122,14 @@ export function PriceChart({
   // period; we don't trust the order and sort explicitly.
   const sorted = useMemo(() => {
     const candles = data?.candles ?? [];
-    return [...candles]
-      .sort((a, b) => a.ts - b.ts)
-      .map((c: Candle) => ({
-        ts: c.ts,
-        label: formatTime(c.ts, interval),
-        close: c.close,
-        high: c.high,
-        low: c.low,
-      }));
-  }, [data?.candles, interval]);
+    return [...candles].sort((a, b) => a.ts - b.ts);
+  }, [data?.candles]);
 
   // Pct change for the asset label: first close -> last close in
   // the loaded window. For 1D that's "today's change", for 1M
   // that's "this month's change", etc.
   const first = sorted[0]?.close;
   const last = sorted[sorted.length - 1]?.close;
-  const lineColor = first != null && last != null && last >= first ? COLORS.gain : COLORS.loss;
   const pct = first && last ? ((last - first) / first) * 100 : 0;
   const pctStr = (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%";
   const rangeLoading = isLoading && !data;
@@ -194,69 +166,15 @@ export function PriceChart({
             {(error as Error).message}
           </div>
         ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={sorted} margin={{ top: 4, right: 4, bottom: 0, left: 4 }}>
-              <XAxis
-                dataKey="label"
-                stroke={COLORS.axis}
-                fontSize={9}
-                tickLine={false}
-                axisLine={{ stroke: COLORS.grid }}
-                interval="preserveStartEnd"
-                minTickGap={32}
-              />
-              <YAxis
-                stroke={COLORS.axis}
-                fontSize={9}
-                tickLine={false}
-                axisLine={false}
-                domain={["auto", "auto"]}
-                tickFormatter={(v) => formatPrice(v as number)}
-                width={48}
-              />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "#0d1117",
-                  border: `1px solid ${COLORS.grid}`,
-                  borderRadius: 6,
-                  fontSize: 11,
-                }}
-                labelFormatter={(label, payload) => {
-                  if (payload && payload[0]) {
-                    return formatDateTime(payload[0].payload.ts);
-                  }
-                  return String(label);
-                }}
-                formatter={(value) => {
-                  if (value == null) return "—";
-                  const n = typeof value === "number" ? value : Number(value);
-                  return Number.isFinite(n) ? formatPrice(n) : "—";
-                }}
-              />
-              {referencePrice != null && (
-                <ReferenceLine
-                  y={referencePrice}
-                  stroke={COLORS.text}
-                  strokeDasharray="3 3"
-                  strokeOpacity={0.6}
-                  label={{
-                    value: `entry ${formatPrice(referencePrice)}`,
-                    position: "insideTopRight",
-                    fontSize: 9,
-                    fill: COLORS.axis,
-                  }}
-                />
-              )}
-              <Line
-                type="monotone"
-                dataKey="close"
-                stroke={lineColor}
-                strokeWidth={1.5}
-                dot={false}
-                isAnimationActive={false}
-              />
-            </LineChart>
-          </ResponsiveContainer>
+          <CandlestickChart
+            candles={sorted}
+            height={height}
+            entry={referencePrice ?? null}
+            asset={label ?? asset}
+            xTickFormatter={(ts) => formatTime(ts, interval)}
+            valueFormatter={formatPrice}
+            maxPoints={range === "1D" || range === "5D" ? 130 : 100}
+          />
         )}
       </div>
       {/* Time-range selector sits at the bottom of the card so the

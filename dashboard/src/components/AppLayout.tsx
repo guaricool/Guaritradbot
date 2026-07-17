@@ -7,6 +7,7 @@ import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { Sidebar } from "./Sidebar";
 import { Spinner } from "./Spinner";
 import { LoginForm } from "./LoginForm";
+import { TickerStrip } from "./TickerStrip";
 
 function Gate({ children }: { children: ReactNode }) {
   const { ready, authenticated } = useAuth();
@@ -36,24 +37,27 @@ const routeVariants = {
 function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   return (
-    <div className="flex min-h-screen">
-      <Sidebar />
-      <main className="flex-1 overflow-y-auto scrollbar-thin">
-        <div className="mx-auto w-full max-w-7xl px-6 py-6">
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.div
-              key={pathname}
-              variants={routeVariants}
-              initial="initial"
-              animate="animate"
-              exit="exit"
-              transition={{ duration: 0.18, ease: "easeOut" }}
-            >
-              {children}
-            </motion.div>
-          </AnimatePresence>
-        </div>
-      </main>
+    <div className="flex min-h-screen flex-col">
+      <TickerStrip />
+      <div className="flex flex-1">
+        <Sidebar />
+        <main className="flex-1 overflow-y-auto scrollbar-thin">
+          <div className="mx-auto w-full max-w-7xl px-6 py-6">
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.div
+                key={pathname}
+                variants={routeVariants}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                transition={{ duration: 0.18, ease: "easeOut" }}
+              >
+                {children}
+              </motion.div>
+            </AnimatePresence>
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

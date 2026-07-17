@@ -107,7 +107,7 @@ export function ChartModal({ ticker, label, category, onClose }: ChartModalProps
             range={range}
             onRangeChange={setRange}
             height={520}
-            subtitle="Sprint 59 · click outside to close"
+            subtitle="click outside to close"
           />
         </div>
       </div>

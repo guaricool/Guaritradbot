@@ -203,4 +203,34 @@
   .scrollbar-thin::-webkit-scrollbar-thumb:hover {
     background: var(--muted);
   }
+
+  /* TickerStrip marquee — the track holds two copies of the ticker
+     list side by side; animating translateX(0 -> -50%) scrolls
+     exactly one copy's width off-screen, so the seam is invisible
+     and the loop repeats forever. transform-only per DESIGN.md's
+     performance rule. Paused on hover so a user can read a value. */
+  .ticker-track {
+    animation: ticker-scroll 45s linear infinite;
+  }
+  .ticker-track:hover {
+    animation-play-state: paused;
+  }
+  @keyframes ticker-scroll {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(-50%);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ticker-track {
+      animation: none;
+      flex-wrap: wrap;
+      width: 100%;
+    }
+    .ticker-track > div[aria-hidden="true"] {
+      display: none;
+    }
+  }
 }

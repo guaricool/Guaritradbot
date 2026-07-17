@@ -72,9 +72,6 @@ export default function ChartsPage() {
             modal) to zoom in/out.
           </p>
         </div>
-        <div className="text-[10px] uppercase tracking-wider text-muted">
-          Sprint 60
-        </div>
       </div>
 
       {CATEGORY_ORDER.map((cat) => {
