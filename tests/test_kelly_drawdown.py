@@ -231,6 +231,40 @@ class DrawdownKillSwitchTest(unittest.TestCase):
         self.assertEqual(state.drawdown_pct, 0.0)
         self.assertFalse(state.triggered)
 
+    def test_tiny_peak_does_not_explode_drawdown_pct(self):
+        """Bug reproduced from a real VPS log: after a bad oversized
+        position drove equity deeply negative, the cooldown-rebase
+        path set peak_equity to a small number. Once equity clawed
+        back to a tiny POSITIVE peak ($3.93) and then wobbled down a
+        few dollars (to -$18.99), the old formula reported -583%
+        drawdown off a $22.92 swing -- re-triggering the switch and
+        resetting its 24h cooldown forever, permanently blocking new
+        entries. The floor keeps the percentage sane."""
+        ds = DrawdownKillSwitch(threshold_pct=15.0, min_peak_equity_usd=50.0)
+        ds.update(3.9250961233093413)  # tiny peak, exactly from the log
+        state = ds.update(-18.990520787693505)
+        # Bounded by the floor now (a real, if triggering, percentage)
+        # instead of the unfloored -583.8% the VPS log showed.
+        self.assertGreater(state.drawdown_pct, -200.0)
+
+    def test_tiny_peak_with_floor_disabled_reproduces_old_bug(self):
+        """Confirms the floor is what fixes it -- with min_peak_equity_usd
+        set to 0 (opt out), the old explosive behavior is reproduced."""
+        ds = DrawdownKillSwitch(threshold_pct=15.0, min_peak_equity_usd=0.0)
+        ds.update(3.9250961233093413)
+        state = ds.update(-18.990520787693505)
+        self.assertLess(state.drawdown_pct, -500.0)
+
+    def test_floor_does_not_affect_healthy_accounts(self):
+        """A normal account (peak well above the floor) sees identical
+        drawdown_pct with or without the floor -- back-compat."""
+        ds_floored = DrawdownKillSwitch(threshold_pct=15.0, min_peak_equity_usd=50.0)
+        ds_unfloored = DrawdownKillSwitch(threshold_pct=15.0, min_peak_equity_usd=0.0)
+        for eq in (1000.0, 1200.0, 1080.0):
+            s1 = ds_floored.update(eq)
+            s2 = ds_unfloored.update(eq)
+            self.assertAlmostEqual(s1.drawdown_pct, s2.drawdown_pct, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -730,6 +730,11 @@ def main():
         _drawdown_state_path,
         threshold_pct=float(_risk_cfg.get("drawdown_kill_threshold_pct", 15.0)),
         cooldown_hours=float(_risk_cfg.get("drawdown_cooldown_hours", 24.0)),
+        # Bug fix: floors the % drawdown denominator so a peak rebased
+        # near zero (after a real blowup) can't turn a small-dollar
+        # equity wobble into a triple-digit "drawdown" that re-triggers
+        # the switch forever. See DrawdownKillSwitch.__init__'s docstring.
+        min_peak_equity_usd=float(_risk_cfg.get("drawdown_min_peak_equity_usd", 10.0)),
     )
     # Sprint 46F: these 4 portfolio-risk gate caps have existed as
     # RiskManagerAgent constructor params since Sprint 44/45, but

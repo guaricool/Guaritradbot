@@ -165,9 +165,28 @@ class DrawdownKillSwitch:
         self,
         threshold_pct: float = 15.0,
         cooldown_hours: float = 24.0,
+        min_peak_equity_usd: float = 10.0,
     ):
         self.threshold_pct = threshold_pct
         self.cooldown_hours = cooldown_hours
+        # Bug fix: after a real blowup (e.g. a stale oversized position
+        # driving equity deeply negative), the cooldown-rebase path
+        # above sets peak_equity = current_equity, which can itself be
+        # a small number close to zero. Once equity claws back to even
+        # a tiny positive value (e.g. $3.93), THAT becomes the new
+        # peak, and `drawdown_pct = (current - peak) / peak * 100`
+        # explodes for any subsequent small negative wobble (a real
+        # VPS log showed drawdown_pct=-583% off a $3.93 peak against
+        # -$18.99 equity -- an $23 swing, not remotely a real 583%
+        # drawdown). Each explosive reading re-triggers the switch and
+        # resets the cooldown to a fresh threshold_hours, so a damaged
+        # account with a near-zero peak can loop forever, re-arming
+        # before the cooldown ever elapses -- new entries permanently
+        # blocked. Flooring the denominator at `min_peak_equity_usd`
+        # keeps the percentage meaningful (and the switch still fires
+        # for real drawdowns) without letting a tiny/near-zero peak
+        # turn ordinary noise into a permanent lock.
+        self.min_peak_equity_usd = min_peak_equity_usd
         self.peak_equity: float = 0.0
         self.triggered: bool = False
         self.triggered_at: Optional[float] = None
@@ -200,10 +219,14 @@ class DrawdownKillSwitch:
         if current_equity > self.peak_equity:
             self.peak_equity = current_equity
 
-        # Compute drawdown
+        # Compute drawdown. Floor the denominator so a near-zero peak
+        # (post-rebase, before the account has rebuilt real equity)
+        # can't turn a small dollar swing into a nonsensical triple-
+        # digit percentage -- see min_peak_equity_usd's docstring above.
         drawdown_pct = 0.0
         if self.peak_equity > 0:
-            drawdown_pct = ((current_equity - self.peak_equity) / self.peak_equity) * 100.0
+            effective_peak = max(self.peak_equity, self.min_peak_equity_usd)
+            drawdown_pct = ((current_equity - effective_peak) / effective_peak) * 100.0
 
         # Trigger if drawdown exceeds threshold
         if not self.triggered and drawdown_pct <= -self.threshold_pct:
@@ -306,6 +329,7 @@ class DrawdownKillSwitch:
         path: str,
         threshold_pct: float = 15.0,
         cooldown_hours: float = 24.0,
+        min_peak_equity_usd: float = 10.0,
     ) -> "DrawdownKillSwitch":
         """Construct a DrawdownKillSwitch, restoring persisted
         peak_equity/triggered/triggered_at if `path` exists and is
@@ -321,7 +345,11 @@ class DrawdownKillSwitch:
         crash the bot, it should just mean "start tracking from
         scratch," which is exactly the pre-Sprint-46N behavior.
         """
-        switch = cls(threshold_pct=threshold_pct, cooldown_hours=cooldown_hours)
+        switch = cls(
+            threshold_pct=threshold_pct,
+            cooldown_hours=cooldown_hours,
+            min_peak_equity_usd=min_peak_equity_usd,
+        )
         p = Path(path)
         if not p.exists():
             return switch
