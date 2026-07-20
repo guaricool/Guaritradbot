@@ -328,6 +328,7 @@ def _start_api_server(
     config_path: str = "config.yaml",
     broker_client=None,
     alpaca_broker=None,
+    oanda_broker=None,
     position_repo=None,
 ) -> None:
     """Sprint 46A: start the FastAPI/WebSocket dashboard backend as a
@@ -378,7 +379,7 @@ def _start_api_server(
         from src.api.state import set_brokers as _api_set_brokers
         from src.api.state import set_position_repo as _api_set_position_repo
 
-        _api_set_brokers(broker_client=broker_client, alpaca_broker=alpaca_broker)
+        _api_set_brokers(broker_client=broker_client, alpaca_broker=alpaca_broker, oanda_broker=oanda_broker)
         _api_set_position_repo(position_repo)
 
         port = int(os.getenv("DASHBOARD_API_PORT", "8080"))
@@ -869,6 +870,7 @@ def main():
         positions_path="data_store/positions.json",
         broker_client=broker_client,
         alpaca_broker=alpaca_broker,
+        oanda_broker=oanda_broker,
         position_repo=position_repo,
     )
 

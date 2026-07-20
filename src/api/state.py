@@ -122,6 +122,9 @@ class StateSnapshot(BaseModel):
     binance_balance_source: str = "unavailable"      # "live" | "unavailable" | "not_configured"
     alpaca_balance_usd: Optional[float] = None
     alpaca_balance_source: str = "unavailable"       # "live" | "unavailable" | "not_configured"
+    # OANDA (forex) balance -- same pattern as binance/alpaca above.
+    oanda_balance_usd: Optional[float] = None
+    oanda_balance_source: str = "unavailable"        # "live" | "unavailable" | "not_configured"
     # Sprint 62: paper-mode simulation fields. In paper mode, the bot
     # uses a virtual starting balance (config.paper.starting_balance_usd)
     # and accumulates simulated P&L in the equity tracker. The dashboard
@@ -330,25 +333,27 @@ def invalidate_price_cache(asset: Optional[str] = None) -> None:
 
 _BROKER_CLIENT = None      # BrokerClient (binance.us / ccxt) or None
 _ALPACA_BROKER = None      # AlpacaBroker or None (not configured if None)
+_OANDA_BROKER = None       # OandaBroker or None (not configured if None)
 
 BALANCE_CACHE_TTL_S: float = _CACHE_TTLS["balance_ttl_s"]
 _BALANCE_CACHE: Dict[str, Tuple[Optional[float], str, float]] = {}
 """broker_name -> (balance_or_None, source, fetched_at)."""
 
 
-def set_brokers(broker_client=None, alpaca_broker=None) -> None:
+def set_brokers(broker_client=None, alpaca_broker=None, oanda_broker=None) -> None:
     """Register the bot's live broker instances for balance lookups.
 
     Called once from `main.py::_start_api_server`, right before the
     uvicorn thread starts, with the exact same `broker_client` /
-    `alpaca_broker` objects the trading loop uses. Safe to call with
-    both None (e.g. in tests, or if neither broker is configured) â€”
-    every consumer below treats a None broker as "not configured"
-    rather than raising.
+    `alpaca_broker` / `oanda_broker` objects the trading loop uses.
+    Safe to call with all None (e.g. in tests, or if none of the
+    brokers are configured) â€” every consumer below treats a None
+    broker as "not configured" rather than raising.
     """
-    global _BROKER_CLIENT, _ALPACA_BROKER
+    global _BROKER_CLIENT, _ALPACA_BROKER, _OANDA_BROKER
     _BROKER_CLIENT = broker_client
     _ALPACA_BROKER = alpaca_broker
+    _OANDA_BROKER = oanda_broker
 
 
 def get_broker_client():
@@ -462,6 +467,23 @@ def _get_alpaca_balance() -> Tuple[Optional[float], str]:
     try:
         bal = float(_ALPACA_BROKER.get_usd_balance())
         _BALANCE_CACHE["alpaca"] = (bal, "live", now)
+        return bal, "live"
+    except Exception:
+        return None, "unavailable"
+
+
+def _get_oanda_balance() -> Tuple[Optional[float], str]:
+    """Return (balance, source) for the OANDA (forex) broker. See
+    `_get_binance_balance()` for the meaning of each source value."""
+    if _OANDA_BROKER is None:
+        return None, "not_configured"
+    now = time.time()
+    cached = _BALANCE_CACHE.get("oanda")
+    if cached and (now - cached[2]) < BALANCE_CACHE_TTL_S:
+        return cached[0], "cache" if cached[1] == "live" else cached[1]
+    try:
+        bal = float(_OANDA_BROKER.get_usd_balance())
+        _BALANCE_CACHE["oanda"] = (bal, "live", now)
         return bal, "live"
     except Exception:
         return None, "unavailable"
@@ -974,6 +996,7 @@ def build_state_snapshot(
     # positions/P&L even if a balance call fails).
     binance_bal, binance_src = _get_binance_balance()
     alpaca_bal, alpaca_src = _get_alpaca_balance()
+    oanda_bal, oanda_src = _get_oanda_balance()
 
     # Sprint 62 / gap fix: paper-mode effective balance. In paper mode,
     # the bot uses `config.paper.starting_balance_usd` as the simulated
@@ -1029,6 +1052,8 @@ def build_state_snapshot(
         binance_balance_source=binance_src,
         alpaca_balance_usd=alpaca_bal,
         alpaca_balance_source=alpaca_src,
+        oanda_balance_usd=oanda_bal,
+        oanda_balance_source=oanda_src,
         # Sprint 62: paper-mode effective balance (see above).
         effective_balance_usd=effective_balance_usd,
         effective_balance_source=effective_balance_source,

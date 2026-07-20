@@ -1,7 +1,7 @@
 "use client";
 
 import useSWR from "swr";
-import { Bitcoin, TrendingUp, Wallet, CircleDot } from "lucide-react";
+import { Bitcoin, TrendingUp, Wallet, CircleDot, Coins } from "lucide-react";
 import { api } from "@/lib/api";
 import { KpiCard } from "@/components/KpiCard";
 import { PositionTable } from "@/components/PositionTable";
@@ -212,7 +212,7 @@ export default function HomePage() {
           }
         />
       </div>
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4 stagger-children">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5 stagger-children">
         <KpiCard
           label="Binance.US"
           value={
@@ -242,6 +242,21 @@ export default function HomePage() {
               : balanceHint(data.alpaca_balance_source)
           }
           icon={<TrendingUp size={16} strokeWidth={2} />}
+        />
+        <KpiCard
+          label="OANDA"
+          value={
+            data.oanda_balance_usd !== null && data.oanda_balance_usd !== undefined
+              ? fmtUsd(data.oanda_balance_usd, { decimals: 2 })
+              : "—"
+          }
+          tone="gold"
+          hint={
+            data.mode.mode === "paper"
+              ? `${balanceHint(data.oanda_balance_source)} · reference only`
+              : balanceHint(data.oanda_balance_source)
+          }
+          icon={<Coins size={16} strokeWidth={2} />}
         />
         <KpiCard
           label="Open positions"

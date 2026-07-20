@@ -53,6 +53,9 @@ export interface StateSnapshot {
   binance_balance_source: BalanceSource;
   alpaca_balance_usd: number | null;
   alpaca_balance_source: BalanceSource;
+  // OANDA (forex) balance -- same pattern as binance/alpaca above.
+  oanda_balance_usd: number | null;
+  oanda_balance_source: BalanceSource;
   // Sprint 62: paper-mode simulation fields.
   // - `effective_balance_usd`: the number the bot uses for position
   //   sizing. In paper mode = paper starting balance + realized P&L.
