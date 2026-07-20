@@ -207,6 +207,10 @@ class PositionReplacementTest(unittest.TestCase):
             # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
             correlation_check_enabled=False,
             tail_risk_check_enabled=False,
+            # This test's $20 fixture balance is sized for exercising
+            # replacement logic, not real solvency -- disable, same
+            # rationale as the other gates above.
+            solvency_check_enabled=False,
 )
 
         # New hypothesis: BTC with high expected move + good R:R
@@ -400,6 +404,10 @@ class B020OneReplacementPerCycleTest(unittest.TestCase):
             # Sprint 45: network-dependent portfolio gates off in this pre-existing test (not what it's testing).
             correlation_check_enabled=False,
             tail_risk_check_enabled=False,
+            # This test's $20 fixture balance is sized for exercising
+            # replacement logic, not real solvency -- disable, same
+            # rationale as the other gates above.
+            solvency_check_enabled=False,
 )
 
         # 5 strong hypotheses that would each trigger a replacement

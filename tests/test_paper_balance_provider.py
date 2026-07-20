@@ -28,6 +28,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from src.agents.risk_agent import RiskManagerAgent
+from src.data.asset_allocation import AllocationPolicy
 
 
 def _write_mode_override(tmpdir, mandate_enabled: bool) -> str:
@@ -152,6 +153,60 @@ class PaperBalanceProviderTest(unittest.TestCase):
         result = agent.validate_and_size({}, state)
         self.assertEqual(result["approved_trades"], [])
         self.alpaca.get_usd_balance.assert_not_called()
+
+
+class TwoTradesExceedBalanceInSameCycleTest(unittest.TestCase):
+    """Bug fix: real production incident -- GLD ($800.83) and SPY
+    ($801.30) each independently passed the per-trade cap
+    (max_capital_per_trade_pct=80% of $1000) in the SAME cycle, and
+    together left the paper account at -$601.31 (screenshot: "Paper
+    Balance Available -$601.31"). Nothing checked their SUM against
+    the account's actual available cash -- the (optional, disabled by
+    default) MandateGate is the only component with a total-exposure
+    cap. This is a basic solvency check that must run regardless of
+    whether MandateGate is configured."""
+
+    def setUp(self):
+        from src.data_store.positions import PositionRepository
+        self.tmpdir = tempfile.mkdtemp()
+        self.repo = PositionRepository(os.path.join(self.tmpdir, "positions.json"))
+        self.alpaca = MagicMock()
+        self.alpaca.get_usd_balance.return_value = 100_000.0  # real sandbox, must be ignored
+        mode_path = _write_mode_override(self.tmpdir, False)
+        self.agent = RiskManagerAgent(
+            alpaca_broker=self.alpaca,
+            brokers_config={"equity": {"symbols": ["GLD", "SPY"]}},
+            mode_override_path=mode_path,
+            paper_balance_provider=lambda: 1000.0,
+            position_repo=self.repo,
+            risk_per_trade_pct=1.0,
+            max_capital_per_trade_pct=80.0,
+            min_order_usd=10.0,
+            asset_concentration_check=False,
+            allocation_policy=AllocationPolicy(enabled=False),
+            correlation_check_enabled=False,
+            tail_risk_check_enabled=False,
+            portfolio_stress_check=False,
+        )
+
+    def test_second_trade_rejected_for_insufficient_cash(self):
+        hyps = [
+            {"asset": "GLD", "strategy": "SUPPORT_BOUNCE", "direction": "long",
+             "price": 368.14, "atr_at_signal": 4.39},
+            {"asset": "SPY", "strategy": "MEANREVERSION", "direction": "long",
+             "price": 744.12, "atr_at_signal": 2.85},
+        ]
+        state = {"generate_hypotheses": {"hypotheses": hyps}}
+        result = self.agent.validate_and_size({}, state)
+        approved = result["approved_trades"]
+        rejected = result["rejected_trades"]
+
+        self.assertEqual(len(approved), 1, "Only one of the two ~$800 trades should fit in $1000")
+        total_notional = sum(t["notional_with_fees_usd"] for t in approved)
+        self.assertLessEqual(total_notional, 1000.0, "Approved trades must never exceed the paper balance")
+
+        reasons = [r["reason"] for r in rejected]
+        self.assertIn("insufficient_available_cash", reasons)
 
 
 if __name__ == "__main__":

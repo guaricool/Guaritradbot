@@ -67,6 +67,16 @@ class RiskManagerAgent:
         position_repo=None,
         enable_position_replacement: bool = True,
         replacement_score_threshold: float = 0.20,
+        # Bug fix: basic solvency check (this trade's notional +
+        # already-open exposure + trades approved earlier this cycle
+        # must not exceed the account's actual available cash),
+        # independent of the optional MandateGate. On by default; a
+        # handful of pre-existing tests that exercise OTHER gates in
+        # isolation (replacement, concentration, etc.) with an
+        # intentionally tiny fixture balance disable it, same
+        # convention as `asset_concentration_check=False` elsewhere
+        # in this file.
+        solvency_check_enabled: bool = True,
         # Sprint 47C (audit B10): absolute minimum expected edge
         # (as a fraction of entry) the proposed trade must have
         # for a replacement to be considered. Defense-in-depth
@@ -266,6 +276,7 @@ class RiskManagerAgent:
         self.decision_log = decision_log
         # Sprint 18: portfolio management
         self.enable_position_replacement = enable_position_replacement
+        self.solvency_check_enabled = solvency_check_enabled
         # New hypothesis must score at least +20% above the worst open position
         self.replacement_score_threshold = replacement_score_threshold
         self.replacement_min_expected_edge_pct = replacement_min_expected_edge_pct
@@ -1249,6 +1260,55 @@ class RiskManagerAgent:
                 # Replacement happened — slot freed, fall through to approval.
                 did_replace_this_cycle = True
                 slots_left = 1  # we just freed one slot by closing worst
+
+            # --- Bug fix: basic solvency check, independent of the
+            # (optional, off-by-default) MandateGate. Without this, N
+            # hypotheses approved in the SAME cycle -- or even one
+            # hypothesis after other positions are already open -- are
+            # each checked only against a PER-TRADE cap
+            # (max_capital_per_trade_pct), never against the account's
+            # actual available cash. Two ~$800 trades against a $1000
+            # paper balance both passed individually and together left
+            # the account at -$601 (a real production incident this
+            # fixes). Placed AFTER the max_open_trades/replacement
+            # block above so a just-closed worst position's freed cash
+            # is reflected in `total_exposure_usd()` before this check
+            # runs. `pending_exposure_usd_this_cycle` already tracks
+            # trades approved earlier in this same batch (see its
+            # comment above near where it's initialized).
+            #
+            # Skipped when the balance itself is the dev-only $100
+            # fallback (`no_broker_sim`, used when no broker/paper
+            # provider is configured at all -- see
+            # get_account_balance's docstring) rather than a real
+            # tracked balance. That fallback exists purely so the bot
+            # runs in a no-credentials dev setup; it was never meant
+            # to represent real spendable cash.
+            if (
+                self.solvency_check_enabled
+                and self.position_repo is not None
+                and balance_source != "no_broker_sim"
+            ):
+                already_committed = (
+                    self.position_repo.total_exposure_usd()
+                    + pending_exposure_usd_this_cycle
+                )
+                available_cash = account_balance - already_committed
+                if trade["notional_with_fees_usd"] > available_cash:
+                    rejected.append({"trade": trade, "reason": "insufficient_available_cash"})
+                    if self.audit:
+                        self.audit.append("INSUFFICIENT_CASH_BLOCKED", {
+                            "asset": trade["asset"],
+                            "proposed_notional_usd": trade["notional_with_fees_usd"],
+                            "available_cash_usd": round(available_cash, 2),
+                            "account_balance_usd": round(account_balance, 2),
+                            "already_committed_usd": round(already_committed, 2),
+                        })
+                    logger.info(
+                        f"  💰 {trade['asset']:8} {direction:5} — blocked, insufficient cash: "
+                        f"needs ${trade['notional_with_fees_usd']:.2f}, only ${available_cash:.2f} available"
+                    )
+                    continue
 
             approved.append(trade)
             assets_approved_this_cycle.add(asset)
