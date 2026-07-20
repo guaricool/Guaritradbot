@@ -38,6 +38,46 @@ logger = get_logger(__name__)
 _NY_TZ = pytz.timezone("America/New_York")
 
 
+def _trading_seconds_since(last_ts: "pd.Timestamp", now: "pd.Timestamp") -> float:
+    """Sum of NYSE/Nasdaq regular-session seconds (09:30-16:00 ET,
+    Mon-Fri, no holiday calendar -- same known gap as
+    `_is_us_equity_market_open`) between `last_ts` and `now`.
+
+    Bug fix (2026-07-20): the market-hours gate in `_validate_or_fault`
+    only skipped the staleness check when the market happened to be
+    CLOSED at the exact instant the check ran. The moment it reopened
+    (e.g. Monday 09:30 ET), the RAW wall-clock age from
+    `validate_dataframe` was used unmodified -- a legitimately-complete
+    Friday-close 4h bucket is ~66 real hours old by Monday morning,
+    which blew straight past the 24h (6x multiplier) threshold every
+    single Monday, marking the whole equity feed DEGRADED and
+    generating zero hypotheses until enough of the new session had
+    accumulated. Equities don't trade continuously, so staleness has
+    to be measured in TRADING hours elapsed, not wall-clock hours.
+    """
+    if last_ts.tzinfo is None:
+        last_ts = last_ts.tz_localize("UTC")
+    if now.tzinfo is None:
+        now = now.tz_localize("UTC")
+    last_ny = last_ts.tz_convert(_NY_TZ)
+    now_ny = now.tz_convert(_NY_TZ)
+    if last_ny >= now_ny:
+        return 0.0
+    total = 0.0
+    day = last_ny.normalize()
+    last_day = now_ny.normalize()
+    while day <= last_day:
+        if day.weekday() < 5:  # Mon-Fri
+            open_t = day.replace(hour=9, minute=30, second=0, microsecond=0)
+            close_t = day.replace(hour=16, minute=0, second=0, microsecond=0)
+            seg_start = max(open_t, last_ny) if day == last_ny.normalize() else open_t
+            seg_end = min(close_t, now_ny) if day == last_day else close_t
+            if seg_end > seg_start:
+                total += (seg_end - seg_start).total_seconds()
+        day = day + pd.Timedelta(days=1)
+    return total
+
+
 def _is_us_equity_market_open(now: "pd.Timestamp | None" = None) -> bool:
     """True if it's currently within NYSE/Nasdaq regular trading hours
     (Mon-Fri, 09:30-16:00 America/New_York). See module note above for
@@ -533,8 +573,26 @@ class MarketAnalystAgent(Component):
         # check only, no holiday calendar — see _is_us_equity_market_open.
         if asset is not None and max_staleness is not None:
             try:
-                if get_asset_class(asset) != AssetClass.CRYPTO and not _is_us_equity_market_open():
-                    max_staleness = None
+                if get_asset_class(asset) != AssetClass.CRYPTO:
+                    if not _is_us_equity_market_open():
+                        max_staleness = None
+                    else:
+                        # Bug fix (2026-07-20): measure staleness in
+                        # TRADING hours elapsed, not raw wall-clock
+                        # hours -- see _trading_seconds_since's
+                        # docstring for the Monday-morning false
+                        # positive this replaces.
+                        last_ts = df.index[-1]
+                        if not isinstance(last_ts, pd.Timestamp):
+                            last_ts = pd.Timestamp(last_ts)
+                        now = (
+                            pd.Timestamp.now(tz=last_ts.tz)
+                            if getattr(last_ts, "tzinfo", None) is not None
+                            else pd.Timestamp.now(tz="UTC")
+                        )
+                        traded_elapsed = _trading_seconds_since(last_ts, now)
+                        if traded_elapsed <= max_staleness:
+                            max_staleness = None
             except Exception:
                 pass
         # Sprint 56: yfinance has a known ~24h lag for crypto tickers
