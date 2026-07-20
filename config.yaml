@@ -280,6 +280,30 @@ strategy_paper_aggressive:
   bb_pct_b: 0.10
   adx_trend_min: 10
 
+# Carlos: "aunque sea ganar poco pero con muchas entradas" -- an
+# optional scalp profile, layered on top of trading_paper_aggressive
+# above, for many-small-wins scalping instead of the normal swing
+# profile. Toggled independently via the dashboard's Scalp Mode
+# button (writes audit/scalp_mode_override.json) -- OFF by default,
+# paper-only, so it can be A/B tested against the normal profile
+# without a restart and never touches live.
+#   - atr_take_profit_multiplier 1.0 vs 3.0: TP much closer to entry,
+#     so a smaller favorable move closes the trade.
+#   - max_capital_per_trade_pct 20 vs 80: ~$200/trade instead of ~$800
+#     on a $1000 paper account, so more positions fit under the
+#     allocation caps at once.
+#   - max_open_trades 10 vs 8: room for the smaller positions above.
+#   - smart_profit_take_min_signal_strength 0.5 vs 0.6: the reversal-
+#     exit mechanism (position_monitor.py's SMART_PROFIT_TAKE, the
+#     thing that already closed GLD at +$0.14 and +$0.67 in testing)
+#     fires on a weaker opposite signal, locking in small profits more
+#     often instead of waiting for a strong reversal or the full TP.
+strategy_scalp_mode:
+  atr_take_profit_multiplier: 1.0
+  max_capital_per_trade_pct: 20
+  max_open_trades: 10
+  smart_profit_take_min_signal_strength: 0.5
+
 schedule:
   # Sprint 46S: was 1 (hourly). Carlos wanted more chances to catch a
   # good entry, especially since crypto trades 24/7 and doesn't wait

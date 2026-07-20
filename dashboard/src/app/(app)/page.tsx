@@ -7,6 +7,7 @@ import { KpiCard } from "@/components/KpiCard";
 import { PositionTable } from "@/components/PositionTable";
 import { ModeToggle } from "@/components/ModeToggle";
 import { TradingPauseToggle } from "@/components/TradingPauseToggle";
+import { ScalpModeToggle } from "@/components/ScalpModeToggle";
 import { EquityChart } from "@/components/EquityChart";
 import { OverviewPageSkeleton } from "@/components/Skeleton";
 import { fmtPct, fmtUsd } from "@/lib/format";
@@ -153,6 +154,7 @@ export default function HomePage() {
         </div>
         <div className="flex items-start gap-3">
           <TradingPauseToggle />
+          <ScalpModeToggle />
           <ModeToggle mode={data.mode} />
         </div>
       </header>

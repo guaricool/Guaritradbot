@@ -42,6 +42,8 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
+from src.execution.broker_routing import is_mandate_enabled, is_scalp_mode_enabled
+
 logger = logging.getLogger(__name__)
 
 
@@ -99,6 +101,13 @@ class BotRuntime:
         equity_state_path: str,
         # ---- Misc ----
         max_auto_adjust_risk_multiplier: float = 2.0,
+        # Carlos: optional "scalp mode" -- many small-profit entries
+        # instead of the normal swing profile. Paper-only, toggled via
+        # `scalp_mode_path` (dashboard button), overrides applied only
+        # when active. Mirrors RiskManagerAgent's scalp_overrides.
+        scalp_overrides: Optional[dict] = None,
+        scalp_mode_path: str = "audit/scalp_mode_override.json",
+        mode_override_path: str = "audit/mode_override.json",
     ):
         # Identity
         self.config = config
@@ -130,6 +139,9 @@ class BotRuntime:
         self.trading_cfg = trading_cfg
         self.crypto_taker_fee_pct = crypto_taker_fee_pct
         self.min_order_usd = min_order_usd
+        self.scalp_overrides = scalp_overrides or {}
+        self.scalp_mode_path = scalp_mode_path
+        self.mode_override_path = mode_override_path
         # Helpers
         self.fee_pct_for_asset = fee_pct_for_asset
         self.get_active_asset_classes = get_active_asset_classes
@@ -407,12 +419,28 @@ class BotRuntime:
                     if h.get("event_type") == "HYPOTHESIS_GENERATED"
                 ]
                 if signals:
+                    # Carlos: scalp mode lowers this threshold (paper-
+                    # only) so a weaker reversal signal is enough to
+                    # lock in a small profit -- "muchas entradas,
+                    # ganancias chicas" instead of waiting for the
+                    # full swing TP. Checked fresh every tick so the
+                    # dashboard toggle applies on the very next check,
+                    # no restart needed.
+                    _min_strength = float(self.trading_cfg.get(
+                        "smart_profit_take_min_signal_strength", 0.6
+                    ))
+                    if (
+                        self.scalp_overrides
+                        and not is_mandate_enabled(self.mode_override_path)
+                        and is_scalp_mode_enabled(self.scalp_mode_path)
+                    ):
+                        _min_strength = float(self.scalp_overrides.get(
+                            "smart_profit_take_min_signal_strength", _min_strength
+                        ))
                     early_closed = self.position_monitor.check_with_signals(
                         current_prices=prices,
                         signals=signals,
-                        signal_min_strength=float(self.trading_cfg.get(
-                            "smart_profit_take_min_signal_strength", 0.6
-                        )),
+                        signal_min_strength=_min_strength,
                         max_signal_age_s=_max_age,
                     )
                     if early_closed:

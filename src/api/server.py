@@ -24,6 +24,7 @@ Authenticated (Bearer token in Authorization header):
   GET  /api/signals              (heuristic scan of audit; not perfect)
   GET  /api/stats                (alias of /api/state; for Streamlit compat)
   GET  /api/mode
+  GET  /api/scalp-mode
   GET  /api/config
   GET  /api/risk-config
   GET  /api/trading-pause
@@ -33,6 +34,7 @@ Authenticated (Bearer token in Authorization header):
   GET  /api/risk/cvar
   GET  /api/equity               (equity curve, downsampled)
   POST /api/mode                 (set LIVE/PAPER)
+  POST /api/scalp-mode           (toggle scalp/swing profile, paper-only)
   POST /api/config
   POST /api/risk-config
   POST /api/trading-pause
@@ -97,6 +99,7 @@ from src.api.state import (
     AuditEvent,
     ModeInfo,
     PositionSummary,
+    ScalpModeInfo,
     StateSnapshot,
     build_audit,
     build_state_snapshot,
@@ -107,10 +110,12 @@ from src.api.state import (
     read_current_prices,
     read_mode,
     read_risk_config,
+    read_scalp_mode,
     read_trading_config,
     read_trading_pause,
     write_mode,
     write_risk_config,
+    write_scalp_mode,
     write_trading_config,
     write_trading_pause,
 )
@@ -271,6 +276,16 @@ class SetModeResponse(BaseModel):
             "restart to re-read the override (Sprint 45 N1 / main.py init). "
             "If you need an immediate restart, use POST /api/restart."
         ),
+    )
+
+class SetScalpModeRequest(BaseModel):
+    scalp_mode_enabled: bool
+    switched_by: Optional[str] = "api"
+
+class SetScalpModeResponse(BaseModel):
+    scalp_mode: ScalpModeInfo
+    note: str = Field(
+        default="Takes effect within ~1 cycle -- paper mode only, no restart needed.",
     )
 
 # Sprint 46D: dashboard-editable trading settings. Every field is
@@ -622,6 +637,25 @@ def set_mode(req: SetModeRequest, _: None = Depends(auth.require_auth)) -> SetMo
         audit_path=_audit_path(),
     )
     return SetModeResponse(mode=new_mode, note=note or SetModeResponse.model_fields["note"].default)
+
+@app.get("/api/scalp-mode", response_model=ScalpModeInfo)
+def get_scalp_mode(_: None = Depends(auth.require_auth)) -> ScalpModeInfo:
+    return read_scalp_mode(audit_path=_audit_path())
+
+@app.post("/api/scalp-mode", response_model=SetScalpModeResponse)
+def set_scalp_mode(req: SetScalpModeRequest, _: None = Depends(auth.require_auth)) -> SetScalpModeResponse:
+    """Toggle scalp mode: many small-profit entries (tighter TP, smaller
+    per-trade cap, more sensitive SMART_PROFIT_TAKE) instead of the
+    normal swing profile. Paper-only by construction -- RiskManagerAgent
+    and BotRuntime both gate their scalp_overrides on `not
+    is_mandate_enabled(...)`, so flipping this while the bot is in LIVE
+    mode is a no-op until it's back in paper."""
+    new_scalp_mode = write_scalp_mode(
+        scalp_mode_enabled=req.scalp_mode_enabled,
+        switched_by=req.switched_by or "api",
+        audit_path=_audit_path(),
+    )
+    return SetScalpModeResponse(scalp_mode=new_scalp_mode)
 
 # ----------------------------------------------------------------------
 # Auth

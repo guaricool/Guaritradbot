@@ -25,6 +25,7 @@ from src.data.asset_class import get_asset_class, AssetClass
 from src.execution.broker_routing import (
     build_asset_to_class_map,
     is_mandate_enabled,
+    is_scalp_mode_enabled,
     resolve_broker_for_close,
     send_close_order,
 )
@@ -205,6 +206,16 @@ class RiskManagerAgent:
         # sizing math itself (see their own docstrings), not just the
         # account balance, and must not loosen in either mode.
         paper_overrides: Optional[dict] = None,
+        # Carlos: "aunque sea ganar poco pero con muchas entradas" --
+        # an optional SECOND profile, layered on top of whichever of
+        # paper_overrides/live is active, for many-small-wins scalping
+        # instead of the normal swing profile. Paper-only (never
+        # applies in live), toggled independently via
+        # `audit/scalp_mode_override.json` (dashboard button) so it
+        # can be A/B tested against the normal profile without a
+        # restart. Same recognized keys as paper_overrides.
+        scalp_overrides: Optional[dict] = None,
+        scalp_mode_path: str = "audit/scalp_mode_override.json",
         # Sprint 46N (audit A2): the min_order_usd auto-adjust (below,
         # Sprint 18) inflates a risk-sized trade up to min_order_usd
         # whenever the raw risk/stop_distance notional would be smaller
@@ -248,6 +259,8 @@ class RiskManagerAgent:
         self._live_atr_take_profit_multiplier = atr_take_profit_multiplier
         self._live_max_open_trades = max_open_trades
         self.paper_overrides = paper_overrides or {}
+        self.scalp_overrides = scalp_overrides or {}
+        self.scalp_mode_path = scalp_mode_path
         # Sprint 46R audit B2: SL/TP minimum-distance floor as
         # percent of entry (the B1 fix's 0.005). Defaults
         # preserve the pre-46R hard-coded behavior; config.yaml
@@ -475,6 +488,18 @@ class RiskManagerAgent:
             self.atr_stop_multiplier = self._live_atr_stop_multiplier
             self.atr_take_profit_multiplier = self._live_atr_take_profit_multiplier
             self.max_open_trades = self._live_max_open_trades
+
+        # Carlos: scalp mode -- paper-only, layered on top of whichever
+        # profile was just selected above. Checked fresh every call
+        # (same live-toggle pattern as paper/live) so flipping the
+        # dashboard button switches profiles on the very next cycle.
+        if not _is_live and self.scalp_overrides and is_scalp_mode_enabled(self.scalp_mode_path):
+            self.max_capital_per_trade_pct = self.scalp_overrides.get(
+                "max_capital_per_trade_pct", self.max_capital_per_trade_pct)
+            self.atr_take_profit_multiplier = self.scalp_overrides.get(
+                "atr_take_profit_multiplier", self.atr_take_profit_multiplier)
+            self.max_open_trades = self.scalp_overrides.get(
+                "max_open_trades", self.max_open_trades)
 
         # Sprint 3: si HypothesisScorer corrió, usa SOLO las hipótesis que
         # pasaron el debate. Si no hay debate, fallback al total

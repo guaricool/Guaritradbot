@@ -54,6 +54,24 @@ def is_mandate_enabled(override_path: str = "audit/mode_override.json") -> bool:
         return False
 
 
+def is_scalp_mode_enabled(override_path: str = "audit/scalp_mode_override.json") -> bool:
+    """True = scalp mode (many small-profit entries, tighter TP), False
+    = the normal swing profile. Same read-every-call pattern as
+    `is_mandate_enabled` so the dashboard toggle takes effect on the
+    very next cycle, no restart needed. Scalp mode is paper-only —
+    callers are expected to also check `not is_mandate_enabled(...)`
+    before applying its overrides.
+    """
+    try:
+        if not override_path or not os.path.exists(override_path):
+            return False
+        with open(override_path, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+        return bool(data.get("scalp_mode_enabled", False))
+    except Exception:
+        return False
+
+
 def build_asset_to_class_map(brokers_config: dict) -> dict:
     """{"BTC-USD": "crypto", "SPY": "equity", ...} built from
     config.yaml's `brokers:` section — the same source

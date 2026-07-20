@@ -15,6 +15,7 @@ import type {
   ModeInfo,
   RiskConfigResponse,
   RiskConfigUpdate,
+  ScalpModeInfo,
   StateSnapshot,
   StressResult,
   TimeRange,
@@ -204,6 +205,18 @@ export const api = {
     request<{ mode: ModeInfo; note: string }>("/api/mode", {
       method: "POST",
       body: JSON.stringify({ mode, switched_by: switchedBy || "dashboard" }),
+    }),
+
+  // Scalp mode (many small-profit entries vs the normal swing profile,
+  // paper-only -- see RiskManagerAgent/BotRuntime's scalp_overrides)
+  getScalpMode: () => request<ScalpModeInfo>("/api/scalp-mode"),
+  setScalpMode: (scalpModeEnabled: boolean, switchedBy?: string) =>
+    request<{ scalp_mode: ScalpModeInfo; note: string }>("/api/scalp-mode", {
+      method: "POST",
+      body: JSON.stringify({
+        scalp_mode_enabled: scalpModeEnabled,
+        switched_by: switchedBy || "dashboard",
+      }),
     }),
 
   // Position control

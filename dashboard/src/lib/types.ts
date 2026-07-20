@@ -30,6 +30,13 @@ export interface ModeInfo {
   mode_override_path: string;
 }
 
+export interface ScalpModeInfo {
+  scalp_mode_enabled: boolean;
+  switched_at: number | null;
+  switched_by: string | null;
+  scalp_mode_path: string;
+}
+
 // "live" = fetched from the broker just now (or cached within 15s).
 // "unavailable" = broker configured but the last fetch failed (network/auth).
 // "not_configured" = no credentials for this broker at all.

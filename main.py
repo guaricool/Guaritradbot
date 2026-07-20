@@ -529,6 +529,13 @@ def main():
     # Read as its own top-level config section (not nested under
     # `trading:`) so it's clearly a distinct, paper-only profile.
     trading_paper_aggressive = config.get("trading_paper_aggressive") or {}
+    # Carlos: "aunque sea ganar poco pero con muchas entradas" -- an
+    # optional scalp profile (tighter TP, smaller per-trade cap so more
+    # positions fit, more frequent SMART_PROFIT_TAKE) layered on top of
+    # the paper profile, toggled independently via the dashboard
+    # (audit/scalp_mode_override.json) so it can be A/B tested against
+    # the normal swing profile without a restart. Paper-only.
+    strategy_scalp_mode = config.get("strategy_scalp_mode") or {}
     enable_position_replacement = trading_cfg.get("enable_position_replacement", True)
     replacement_score_threshold = float(trading_cfg.get("replacement_score_threshold", 0.20))
     min_profit_to_protect = float(trading_cfg.get("min_profit_to_protect", 0.0))
@@ -1143,6 +1150,7 @@ def main():
             # Sprint 46N (audit A2).
             max_auto_adjust_risk_multiplier=max_auto_adjust_risk_multiplier,
             paper_overrides=trading_paper_aggressive,
+            scalp_overrides=strategy_scalp_mode,
             event_bus=event_bus,
             mandate_gate=mandate_gate,
             audit=audit,
@@ -1384,6 +1392,8 @@ def main():
         original_job=original_job,
         equity_state_path=_equity_state_path,
         max_auto_adjust_risk_multiplier=max_auto_adjust_risk_multiplier,
+        scalp_overrides=strategy_scalp_mode,
+        mode_override_path=override_path,
     )
 
     # Replace the scheduler's default job with the runtime's gated

@@ -97,6 +97,15 @@ class ModeInfo(BaseModel):
     mode_override_path: str
 
 
+class ScalpModeInfo(BaseModel):
+    """Current scalp-mode toggle state (paper-only; see
+    RiskManagerAgent/BotRuntime's scalp_overrides docstrings)."""
+    scalp_mode_enabled: bool
+    switched_at: Optional[float] = None
+    switched_by: Optional[str] = None
+    scalp_mode_path: str
+
+
 class StateSnapshot(BaseModel):
     """Full dashboard snapshot â€” what the home page requests once on load."""
     mode: ModeInfo
@@ -620,6 +629,62 @@ def write_mode(
     }
     atomic_write_text(override_path, json.dumps(payload, indent=2))  # Sprint 46R (audit B8): fsync before rename
     return read_mode(audit_path=audit_path)
+
+
+def read_scalp_mode(audit_path: Optional[str] = None) -> ScalpModeInfo:
+    """Read the current scalp-mode toggle from
+    `audit/scalp_mode_override.json` (same pattern as `read_mode`).
+    Missing/malformed file = scalp mode OFF (fail toward the normal
+    swing profile)."""
+    if audit_path is None:
+        audit_path = os.getenv("DASHBOARD_AUDIT_PATH", "audit/audit.jsonl")
+    override_path = str(Path(audit_path).parent / "scalp_mode_override.json")
+    scalp_mode_enabled = False
+    switched_at = None
+    switched_by = None
+    if os.path.exists(override_path):
+        try:
+            with open(override_path, "r", encoding="utf-8") as f:
+                ov = json.load(f)
+            scalp_mode_enabled = bool(ov.get("scalp_mode_enabled", False))
+            switched_at_raw = ov.get("switched_at")
+            if switched_at_raw is not None:
+                try:
+                    switched_at = float(switched_at_raw)
+                except (TypeError, ValueError):
+                    switched_at = None
+            switched_by = ov.get("switched_by")
+        except Exception:
+            pass  # Malformed override file = ignore, default to OFF
+    return ScalpModeInfo(
+        scalp_mode_enabled=scalp_mode_enabled,
+        switched_at=switched_at,
+        switched_by=switched_by,
+        scalp_mode_path=override_path,
+    )
+
+
+def write_scalp_mode(
+    scalp_mode_enabled: bool,
+    switched_by: str = "api",
+    audit_path: Optional[str] = None,
+) -> ScalpModeInfo:
+    """Write the scalp-mode override file. Returns the new
+    ScalpModeInfo. Same read-every-cycle contract as `write_mode` --
+    RiskManagerAgent/BotRuntime re-check this file fresh on every
+    validate_and_size()/fast_monitor_tick call, so the toggle takes
+    effect within ~1 cycle without a bot restart."""
+    if audit_path is None:
+        audit_path = os.getenv("DASHBOARD_AUDIT_PATH", "audit/audit.jsonl")
+    override_path = Path(audit_path).parent / "scalp_mode_override.json"
+    override_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "scalp_mode_enabled": bool(scalp_mode_enabled),
+        "switched_at": time.time(),
+        "switched_by": switched_by,
+    }
+    atomic_write_text(override_path, json.dumps(payload, indent=2))
+    return read_scalp_mode(audit_path=audit_path)
 
 
 # ----------------------------------------------------------------------
