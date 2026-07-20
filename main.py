@@ -264,7 +264,13 @@ def _fetch_prices_for_open_positions(
                     price = broker_client.get_ticker_price(ccxt_symbol)
             if price is not None and float(price) > 0:
                 prices[pos.asset] = float(price)
-        except Exception:
+            else:
+                logger.debug(
+                    f"[PriceFetch] {pos.asset}: broker returned no usable price "
+                    f"this tick (class={asset_class}, value={price!r})."
+                )
+        except Exception as e:
+            logger.debug(f"[PriceFetch] {pos.asset}: price fetch raised {e!r}")
             continue
     return prices
 

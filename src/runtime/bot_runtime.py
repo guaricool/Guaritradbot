@@ -154,6 +154,16 @@ class BotRuntime:
         # blips (rate limit, network hiccup) don't fire; longer outages
         # do.
         self._fast_monitor_blind_alert_threshold: int = 3
+        # Bug fix: `_blind_tick_count` only tracks ticks where EVERY
+        # open position's price fetch failed. A real VPS case showed a
+        # GLD position go 2.7 DAYS with zero price updates while BTC-USD
+        # (also open) kept fetching fine every tick -- `prices` was
+        # never empty, so `_blind_tick_count` reset to 0 every cycle and
+        # the FAST_MONITOR_BLIND alert never fired for the one asset
+        # that actually needed it. This tracks a PER-ASSET consecutive-
+        # miss streak so one silently-broken price feed can't hide
+        # behind other assets that are fetching fine.
+        self._asset_blind_streaks: dict = {}
         # Sprint 34: per-position P&L update scheduler. Initialized
         # lazily on the first fast_monitor_tick so the config["notifications"]
         # block is available at construction time.
@@ -228,6 +238,57 @@ class BotRuntime:
     # Critical path 1: fast_monitor_tick
     # ------------------------------------------------------------------
 
+    def _check_per_asset_price_gaps(self, opens: list, prices: dict) -> None:
+        """Bug fix: track a per-asset consecutive-miss streak, separate
+        from `_blind_tick_count` (which only fires when EVERY open
+        position's price fetch fails this tick). A real VPS case: GLD
+        was open alongside a BTC-USD position; BTC-USD's price fetch
+        kept succeeding every tick, so `prices` was never empty and
+        `_blind_tick_count` reset to 0 every cycle -- but GLD's own
+        price had silently been missing from `prices` for 2.7 DAYS,
+        so its SL/TP was never evaluated and it just sat there. This
+        alerts per-asset once that asset's own streak crosses the same
+        threshold used for the aggregate case, so one broken feed can't
+        hide behind other assets that are fetching fine.
+        """
+        open_assets = {p.asset for p in opens}
+        # Drop streak counters for assets that are no longer open
+        # (closed since the last tick) so they don't leak forever.
+        for stale_asset in list(self._asset_blind_streaks):
+            if stale_asset not in open_assets:
+                del self._asset_blind_streaks[stale_asset]
+        for asset in open_assets:
+            if asset in prices:
+                self._asset_blind_streaks[asset] = 0
+                continue
+            streak = self._asset_blind_streaks.get(asset, 0) + 1
+            self._asset_blind_streaks[asset] = streak
+            logger.warning(
+                f"[FastMonitor] ⚠️ {asset}: sin precio {streak} ciclo(s) "
+                f"consecutivo(s) — SL/TP no evaluado para esta posición."
+            )
+            if self.audit:
+                self.audit.append("ASSET_PRICE_MISSING", {
+                    "asset": asset,
+                    "consecutive_ticks": streak,
+                })
+            if (
+                self.should_alert_fast_monitor_blind(streak, self._fast_monitor_blind_alert_threshold)
+                and self.event_bus is not None
+            ):
+                self.event_bus.publish("SYSTEM_ERROR", {
+                    "kind": "ASSET_PRICE_MISSING",
+                    "asset": asset,
+                    "consecutive_ticks": streak,
+                    "error": (
+                        f"📉 {asset} lleva {streak} ciclos consecutivos SIN PRECIO "
+                        f"mientras la posición sigue abierta -- SL/TP no se puede "
+                        f"evaluar para este activo específico (otros activos pueden "
+                        f"seguir fetcheando bien). Verificar el proveedor de datos "
+                        f"para {asset}."
+                    ),
+                })
+
     def fast_monitor_tick(self) -> None:
         """Sprint 46I — decoupled, fast-cadence position protection.
 
@@ -265,6 +326,7 @@ class BotRuntime:
             # streak later starts counting from zero, not from
             # whatever it was before the book emptied out.
             self._blind_tick_count = 0
+            self._asset_blind_streaks.clear()
             return
         prices = self.fetch_prices_for_open_positions(
             self.position_repo,
@@ -272,6 +334,7 @@ class BotRuntime:
             alpaca_broker=self.alpaca_broker,
             brokers_config=self.brokers_config,
         )
+        self._check_per_asset_price_gaps(opens, prices)
         if not prices:
             # Sprint 46N (audit A6): every price fetch failed this tick
             # while positions are open — SL/TP protection did NOT run.

@@ -266,8 +266,14 @@ class FastMonitorBlindStreakTest(unittest.TestCase):
             if c.args and c.args[0] == "SYSTEM_ERROR"
         ]
         self.assertGreaterEqual(len(system_error_calls), 1)
-        kind = system_error_calls[0].args[1].get("kind")
-        self.assertEqual(kind, "FAST_MONITOR_BLIND")
+        # Bug fix (per-asset streak, tests.test_kelly_drawdown-adjacent
+        # change): a single-asset all-blind tick now ALSO crosses that
+        # asset's own per-asset streak threshold in the same cycle, so
+        # both an ASSET_PRICE_MISSING and the aggregate FAST_MONITOR_BLIND
+        # publish -- assert the aggregate one is present, not that it's
+        # necessarily first.
+        kinds = {c.args[1].get("kind") for c in system_error_calls}
+        self.assertIn("FAST_MONITOR_BLIND", kinds)
 
     def test_blind_count_resets_when_prices_return(self):
         pos = MagicMock()
@@ -289,6 +295,75 @@ class FastMonitorBlindStreakTest(unittest.TestCase):
         for _ in range(4):
             runtime.fast_monitor_tick()
         self.assertEqual(runtime._blind_tick_count, 4)
+
+
+class FastMonitorPerAssetPriceGapTest(unittest.TestCase):
+    """Bug reproduced from a real VPS report: a GLD position sat open
+    for 2.7 DAYS with zero SL/TP evaluation while a BTC-USD position
+    (also open) kept fetching its price fine every tick. Because
+    `_blind_tick_count` only tracks ticks where EVERY open position's
+    price fetch failed, `prices` was never empty (BTC-USD always
+    present) so the aggregate counter reset to 0 every cycle and
+    FAST_MONITOR_BLIND never fired for GLD specifically."""
+
+    def test_asset_missing_price_alerts_even_when_other_assets_fetch_fine(self):
+        gld_pos = MagicMock()
+        gld_pos.asset = "GLD"
+        btc_pos = MagicMock()
+        btc_pos.asset = "BTC-USD"
+        # BTC-USD fetches fine every tick; GLD is never in the dict --
+        # exactly the real-world case.
+        runtime, mocks = _make_runtime(
+            open_positions=[gld_pos, btc_pos],
+            prices={"BTC-USD": 50000.0},
+        )
+        for _ in range(3):
+            runtime.fast_monitor_tick()
+
+        # The aggregate blind counter must stay 0 -- BTC-USD fetched
+        # fine, so this ISN'T an all-blind tick by the old definition.
+        self.assertEqual(runtime._blind_tick_count, 0)
+        # But GLD's own streak must have been tracked and alerted.
+        self.assertEqual(runtime._asset_blind_streaks.get("GLD"), 3)
+        system_error_calls = [
+            c for c in mocks["event_bus"].publish.call_args_list
+            if c.args and c.args[0] == "SYSTEM_ERROR"
+        ]
+        asset_missing_calls = [
+            c for c in system_error_calls
+            if c.args[1].get("kind") == "ASSET_PRICE_MISSING"
+        ]
+        self.assertGreaterEqual(len(asset_missing_calls), 1)
+        self.assertEqual(asset_missing_calls[0].args[1].get("asset"), "GLD")
+        # The old aggregate alert must NOT have fired -- this is exactly
+        # the silent-forever case the fix closes.
+        self.assertNotIn(
+            "FAST_MONITOR_BLIND",
+            {c.args[1].get("kind") for c in system_error_calls},
+        )
+
+    def test_streak_resets_once_asset_price_returns(self):
+        gld_pos = MagicMock()
+        gld_pos.asset = "GLD"
+        runtime, mocks = _make_runtime(open_positions=[gld_pos], prices={})
+        runtime.fast_monitor_tick()
+        runtime.fast_monitor_tick()
+        self.assertEqual(runtime._asset_blind_streaks.get("GLD"), 2)
+        runtime.fetch_prices_for_open_positions = lambda *a, **k: {"GLD": 368.0}
+        runtime.fast_monitor_tick()
+        self.assertEqual(runtime._asset_blind_streaks.get("GLD"), 0)
+
+    def test_streak_forgotten_once_position_closes(self):
+        gld_pos = MagicMock()
+        gld_pos.asset = "GLD"
+        runtime, mocks = _make_runtime(open_positions=[gld_pos], prices={})
+        runtime.fast_monitor_tick()
+        runtime.fast_monitor_tick()
+        self.assertIn("GLD", runtime._asset_blind_streaks)
+        # Position closes -- repo now reports no open positions.
+        mocks["position_repo"].open.return_value = []
+        runtime.fast_monitor_tick()
+        self.assertNotIn("GLD", runtime._asset_blind_streaks)
 
 
 class FastMonitorHeartbeatTest(unittest.TestCase):
