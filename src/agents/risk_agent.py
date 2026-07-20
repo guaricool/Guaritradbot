@@ -170,6 +170,10 @@ class RiskManagerAgent:
         # instead of always calling broker_client, and never place a
         # real order while in paper mode. See broker_routing.py.
         alpaca_broker=None,
+        # Optional third broker (OANDA, forex) -- same rationale as
+        # alpaca_broker above. None means forex signals fail with
+        # OANDA_NOT_CONFIGURED (see execution_node.py).
+        oanda_broker=None,
         brokers_config: Optional[dict] = None,
         mode_override_path: str = "audit/mode_override.json",
         # Bug fix: in PAPER mode, get_account_balance() used to call the
@@ -318,6 +322,7 @@ class RiskManagerAgent:
         self.block_conflicting_asset_positions = block_conflicting_asset_positions
         # Sprint 46N.
         self.alpaca_broker = alpaca_broker
+        self.oanda_broker = oanda_broker
         self.brokers_config = brokers_config or {}
         self.mode_override_path = mode_override_path
         self.paper_balance_provider = paper_balance_provider
@@ -413,7 +418,7 @@ class RiskManagerAgent:
 
         if asset is not None:
             broker, asset_class = resolve_broker_for_close(
-                asset, self._asset_to_class, self.broker, self.alpaca_broker,
+                asset, self._asset_to_class, self.broker, self.alpaca_broker, self.oanda_broker,
             )
         else:
             broker, asset_class = self.broker, "crypto"
@@ -429,10 +434,14 @@ class RiskManagerAgent:
             return (100.0, "no_broker_sim")
 
         try:
-            # Sprint 46N (audit A4): equity balance comes from Alpaca's
-            # USD cash (`get_usd_balance`), never from the crypto
-            # broker's USDT balance.
-            bal = broker.get_usd_balance() if asset_class == "equity" else broker.get_usdt_balance()
+            # Sprint 46N (audit A4): equity/forex balance comes from
+            # Alpaca/OANDA's own USD cash (`get_usd_balance`), never
+            # from the crypto broker's USDT balance.
+            bal = (
+                broker.get_usd_balance()
+                if asset_class in ("equity", "forex")
+                else broker.get_usdt_balance()
+            )
             # Sprint 43 C3 fix: defend against NaN/Inf in the broker's
             # balance response. Some ccxt error paths (e.g. transient
             # network, sandbox returning None coerced to NaN) can return
@@ -602,9 +611,9 @@ class RiskManagerAgent:
             # worse than aborting the cycle (the outer scheduler
             # already logs/notifies on an uncaught step exception).
             _, _asset_class_for_balance = resolve_broker_for_close(
-                asset, self._asset_to_class, self.broker, self.alpaca_broker,
+                asset, self._asset_to_class, self.broker, self.alpaca_broker, self.oanda_broker,
             )
-            _balance_key = _asset_class_for_balance if _asset_class_for_balance in ("crypto", "equity") else "crypto"
+            _balance_key = _asset_class_for_balance if _asset_class_for_balance in ("crypto", "equity", "forex") else "crypto"
             if _balance_key not in balance_cache:
                 balance_cache[_balance_key] = self.get_account_balance(asset=asset)
             account_balance, balance_source = balance_cache[_balance_key]
@@ -1877,7 +1886,7 @@ class RiskManagerAgent:
         # paper mode (previously there was no paper/live check here at
         # all, unlike the entry side).
         close_broker, asset_class = resolve_broker_for_close(
-            worst_pos.asset, self._asset_to_class, self.broker, self.alpaca_broker
+            worst_pos.asset, self._asset_to_class, self.broker, self.alpaca_broker, self.oanda_broker,
         )
         is_paper = not is_mandate_enabled(self.mode_override_path)
         if close_broker is not None and not is_paper:

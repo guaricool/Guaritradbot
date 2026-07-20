@@ -246,6 +246,7 @@ class ExecutionNode:
         execution_mode="auto",
         broker_client=None,
         alpaca_broker=None,
+        oanda_broker=None,
         brokers_config=None,
         kill_switch=None,
         audit=None,
@@ -283,6 +284,7 @@ class ExecutionNode:
         self.execution_mode = execution_mode
         self.broker = broker_client
         self.alpaca_broker = alpaca_broker
+        self.oanda_broker = oanda_broker
         self.brokers_config = brokers_config or {}
         self.kill_switch = kill_switch
         self.audit = audit
@@ -494,6 +496,8 @@ class ExecutionNode:
                 return self.broker, "crypto", cfg
             if asset_class == "equity":
                 return self.alpaca_broker, "equity", cfg
+            if asset_class == "forex":
+                return self.oanda_broker, "forex", cfg
             # Sprint 45 fix (N3): `asset_class` here is whatever key the
             # asset was found under in `brokers_config` (config.yaml's
             # `brokers:` section) — it is NOT necessarily "crypto" or
@@ -509,7 +513,7 @@ class ExecutionNode:
             warning_msg = (
                 f"[ExecutionNode] ⚠️ asset_class '{asset_class}' (for '{asset}') "
                 f"has no broker implementation wired up in _resolve_broker "
-                f"(only 'crypto' and 'equity' are supported). Rejecting the "
+                f"(only 'crypto', 'equity', and 'forex' are supported). Rejecting the "
                 f"order instead of silently routing it to the crypto broker."
             )
             logger.info(warning_msg)
@@ -738,7 +742,7 @@ class ExecutionNode:
                     {"status": status, "order": order_data, "kind": "UNKNOWN_SYMBOL"},
                 )
             return
-        if broker_instance is None and asset_class not in ("equity", "crypto"):
+        if broker_instance is None and asset_class not in ("equity", "crypto", "forex"):
             status = f"FAILED (UNSUPPORTED_ASSET_CLASS: {asset_class})"
             logger.error(f"[ExecutionNode] ❌ UNSUPPORTED_ASSET_CLASS: '{asset}' has asset_class '{asset_class}', which has no broker wired up. Order REJECTED (not silently routed to crypto).")
             if self.audit:
@@ -760,11 +764,18 @@ class ExecutionNode:
                     {"status": status, "order": order_data, "kind": "UNSUPPORTED_ASSET_CLASS"},
                 )
             return
-        # If the asset is equity but Alpaca isn't configured, fail loudly.
-        # We don't want a silent fallback to crypto for an SPY order.
-        if asset_class == "equity" and broker_instance is None:
-            logger.error(f"[ExecutionNode] ❌ ALPACA_NOT_CONFIGURED: '{asset}' is an equity/ETF but no AlpacaBroker is configured. Set ALPACA_API_KEY + ALPACA_SECRET_KEY in Coolify Environment.")
-            status = f"FAILED (ALPACA_NOT_CONFIGURED: {asset})"
+        # If the asset is equity/forex but its broker isn't configured,
+        # fail loudly. We don't want a silent fallback to crypto for an
+        # SPY or EUR/USD order.
+        if asset_class in ("equity", "forex") and broker_instance is None:
+            broker_name = "AlpacaBroker" if asset_class == "equity" else "OandaBroker"
+            env_hint = (
+                "ALPACA_API_KEY + ALPACA_SECRET_KEY" if asset_class == "equity"
+                else "OANDA_API_TOKEN + OANDA_ACCOUNT_ID"
+            )
+            not_configured_kind = "ALPACA_NOT_CONFIGURED" if asset_class == "equity" else "OANDA_NOT_CONFIGURED"
+            logger.error(f"[ExecutionNode] ❌ {not_configured_kind}: '{asset}' is {asset_class} but no {broker_name} is configured. Set {env_hint} in Coolify Environment.")
+            status = f"FAILED ({not_configured_kind}: {asset})"
             if self.audit:
                 self.audit.append(
                     "TRADE_FAILED",
@@ -846,9 +857,10 @@ class ExecutionNode:
             # off-hours paper "entry" queues/skips exactly like a real
             # one would, instead of silently filling at a price that
             # may be far from the next real open.
-            if asset_class == "equity":
+            if asset_class in ("equity", "forex"):
+                broker_label = "Alpaca" if asset_class == "equity" else "OANDA"
                 if hasattr(broker_instance, "is_market_open") and not broker_instance.is_market_open():
-                    logger.info(f'[ExecutionNode] ⏸️  MARKET_CLOSED (PAPER) — orden de entrada {asset} {direction} SALTADA (Alpaca reporta mercado cerrado). Se reintentará en un ciclo futuro con el mercado abierto.')
+                    logger.info(f'[ExecutionNode] ⏸️  MARKET_CLOSED (PAPER) — orden de entrada {asset} {direction} SALTADA ({broker_label} reporta mercado cerrado). Se reintentará en un ciclo futuro con el mercado abierto.')
                     status = f"SKIPPED (MARKET_CLOSED: {asset})"
                     if self.audit:
                         self.audit.append(
@@ -856,17 +868,17 @@ class ExecutionNode:
                             {
                                 "asset": asset, "direction": direction, "qty": qty,
                                 "entry_price": entry_price, "status": status,
-                                "asset_class": "equity", "simulated": True,
+                                "asset_class": asset_class, "simulated": True,
                             },
                         )
                     if self.event_bus:
                         self.event_bus.publish(
                             "ORDER_EXECUTED",
-                            {"status": status, "order": order_data, "asset_class": "equity", "simulated": True},
+                            {"status": status, "order": order_data, "asset_class": asset_class, "simulated": True},
                         )
                     return
                 if hasattr(broker_instance, "is_symbol_tradeable") and not broker_instance.is_symbol_tradeable(asset):
-                    logger.error(f"[ExecutionNode] ❌ SYMBOL_NOT_TRADEABLE (PAPER): '{asset}' is not active/tradeable on Alpaca.")
+                    logger.error(f"[ExecutionNode] ❌ SYMBOL_NOT_TRADEABLE (PAPER): '{asset}' is not active/tradeable on {broker_label}.")
                     status = f"FAILED (SYMBOL_NOT_TRADEABLE: {asset})"
                     if self.audit:
                         self.audit.append(
@@ -874,7 +886,7 @@ class ExecutionNode:
                             {
                                 "asset": asset, "direction": direction, "qty": qty,
                                 "entry_price": entry_price, "status": status,
-                                "asset_class": "equity", "simulated": True,
+                                "asset_class": asset_class, "simulated": True,
                             },
                         )
                     if self.event_bus:
@@ -933,6 +945,9 @@ class ExecutionNode:
         # === Dispatch to the right broker ===
         if asset_class == "equity":
             self._execute_equity_order(order_data, broker_instance)
+            return
+        if asset_class == "forex":
+            self._execute_forex_order(order_data, broker_instance)
             return
 
         # Default: crypto (binanceus via ccxt)
@@ -1322,4 +1337,104 @@ class ExecutionNode:
                         f"más tarde en Alpaca sin que el bot la registre — "
                         f"verificar manualmente."
                     ),
+                })
+
+    def _execute_forex_order(self, order_data: dict, broker):
+        """Route a forex order to OANDA.
+
+        Unlike Alpaca's notional-USD fractional orders, OANDA trades in
+        whole ``units`` of the base currency -- the bot's
+        ``position_size`` (qty in the pair's own unit, e.g. 727 units
+        of EUR/USD) maps directly, no conversion needed (see
+        oanda_broker.py's module docstring for why this sizing math
+        already works unmodified for forex).
+
+        OANDA market orders (``timeInForce: FOK``) resolve
+        synchronously -- there's no Alpaca-style "new"/"accepted"
+        pending state to poll for, so this is simpler than
+        `_execute_equity_order`.
+        """
+        asset = order_data.get("asset", "?")
+        direction = order_data.get("direction", "?")
+        qty = order_data.get("position_size", 0)
+        entry_price = float(order_data.get("entry_price", 0) or 0)
+
+        side = "buy" if direction == "long" else "sell"
+
+        # Same rationale as the equity market-hours gate: an off-hours
+        # entry would queue/fill far from the signal price. Forex
+        # closes have already been protected — this just mirrors it.
+        if hasattr(broker, "is_market_open") and not broker.is_market_open():
+            logger.info(f'[ExecutionNode] ⏸️  MARKET_CLOSED — orden de entrada {asset} {direction} SALTADA (OANDA reporta mercado cerrado). Se reintentará en un ciclo futuro con el mercado abierto.')
+            status = f"SKIPPED (MARKET_CLOSED: {asset})"
+            if self.audit:
+                self.audit.append(
+                    "TRADE_SKIPPED_MARKET_CLOSED",
+                    {
+                        "asset": asset, "direction": direction, "qty": qty,
+                        "entry_price": entry_price, "status": status,
+                        "asset_class": "forex",
+                    },
+                )
+            if self.event_bus:
+                self.event_bus.publish(
+                    "ORDER_EXECUTED",
+                    {"status": status, "order": order_data, "asset_class": "forex"},
+                )
+            return
+
+        broker_order = broker.create_market_order(asset, side, qty)
+        fill_verdict = _classify_fill_status(broker_order)
+
+        if fill_verdict == "filled":
+            status = "FILLED (LIVE MARKET — OANDA)"
+        else:
+            status = f"NOT_FILLED (LIVE MARKET — OANDA: {fill_verdict})"
+
+        if self.audit:
+            self.audit.append(
+                "TRADE_FILLED" if status.startswith("FILLED") else "TRADE_FAILED",
+                {
+                    "asset": asset,
+                    "direction": direction,
+                    "qty": qty,
+                    "entry_price": entry_price,
+                    "status": status,
+                    "asset_class": "forex",
+                    "broker": "oanda",
+                    "broker_order_id": broker_order.get("id") if broker_order else None,
+                },
+            )
+        if self.event_bus:
+            self.event_bus.publish(
+                "ORDER_EXECUTED",
+                {
+                    "status": status,
+                    "order": order_data,
+                    "asset_class": "forex",
+                    "broker": "oanda",
+                },
+            )
+        if fill_verdict == "filled":
+            # Reuse the same fill-extraction helper AlpacaBroker fills
+            # use -- OandaBroker's create_market_order return dict uses
+            # the identical "filled"/"filled_avg_price" keys on purpose
+            # (see its docstring), so this generic extractor works
+            # unmodified.
+            actual_qty, actual_price = _extract_alpaca_fill(broker_order)
+            self._persist_filled_position(
+                order_data, status,
+                actual_qty=actual_qty,
+                actual_entry_price=actual_price,
+            )
+        else:
+            if self.event_bus:
+                self.event_bus.publish("SYSTEM_ERROR", {
+                    "kind": "OANDA_ORDER_FAILED",
+                    "asset": asset,
+                    "direction": direction,
+                    "requested": qty,
+                    "broker_status": broker_order.get("status", "?") if broker_order else "?",
+                    "error": (f"⚠️ Orden OANDA {asset} {direction} no se llenó: "
+                              f"{broker_order.get('error', '?') if broker_order else '?'}"),
                 })

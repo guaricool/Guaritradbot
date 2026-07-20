@@ -16,7 +16,7 @@ steps:
     agent: NewsAnalyst
     action: scan_news
     inputs:
-      assets: ["SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO"]
+      assets: ["SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCAD=X", "AUDUSD=X"]
       lookback_hours: 24
   # Sprint 50: SentimentAnalyst runs after news (also a fast
   # RSS/JSON scan). The result is stored in
@@ -29,7 +29,7 @@ steps:
     action: scan_social_sentiment
     depends_on: ["scan_news"]
     inputs:
-      assets: ["SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO"]
+      assets: ["SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCAD=X", "AUDUSD=X"]
   # Macro/geopolitical SHADOW scan (Fed rate decisions, CPI prints,
   # recession/geopolitical/banking-crisis signals). Independent of
   # scan_news -- that step is per-ASSET ticker news, this is
@@ -47,7 +47,7 @@ steps:
     action: fetch_and_analyze
     depends_on: ["scan_news"]
     inputs:
-      assets: ["SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO"]
+      assets: ["SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCAD=X", "AUDUSD=X"]
       timeframes: ["15m", "1h", "4h"]
   # Sprint 55: LLM shadow vote. NOT consumed by the trading
   # decision — only logged to the audit ledger so we can
@@ -69,7 +69,7 @@ steps:
     optional: true
     depends_on: ["analyze_market", "scan_news", "scan_social_sentiment"]
     inputs:
-      assets: ["SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO"]
+      assets: ["SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCAD=X", "AUDUSD=X"]
   - id: generate_hypotheses
     agent: StrategyAgent
     action: evaluate_strategies

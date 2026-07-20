@@ -34,6 +34,7 @@ from src.core.event_bus import EventBus
 from src.execution.execution_node import ExecutionNode
 from src.execution.broker import BrokerClient
 from src.execution.alpaca_broker import AlpacaBroker
+from src.execution.oanda_broker import OandaBroker
 from src.execution.scheduler import EpochScheduler
 from src.optimization.hyperopt import HyperoptManager
 from src.safety.audit_ledger import AuditLedger
@@ -119,7 +120,7 @@ def _asset_class_for(asset: str, brokers_config: dict) -> str:
     return "unknown"
 
 
-def _get_active_asset_classes(broker_client, alpaca_broker, min_usd: float = 10.0) -> set:
+def _get_active_asset_classes(broker_client, alpaca_broker, min_usd: float = 10.0, oanda_broker=None) -> set:
     """Sprint 46G — capital-aware asset-class routing.
 
     Carlos: "si tienes dinero en binance, el bot solo podrá trabajar
@@ -168,6 +169,19 @@ def _get_active_asset_classes(broker_client, alpaca_broker, min_usd: float = 10.
         except Exception:
             active.add("equity")
 
+    if oanda_broker is None:
+        # Same rationale as Alpaca above: forex already fails loudly
+        # with OANDA_NOT_CONFIGURED at order time when there's no
+        # broker configured at all.
+        pass
+    else:
+        try:
+            bal = oanda_broker.get_usd_balance()
+            if bal is None or bal >= min_usd:
+                active.add("forex")
+        except Exception:
+            active.add("forex")
+
     return active
 
 
@@ -208,6 +222,7 @@ def _fetch_prices_for_open_positions(
     position_repo,
     broker_client=None,
     alpaca_broker=None,
+    oanda_broker=None,
     brokers_config: dict | None = None,
 ) -> dict:
     """Sprint 46I: shared helper — fetch a price for every asset with a
@@ -250,6 +265,9 @@ def _fetch_prices_for_open_positions(
             if asset_class == "equity":
                 if alpaca_broker is not None:
                     price = alpaca_broker.get_latest_trade_price(pos.asset)
+            elif asset_class == "forex":
+                if oanda_broker is not None:
+                    price = oanda_broker.get_latest_trade_price(pos.asset)
             else:
                 # crypto or unknown -> same fallback convention as
                 # resolve_broker_for_close (src/execution/broker_routing.py):
@@ -632,6 +650,27 @@ def main():
     else:
         print("[Init] ALPACA_API_KEY/ALPACA_SECRET_KEY no configuradas. Bot en modo crypto-only (equity signals fallarán con ALPACA_NOT_CONFIGURED).")
 
+    # Carlos: OANDA forex broker. Same optional-degradation pattern as
+    # Alpaca above -- absent env vars means forex signals fail with
+    # OANDA_NOT_CONFIGURED instead of half-initializing.
+    oanda_broker = None
+    _oanda_token = os.getenv("OANDA_API_TOKEN")
+    _oanda_account = os.getenv("OANDA_ACCOUNT_ID")
+    if _oanda_token and _oanda_account:
+        try:
+            oanda_broker = OandaBroker(
+                api_token=_oanda_token,
+                account_id=_oanda_account,
+                environment=os.getenv("OANDA_ENV", "practice"),
+            )
+            _oanda_bal = oanda_broker.get_usd_balance()
+            print(f"[Init] OANDA broker armado. NAV: ${_oanda_bal:.2f} (environment={oanda_broker.environment})")
+        except Exception as e:
+            print(f"[Init] ⚠️ OANDA broker falló al inicializar: {e}. Sigo sin forex.")
+            oanda_broker = None
+    else:
+        print("[Init] OANDA_API_TOKEN/OANDA_ACCOUNT_ID no configuradas. Bot sin forex (forex signals fallarán con OANDA_NOT_CONFIGURED).")
+
     brokers_config = config.get("brokers", {}) or {}
 
     # Sprint 46O (audit M2): auto-detect the LIVE account's actual
@@ -963,6 +1002,7 @@ def main():
         execution_mode=execution_mode,
         broker_client=broker_client,
         alpaca_broker=alpaca_broker,         # Sprint 36
+        oanda_broker=oanda_broker,           # forex
         brokers_config=brokers_config,        # Sprint 36
         kill_switch=kill_switch,
         audit=audit,
@@ -1011,6 +1051,7 @@ def main():
         # Sprint 46N (audit C1/C2): route closes by asset class + never
         # send a real order in paper mode.
         alpaca_broker=alpaca_broker,
+        oanda_broker=oanda_broker,
         brokers_config=brokers_config,
         mode_override_path=override_path,
     )
@@ -1177,6 +1218,7 @@ def main():
             # Sprint 46N (audit C1/C2): route replacement-closes by
             # asset class + never send a real order in paper mode.
             alpaca_broker=alpaca_broker,
+            oanda_broker=oanda_broker,
             brokers_config=brokers_config,
             mode_override_path=override_path,
             # Sprint 46N (audit M2): fee-aware position-replacement
@@ -1364,6 +1406,7 @@ def main():
         once=args.once,
         broker_client=broker_client,
         alpaca_broker=alpaca_broker,
+        oanda_broker=oanda_broker,
         brokers_config=brokers_config,
         audit=audit,
         event_bus=event_bus,

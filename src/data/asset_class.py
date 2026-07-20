@@ -36,6 +36,7 @@ class AssetClass(str, Enum):
     COMMODITY_ENERGY = "commodity_energy"      # USO — energy / oil
     COMMODITY_AGRI = "commodity_agriculture"   # future use (e.g. DBA, CORN)
     FIXED_INCOME = "fixed_income"              # future use (e.g. TLT, IEF, AGG)
+    FOREX = "forex"                            # EUR/USD, GBP/USD, etc. (broker: OANDA)
     CASH = "cash"                              # USDT/USD, parked, or unknown
 
 
@@ -55,6 +56,12 @@ ASSET_CLASS_MAP: Dict[str, AssetClass] = {
     # Commodities
     "GLD": AssetClass.COMMODITY_SAFE,
     "USO": AssetClass.COMMODITY_ENERGY,
+    # Forex — broker: OANDA
+    "EURUSD=X": AssetClass.FOREX,
+    "GBPUSD=X": AssetClass.FOREX,
+    "USDJPY=X": AssetClass.FOREX,
+    "USDCAD=X": AssetClass.FOREX,
+    "AUDUSD=X": AssetClass.FOREX,
 }
 
 

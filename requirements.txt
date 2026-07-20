@@ -30,3 +30,6 @@ fastapi>=0.110,<1.0
 uvicorn[standard]>=0.29,<1.0
 # httpx: required by fastapi.testclient.TestClient (tests/test_sprint_46a_api.py).
 httpx>=0.27,<1.0
+# OANDA v20 REST API client (forex broker — EUR/USD, GBP/USD, etc.).
+# Imported as `oandapyV20`.
+oandapyV20>=0.7,<1.0

@@ -89,7 +89,7 @@ def build_asset_to_class_map(brokers_config: dict) -> dict:
     return mapping
 
 
-def resolve_broker_for_close(asset: str, asset_to_class: dict, crypto_broker, alpaca_broker):
+def resolve_broker_for_close(asset: str, asset_to_class: dict, crypto_broker, alpaca_broker, oanda_broker=None):
     """Return (broker_or_None, asset_class_str) for closing `asset`.
 
     Unlike `ExecutionNode._resolve_broker` (which is choosing where to
@@ -102,17 +102,23 @@ def resolve_broker_for_close(asset: str, asset_to_class: dict, crypto_broker, al
     it), we fall back to `crypto_broker`, i.e. the SAME broker every
     caller used unconditionally before this module existed. This is a
     deliberate backward-compatibility choice: `brokers_config` only
-    ever reclassifies an asset as "equity" (routing it to
-    `alpaca_broker` instead — the actual C1 fix), it never needs to
-    turn a previously-reachable crypto/unknown asset into "no broker
-    at all". Returns `asset_class="unknown"` in this case so callers
-    can still log/audit it distinctly from a confirmed "crypto" match.
+    ever reclassifies an asset as "equity"/"forex" (routing it to
+    `alpaca_broker`/`oanda_broker` instead — the actual C1 fix), it
+    never needs to turn a previously-reachable crypto/unknown asset
+    into "no broker at all". Returns `asset_class="unknown"` in this
+    case so callers can still log/audit it distinctly from a confirmed
+    "crypto" match.
+
+    ``oanda_broker`` defaults to None (optional third broker, like
+    Alpaca) — callers that don't pass it just never resolve "forex".
     """
     asset_class = asset_to_class.get(asset)
     if asset_class == "crypto":
         return crypto_broker, "crypto"
     if asset_class == "equity":
         return alpaca_broker, "equity"
+    if asset_class == "forex":
+        return oanda_broker, "forex"
     return crypto_broker, (asset_class or "unknown")
 
 

@@ -72,6 +72,7 @@ SCENARIO_2008_GFC = StressScenario(
         AssetClass.COMMODITY_AGRI.value: -0.30,
         AssetClass.CRYPTO.value: -0.50,         # synthetic; BTC N/A in 2008
         AssetClass.FIXED_INCOME.value: -0.05,   # Treasuries rallied (flight to safety)
+        AssetClass.FOREX.value: -0.08,          # broad USD rally (flight to safety) vs major pairs
         AssetClass.CASH.value: 0.0,
     },
 )
@@ -94,6 +95,7 @@ SCENARIO_2020_COVID = StressScenario(
         AssetClass.COMMODITY_AGRI.value: -0.15,
         AssetClass.CRYPTO.value: -0.50,
         AssetClass.FIXED_INCOME.value: +0.08,  # bonds rallied (Fed cuts)
+        AssetClass.FOREX.value: -0.06,          # March 2020 dollar liquidity squeeze
         AssetClass.CASH.value: 0.0,
     },
 )
@@ -117,6 +119,7 @@ SCENARIO_2022_RATE_HIKES = StressScenario(
         AssetClass.COMMODITY_AGRI.value: +0.10,
         AssetClass.CRYPTO.value: -0.64,
         AssetClass.FIXED_INCOME.value: -0.32,   # bond rout
+        AssetClass.FOREX.value: -0.12,           # EUR/USD hit parity, broad dollar strength
         AssetClass.CASH.value: 0.0,
     },
 )

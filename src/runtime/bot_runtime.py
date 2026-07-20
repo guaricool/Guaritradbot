@@ -65,6 +65,7 @@ class BotRuntime:
         broker_client: Any,
         alpaca_broker: Any,
         brokers_config: dict,
+        oanda_broker: Any = None,
         # ---- Audit / eventing ----
         audit: Any,
         event_bus: Any,
@@ -115,6 +116,7 @@ class BotRuntime:
         # Brokers
         self.broker_client = broker_client
         self.alpaca_broker = alpaca_broker
+        self.oanda_broker = oanda_broker
         self.brokers_config = brokers_config
         # Audit / eventing
         self.audit = audit
@@ -344,6 +346,7 @@ class BotRuntime:
             self.position_repo,
             broker_client=self.broker_client,
             alpaca_broker=self.alpaca_broker,
+            oanda_broker=self.oanda_broker,
             brokers_config=self.brokers_config,
         )
         self._check_per_asset_price_gaps(opens, prices)
@@ -789,7 +792,8 @@ class BotRuntime:
         try:
             if self.analyze_market_step is not None and self.full_trading_assets:
                 _active_classes = self.get_active_asset_classes(
-                    self.broker_client, self.alpaca_broker, min_usd=self.min_order_usd
+                    self.broker_client, self.alpaca_broker, min_usd=self.min_order_usd,
+                    oanda_broker=self.oanda_broker,
                 )
                 _filtered_assets = [
                     a for a in self.full_trading_assets

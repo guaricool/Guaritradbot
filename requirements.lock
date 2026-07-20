@@ -80,6 +80,7 @@ multidict==6.7.1
 multitasking==0.0.13
 narwhals==2.23.0
 numpy==1.26.4
+oandapyV20==0.7.2
 packaging==24.2
 pandas==2.2.2
 peewee==4.1.2

@@ -71,6 +71,9 @@ class PositionMonitor:
         # of always hitting `broker` (the crypto client), and never send
         # a real order while in paper mode. See broker_routing.py.
         alpaca_broker=None,
+        # Optional third broker (OANDA, forex) -- same rationale as
+        # alpaca_broker above.
+        oanda_broker=None,
         brokers_config: Optional[dict] = None,
         mode_override_path: str = "audit/mode_override.json",
     ):
@@ -127,6 +130,7 @@ class PositionMonitor:
         self.min_profit_fee_multiplier = max(0.0, min(float(min_profit_fee_multiplier), 10.0))
         self.fee_pct_for_asset = fee_pct_for_asset
         self.alpaca_broker = alpaca_broker
+        self.oanda_broker = oanda_broker
         self.brokers_config = brokers_config or {}
         self.mode_override_path = mode_override_path
         self._asset_to_class = build_asset_to_class_map(self.brokers_config)
@@ -557,7 +561,7 @@ class PositionMonitor:
         # through to the same "close locally, no real order" path that
         # already existed for "no broker configured at all".
         close_broker, asset_class = resolve_broker_for_close(
-            pos.asset, self._asset_to_class, self.broker, self.alpaca_broker
+            pos.asset, self._asset_to_class, self.broker, self.alpaca_broker, self.oanda_broker,
         )
         is_paper = not is_mandate_enabled(self.mode_override_path)
         if close_broker is not None and not is_paper:

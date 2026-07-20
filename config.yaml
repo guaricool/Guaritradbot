@@ -66,6 +66,24 @@ brokers:
       - "QQQ"
       - "GLD"
       - "USO"
+  # Carlos: forex trades ~24/5 with more frequent moves than the
+  # equity/crypto universe's usual signal cadence -- OANDA (commission-
+  # free demo account) added as a third broker. Symbol format matches
+  # yfinance's forex convention already used elsewhere in this bot
+  # (dashboard/src/lib/assetUniverse.ts, MarketAnalystAgent's historical
+  # data) -- "EEEUUU=X" (=X suffix). `src/execution/oanda_broker.py`
+  # converts to/from OANDA's own "EUR_USD" instrument format.
+  # Optional like Alpaca: if OANDA_API_TOKEN/OANDA_ACCOUNT_ID aren't
+  # set, the bot runs without forex and these signals fail with
+  # OANDA_NOT_CONFIGURED.
+  forex:
+    name: "oanda"
+    symbols:
+      - "EURUSD=X"
+      - "GBPUSD=X"
+      - "USDJPY=X"
+      - "USDCAD=X"
+      - "AUDUSD=X"
 
 trading:
   risk_per_trade_pct: 1.0          # 1% del balance arriesgado por trade (regla #1 del playbook)
