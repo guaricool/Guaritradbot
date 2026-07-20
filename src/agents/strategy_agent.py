@@ -229,6 +229,21 @@ DEFAULT_STRATEGY_PARAMS = {
     "adx_trend_min": 20,        # ADX > 20 = tendencia
 }
 
+# Bug fix: forex (OANDA) was added as a new asset class/broker, but
+# every strategy block below iterates a HARDCODED per-strategy tuple
+# of assets instead of `market_data.keys()` -- none of them included
+# the forex symbols, so EURUSD=X/GBPUSD=X/USDJPY=X/USDCAD=X/AUDUSD=X
+# had valid indicator data fetched every cycle (confirmed via
+# CAPITAL_ROUTING_APPLIED/MarketAnalystAgent) but were silently never
+# even LOOKED AT by any strategy -- zero HYPOTHESIS_GENERATED events
+# for forex across 6+ real cycles, while equities fired 4-5 every
+# time. RSI/Stochastic/Bollinger/ADX/Support-Resistance are generic
+# technical indicators that work the same regardless of instrument,
+# so forex majors are added to every GENERAL technical strategy block
+# (not the crypto-specific MACD block or the GLD/USO-specific EMA
+# commodity block, which are narrower by design).
+FOREX_MAJORS = ("EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCAD=X", "AUDUSD=X")
+
 
 class StrategyAgent:
     """
@@ -332,7 +347,7 @@ class StrategyAgent:
         # ============================================================
         # SPY / QQQ → mean reversion con RSI (15m + 1h)
         # ============================================================
-        for asset in ("SPY", "QQQ"):
+        for asset in ("SPY", "QQQ", *FOREX_MAJORS):
             for tf in ("15m", "1h"):
                 df = market_data.get(asset, {}).get(tf)
                 if df is None or len(df) < 20:
@@ -564,7 +579,7 @@ class StrategyAgent:
         # ============================================================
         # Sprint 53: ETH-USD and SOL-USD added to the universal
         # asset list (Stochastic, BB, S/R, ADX all asset-agnostic).
-        for asset in ("SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO"):
+        for asset in ("SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO", *FOREX_MAJORS):
             df = market_data.get(asset, {}).get("1h")
             if df is None or len(df) < 20:
                 continue
@@ -602,7 +617,7 @@ class StrategyAgent:
         # Si precio toca banda inferior + RSI<40 → long bounce
         # Si precio toca banda superior + RSI>60 → short fade
         # ============================================================
-        for asset in ("SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO"):
+        for asset in ("SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO", *FOREX_MAJORS):
             df = market_data.get(asset, {}).get("4h")
             if df is None or len(df) < 25:
                 continue
@@ -645,7 +660,7 @@ class StrategyAgent:
         # Si precio cerca de soporte 50-periodos → long
         # Si precio cerca de resistencia 50-periodos → short
         # ============================================================
-        for asset in ("SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO"):
+        for asset in ("SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO", *FOREX_MAJORS):
             df = market_data.get(asset, {}).get("4h")
             if df is None or len(df) < 55:
                 continue
@@ -695,7 +710,7 @@ class StrategyAgent:
         if self.ml_predictors:
             from src.ml.pipeline import FeatureExtractor
             _extractor = FeatureExtractor()
-            for asset in ("BTC-USD", "ETH-USD", "SOL-USD", "SPY", "QQQ", "GLD", "USO"):
+            for asset in ("BTC-USD", "ETH-USD", "SOL-USD", "SPY", "QQQ", "GLD", "USO", *FOREX_MAJORS):
                 predictor = self.ml_predictors.get(asset)
                 if predictor is None:
                     continue
@@ -761,7 +776,7 @@ class StrategyAgent:
         # See src/analysis/alpha_factors.py for the exact formulas
         # (ported from qlib/contrib/data/loader.py).
         # ============================================================
-        for asset in ("SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO"):
+        for asset in ("SPY", "QQQ", "BTC-USD", "ETH-USD", "SOL-USD", "GLD", "USO", *FOREX_MAJORS):
             df = market_data.get(asset, {}).get("1h")
             if df is None or len(df) < 25:
                 continue
