@@ -1,10 +1,9 @@
 // Asset universe for the dashboard's /charts page.
 //
 // Sprint 59: expanded from 7 to 15 assets across three categories
-// (crypto / forex / stocks+ETFs). These are READ-ONLY on the
-// dashboard -- the trading bot still only trades the 7 assets it
-// had before (BTC-USD, ETH-USD, SOL-USD, SPY, QQQ, GLD, USO).
-// Forex and the extra stocks are pure visualization.
+// (crypto / forex / stocks+ETFs). The bot trades crypto (binance.us),
+// equity (Alpaca), AND forex (OANDA, added later) -- AAPL/NVDA/TSLA
+// remain visualization-only (not in the bot's tradeable universe).
 //
 // yfinance ticker conventions:
 //   - Crypto:   "BTC-USD"   (dash, not slash)
@@ -38,7 +37,7 @@ export const ASSET_UNIVERSE: AssetEntry[] = [
   { ticker: "ETH-USD", label: "Ethereum",  category: "crypto" },
   { ticker: "SOL-USD", label: "Solana",    category: "crypto" },
 
-  // ---- Forex (visualization only -- bot does NOT trade FX) ----
+  // ---- Forex (bot trades these via OANDA) ----
   // yfinance uses "=X" suffix for currency pairs and returns
   // price in terms of the SECOND currency (EURUSD=X -> USD per
   // EUR, GBPUSD=X -> USD per GBP, etc.). Standard FX convention.

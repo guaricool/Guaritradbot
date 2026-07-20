@@ -85,11 +85,6 @@ export default function ChartsPage() {
               </h2>
               <span className="text-[10px] text-muted">
                 {assets.length} {assets.length === 1 ? "asset" : "assets"}
-                {cat === "forex" && (
-                  <span className="ml-2 rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-blue-300">
-                    Read-only · bot does not trade forex
-                  </span>
-                )}
               </span>
             </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">

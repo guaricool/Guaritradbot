@@ -259,9 +259,9 @@ export interface HistoryResponse {
 }
 
 // Sprint 59: chart assets + time-range selector.
-// The dashboard shows assets the bot does NOT trade (forex + extra
-// stocks) for visualization only -- the API accepts any ticker
-// yfinance knows about, see src/api/server.py::_ASSET_CLASS_MAP.
+// The dashboard also shows a few visualization-only extra stocks
+// (AAPL/NVDA/TSLA) the bot doesn't trade -- the API accepts any
+// ticker yfinance knows about, see src/api/server.py::_ASSET_CLASS_MAP.
 export type AssetCategory = "crypto" | "forex" | "equity";
 
 // Yfinance intervals the backend supports. Mirrors the regex
