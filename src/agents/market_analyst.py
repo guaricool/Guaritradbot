@@ -561,7 +561,13 @@ class MarketAnalystAgent(Component):
             return True
         except DataIntegrityError as e:
             logger.warning(f'  ⚠️  {asset_tf}: data integrity fail — {e}')
-            self.degrade(f"data integrity: {e}")
+            # Bug fix: the reason string used to drop `asset_tf` even
+            # though it's right here as a parameter -- every DEGRADED
+            # audit event read as a bare "data integrity: last bar is
+            # Ns old..." with no symbol attached, so diagnosing which
+            # feed actually broke meant cross-referencing timestamps
+            # by hand instead of just reading the event.
+            self.degrade(f"data integrity ({asset_tf}): {e}")
             return False
 
     # Sprint 54: dedup window for the total-failure SYSTEM_ERROR alert.
