@@ -405,7 +405,7 @@ class AllocationPolicyTest(unittest.TestCase):
         # All target classes are mapped to the bot's known symbols.
         self.assertEqual(
             set(DEFAULT_POLICY.targets.keys()),
-            {"crypto", "equity_growth", "commodity_safe", "commodity_energy"},
+            {"crypto", "equity_growth", "commodity_safe", "commodity_energy", "forex"},
         )
 
 
@@ -679,12 +679,12 @@ class AllocationGateIntegrationTest(unittest.TestCase):
         ]
         risk = self._make_risk(opens=opens)
         # crypto=50, total=80, crypto%=62.5%. Adding SOL $20 → 70/100=70%.
-        # Default policy: crypto target 40%, drift 10% → cap 50%.
-        # 70% > 50% → reject.
+        # Default policy: crypto target 30%, drift 10% → cap 40%.
+        # 70% > 40% → reject.
         ok, reason = risk._check_allocation("SOL-USD", proposed_notional_usd=20.0)
         self.assertFalse(ok)
         self.assertIn("allocation_policy_crypto", reason)
-        self.assertIn("exceeds_50pct_cap", reason)
+        self.assertIn("exceeds_40pct_cap", reason)
 
     def test_check_allocation_disabled(self):
         risk = self._make_risk(opens=[])

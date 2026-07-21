@@ -106,14 +106,22 @@ class AllocationPolicy:
 
 
 # Default policy tuned for the bot's current universe (BTC/ETH/SOL +
-# SPY/QQQ + GLD/USO). A balanced book that doesn't over-concentrate
-# in any one class.
+# SPY/QQQ + GLD/USO + EURUSD/GBPUSD/USDJPY/USDCAD/AUDUSD). A balanced
+# book that doesn't over-concentrate in any one class.
+#
+# FOREX was missing from this dict when OANDA was added as a broker
+# (Sprint: forex integration) — `target_for()` silently defaulted it to
+# 0.0, so `cap_for(forex)` was just `0 + drift_tolerance_pct` (10%).
+# Every real forex trade sizes to well over 10% of a small paper book,
+# so ALLOCATION_POLICY_BLOCKED rejected every single forex hypothesis
+# regardless of scalp mode, hypothesis quality, or account size.
 DEFAULT_POLICY = AllocationPolicy(
     targets={
-        AssetClass.CRYPTO.value: 0.40,
-        AssetClass.EQUITY_GROWTH.value: 0.40,
+        AssetClass.CRYPTO.value: 0.30,
+        AssetClass.EQUITY_GROWTH.value: 0.30,
         AssetClass.COMMODITY_SAFE.value: 0.10,
         AssetClass.COMMODITY_ENERGY.value: 0.10,
+        AssetClass.FOREX.value: 0.20,
     },
     drift_tolerance_pct=10.0,   # +/- 10% per class — same effect as 60% cap on crypto
     enabled=True,
