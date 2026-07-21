@@ -104,8 +104,14 @@ async function request<T>(
     // 401: drop the token so the user gets bounced to /login
     if (res.status === 401) {
       clearToken();
-      // Soft-redirect handled by AuthProvider's reactive subscription;
-      // we don't navigate here to avoid coupling this lib to router.
+      // Tell AuthProvider (which owns the router-coupled redirect) that
+      // the token died mid-session -- without this event, its React state
+      // never learns the token was cleared and every subsequent poll
+      // (SWR refreshInterval, WS reconnect) just 401s forever instead of
+      // bouncing to /login.
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("auth:invalidated"));
+      }
     }
     const detail =
       (body && typeof body === "object" && (body as { detail?: string }).detail) ||

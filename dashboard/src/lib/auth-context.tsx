@@ -32,6 +32,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setReady(true);
   }, []);
 
+  // Token can die mid-session (TTL expiry or a 401 from any API call) --
+  // api.ts clears localStorage but has no router access, so it dispatches
+  // this event instead of us silently polling a dead token forever.
+  useEffect(() => {
+    const onInvalidated = () => setAuthenticated(false);
+    window.addEventListener("auth:invalidated", onInvalidated);
+    return () => window.removeEventListener("auth:invalidated", onInvalidated);
+  }, []);
+
   // Bounce to /login whenever we go from authed → not
   useEffect(() => {
     if (!ready) return;
