@@ -87,6 +87,13 @@ async function request<T>(
     ...((opts.headers as Record<string, string>) || {}),
   };
   if (opts.auth !== false) {
+    if (!isTokenValid()) {
+      clearToken();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("auth:invalidated"));
+      }
+      throw new ApiError(401, "Token missing or expired");
+    }
     const t = getToken();
     if (t) headers["Authorization"] = `Bearer ${t}`;
   }
